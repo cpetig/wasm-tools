@@ -316,7 +316,7 @@ impl ComponentBuilder {
         (inc(&mut self.types), self.types().function())
     }
 
-    /// Declares a
+    /// Declares a new resource type within this component.
     pub fn type_resource(&mut self, rep: ValType, dtor: Option<u32>) -> u32 {
         self.types().resource(rep, dtor);
         inc(&mut self.types)
@@ -381,6 +381,124 @@ impl ComponentBuilder {
     /// Declares a new `thread.hw_concurrency` intrinsic.
     pub fn thread_hw_concurrency(&mut self) -> u32 {
         self.canonical_functions().thread_hw_concurrency();
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn task_backpressure(&mut self) -> u32 {
+        self.canonical_functions().task_backpressure();
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn task_return(&mut self, ty: u32) -> u32 {
+        self.canonical_functions().task_return(ty);
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn task_wait(&mut self, memory: u32) -> u32 {
+        self.canonical_functions().task_wait(memory);
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn task_poll(&mut self, memory: u32) -> u32 {
+        self.canonical_functions().task_poll(memory);
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn task_yield(&mut self) -> u32 {
+        self.canonical_functions().task_yield();
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn subtask_drop(&mut self) -> u32 {
+        self.canonical_functions().subtask_drop();
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn future_new(&mut self, ty: u32) -> u32 {
+        self.canonical_functions().future_new(ty);
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn future_write<O>(&mut self, ty: u32, options: O) -> u32
+    where
+        O: IntoIterator<Item = CanonicalOption>,
+        O::IntoIter: ExactSizeIterator,
+    {
+        self.canonical_functions().future_write(ty, options);
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn future_read<O>(&mut self, ty: u32, options: O) -> u32
+    where
+        O: IntoIterator<Item = CanonicalOption>,
+        O::IntoIter: ExactSizeIterator,
+    {
+        self.canonical_functions().future_read(ty, options);
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn future_drop_writer(&mut self, ty: u32) -> u32 {
+        self.canonical_functions().future_drop_writer(ty);
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn future_drop_reader(&mut self, ty: u32) -> u32 {
+        self.canonical_functions().future_drop_reader(ty);
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn stream_new(&mut self, ty: u32) -> u32 {
+        self.canonical_functions().stream_new(ty);
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn stream_write<O>(&mut self, ty: u32, options: O) -> u32
+    where
+        O: IntoIterator<Item = CanonicalOption>,
+        O::IntoIter: ExactSizeIterator,
+    {
+        self.canonical_functions().stream_write(ty, options);
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn stream_read<O>(&mut self, ty: u32, options: O) -> u32
+    where
+        O: IntoIterator<Item = CanonicalOption>,
+        O::IntoIter: ExactSizeIterator,
+    {
+        self.canonical_functions().stream_read(ty, options);
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn stream_drop_writer(&mut self, ty: u32) -> u32 {
+        self.canonical_functions().stream_drop_writer(ty);
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn stream_drop_reader(&mut self, ty: u32) -> u32 {
+        self.canonical_functions().stream_drop_reader(ty);
+        inc(&mut self.core_funcs)
+    }
+
+    /// TODO: docs
+    pub fn error_drop(&mut self) -> u32 {
+        self.canonical_functions().error_drop();
         inc(&mut self.core_funcs)
     }
 

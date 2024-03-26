@@ -1260,15 +1260,16 @@ impl WitPackageDecoder<'_> {
             | TypeDefKind::Tuple(_)
             | TypeDefKind::Option(_)
             | TypeDefKind::Result(_)
-            | TypeDefKind::Handle(_) => {}
+            | TypeDefKind::Handle(_)
+            | TypeDefKind::Future(_)
+            | TypeDefKind::Stream(_)
+            | TypeDefKind::Error => {}
 
             TypeDefKind::Resource
             | TypeDefKind::Record(_)
             | TypeDefKind::Enum(_)
             | TypeDefKind::Variant(_)
-            | TypeDefKind::Flags(_)
-            | TypeDefKind::Future(_)
-            | TypeDefKind::Stream(_) => {
+            | TypeDefKind::Flags(_) => {
                 bail!("unexpected unnamed type of kind '{}'", kind.as_str());
             }
             TypeDefKind::Unknown => unreachable!(),
@@ -1393,6 +1394,14 @@ impl WitPackageDecoder<'_> {
                 let id = self.type_map[&(*id).into()];
                 Ok(TypeDefKind::Handle(Handle::Borrow(id)))
             }
+
+            ComponentDefinedType::Future(ty) => Ok(TypeDefKind::Future(
+                ty.as_ref().map(|ty| self.convert_valtype(ty)).transpose()?,
+            )),
+
+            ComponentDefinedType::Stream(ty) => Ok(TypeDefKind::Stream(self.convert_valtype(ty)?)),
+
+            ComponentDefinedType::Error => Ok(TypeDefKind::Error),
         }
     }
 
@@ -1663,11 +1672,34 @@ impl Registrar<'_> {
                 Ok(())
             }
 
+            ComponentDefinedType::Future(payload) => {
+                let ty = match &self.resolve.types[id].kind {
+                    TypeDefKind::Future(p) => p,
+                    TypeDefKind::Type(Type::Id(_)) => return Ok(()),
+                    _ => bail!("expected a future"),
+                };
+                match (payload, ty) {
+                    (Some(a), Some(b)) => self.valtype(a, b),
+                    (None, None) => Ok(()),
+                    _ => bail!("disagreement on future payload"),
+                }
+            }
+
+            ComponentDefinedType::Stream(payload) => {
+                let ty = match &self.resolve.types[id].kind {
+                    TypeDefKind::Stream(p) => p,
+                    TypeDefKind::Type(Type::Id(_)) => return Ok(()),
+                    _ => bail!("expected a stream"),
+                };
+                self.valtype(payload, ty)
+            }
+
             // These have no recursive structure so they can bail out.
             ComponentDefinedType::Flags(_)
             | ComponentDefinedType::Enum(_)
             | ComponentDefinedType::Own(_)
-            | ComponentDefinedType::Borrow(_) => Ok(()),
+            | ComponentDefinedType::Borrow(_)
+            | ComponentDefinedType::Error => Ok(()),
         }
     }
 

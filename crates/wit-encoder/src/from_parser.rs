@@ -217,6 +217,9 @@ impl<'a> Converter<'a> {
                     wit_parser::TypeDefKind::Stream(_) => {
                         todo!("Enable once wit-encoder supports `stream`")
                     }
+                    wit_parser::TypeDefKind::Error => {
+                        todo!("Enable once wit-encoder supports `error`")
+                    }
                     // all the following are just `type` declarations
                     wit_parser::TypeDefKind::Option(ty) => {
                         let output = Type::option(self.convert_type(ty));
@@ -288,6 +291,9 @@ impl<'a> Converter<'a> {
                         }
                         wit_parser::TypeDefKind::Stream(_) => {
                             todo!("Enable once wit-encoder supports `stream`")
+                        }
+                        wit_parser::TypeDefKind::Error => {
+                            todo!("Enable once wit-encoder supports `error`")
                         }
                         wit_parser::TypeDefKind::Record(_)
                         | wit_parser::TypeDefKind::Resource

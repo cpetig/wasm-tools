@@ -422,6 +422,23 @@ impl<'a> Dump<'a> {
                             | CanonicalFunction::ThreadHwConcurrency => {
                                 ("core func", &mut i.core_funcs)
                             }
+                            CanonicalFunction::TaskBackpressure
+                            | CanonicalFunction::TaskReturn { .. }
+                            | CanonicalFunction::TaskWait { .. }
+                            | CanonicalFunction::TaskPoll { .. }
+                            | CanonicalFunction::TaskYield
+                            | CanonicalFunction::SubtaskDrop
+                            | CanonicalFunction::FutureNew { .. }
+                            | CanonicalFunction::FutureWrite { .. }
+                            | CanonicalFunction::FutureRead { .. }
+                            | CanonicalFunction::FutureDropWriter { .. }
+                            | CanonicalFunction::FutureDropReader { .. }
+                            | CanonicalFunction::StreamNew { .. }
+                            | CanonicalFunction::StreamWrite { .. }
+                            | CanonicalFunction::StreamRead { .. }
+                            | CanonicalFunction::StreamDropWriter { .. }
+                            | CanonicalFunction::StreamDropReader { .. }
+                            | CanonicalFunction::ErrorDrop => ("core func", &mut i.core_funcs),
                         };
 
                         write!(me.state, "[{} {}] {:?}", name, inc(col), f)?;
