@@ -116,6 +116,8 @@ pub struct ModuleMetadata {
     /// Per-function options exported from the core wasm module, currently only
     /// related to string encoding.
     pub export_encodings: EncodingMap,
+
+    general_purpose_encoding: StringEncoding,
 }
 
 /// Internal map that keeps track of encodings for various world imports and
@@ -402,6 +404,7 @@ impl Bindgen {
                 ModuleMetadata {
                     import_encodings,
                     export_encodings,
+                    general_purpose_encoding,
                 },
             producers,
         } = other;
@@ -418,6 +421,13 @@ impl Bindgen {
 
         self.metadata.import_encodings.merge(import_encodings)?;
         self.metadata.export_encodings.merge(export_encodings)?;
+        if self.metadata.general_purpose_encoding != general_purpose_encoding {
+            bail!(
+                "string encoding mismatch: {:?} vs {:?}",
+                self.metadata.general_purpose_encoding,
+                general_purpose_encoding
+            );
+        }
         if let Some(producers) = producers {
             if let Some(mine) = &mut self.producers {
                 mine.merge(&producers);
@@ -442,6 +452,14 @@ impl ModuleMetadata {
         ret.import_encodings
             .insert_all(resolve, &world.imports, encoding);
 
+        ret.general_purpose_encoding = encoding;
+
         ret
+    }
+
+    /// String encoding to use for passing strings to and from built-in
+    /// functions such as `error.new`, `error.debug-string`, etc.
+    pub fn general_purpose_encoding(&self) -> StringEncoding {
+        self.general_purpose_encoding
     }
 }

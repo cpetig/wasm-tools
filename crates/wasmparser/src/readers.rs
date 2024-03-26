@@ -37,6 +37,19 @@ pub trait FromReader<'a>: Sized {
     fn from_reader(reader: &mut BinaryReader<'a>) -> Result<Self>;
 }
 
+impl<'a> FromReader<'a> for bool {
+    fn from_reader(reader: &mut BinaryReader<'a>) -> Result<Self> {
+        match reader.read_u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            v => Err(BinaryReaderError::new(
+                format!("invalid boolean value: {v}"),
+                reader.original_position() - 1,
+            )),
+        }
+    }
+}
+
 impl<'a> FromReader<'a> for u32 {
     fn from_reader(reader: &mut BinaryReader<'a>) -> Result<Self> {
         reader.read_var_u32()

@@ -569,7 +569,8 @@ pub enum TypeDefKind {
     Result(Result_),
     List(Type),
     Future(Option<Type>),
-    Stream(Stream),
+    Stream(Type),
+    Error,
     Type(Type),
 
     /// This represents a type of unknown structure imported from a foreign
@@ -598,6 +599,7 @@ impl TypeDefKind {
             TypeDefKind::List(_) => "list",
             TypeDefKind::Future(_) => "future",
             TypeDefKind::Stream(_) => "stream",
+            TypeDefKind::Error => "error",
             TypeDefKind::Type(_) => "type",
             TypeDefKind::Unknown => "unknown",
         }
@@ -778,13 +780,6 @@ fn discriminant_type(num_cases: usize) -> Int {
 pub struct Result_ {
     pub ok: Option<Type>,
     pub err: Option<Type>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize))]
-pub struct Stream {
-    pub element: Option<Type>,
-    pub end: Option<Type>,
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
@@ -989,6 +984,82 @@ impl Function {
                 Mangling::Standard32 => Cow::Owned(format!("cm32p2||{}", self.name)),
                 Mangling::Legacy => Cow::Borrowed(&self.name),
             },
+        }
+    }
+    /// Collect any future and stream types appearing in the signature of this
+    /// function by doing a depth-first search over the parameter types and then
+    /// the result types.
+    ///
+    /// For example, given the WIT function `foo: func(x: future<future<u32>>,
+    /// y: u32) -> stream<u8>`, we would return `[future<u32>,
+    /// future<future<u32>>, stream<u8>]`.
+    ///
+    /// This may be used by binding generators to refer to specific `future` and
+    /// `stream` types when importing canonical built-ins such as `stream.new`,
+    /// `future.read`, etc.  Using the example above, the import
+    /// `[future-new-0]foo` would indicate a call to `future.new` for the type
+    /// `future<u32>`.  Likewise, `[future-new-1]foo` would indicate a call to
+    /// `future.new` for `future<future<u32>>`, and `[stream-new-2]foo` would
+    /// indicate a call to `stream.new` for `stream<u8>`.
+    pub fn find_futures_and_streams(&self, resolve: &Resolve) -> Vec<TypeId> {
+        let mut results = Vec::new();
+        for (_, ty) in self.params.iter() {
+            find_futures_and_streams(resolve, *ty, &mut results);
+        }
+        for ty in self.results.iter_types() {
+            find_futures_and_streams(resolve, *ty, &mut results);
+        }
+        results
+    }
+}
+
+fn find_futures_and_streams(resolve: &Resolve, ty: Type, results: &mut Vec<TypeId>) {
+    if let Type::Id(id) = ty {
+        match &resolve.types[id].kind {
+            TypeDefKind::Resource
+            | TypeDefKind::Handle(_)
+            | TypeDefKind::Flags(_)
+            | TypeDefKind::Enum(_)
+            | TypeDefKind::Error => {}
+            TypeDefKind::Record(r) => {
+                for Field { ty, .. } in &r.fields {
+                    find_futures_and_streams(resolve, *ty, results);
+                }
+            }
+            TypeDefKind::Tuple(t) => {
+                for ty in &t.types {
+                    find_futures_and_streams(resolve, *ty, results);
+                }
+            }
+            TypeDefKind::Variant(v) => {
+                for Case { ty, .. } in &v.cases {
+                    if let Some(ty) = ty {
+                        find_futures_and_streams(resolve, *ty, results);
+                    }
+                }
+            }
+            TypeDefKind::Option(ty) | TypeDefKind::List(ty) | TypeDefKind::Type(ty) => {
+                find_futures_and_streams(resolve, *ty, results);
+            }
+            TypeDefKind::Result(r) => {
+                if let Some(ty) = r.ok {
+                    find_futures_and_streams(resolve, ty, results);
+                }
+                if let Some(ty) = r.err {
+                    find_futures_and_streams(resolve, ty, results);
+                }
+            }
+            TypeDefKind::Future(ty) => {
+                if let Some(ty) = ty {
+                    find_futures_and_streams(resolve, *ty, results);
+                }
+                results.push(id);
+            }
+            TypeDefKind::Stream(ty) => {
+                find_futures_and_streams(resolve, *ty, results);
+                results.push(id);
+            }
+            TypeDefKind::Unknown => unreachable!(),
         }
     }
 }
