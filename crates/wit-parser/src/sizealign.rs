@@ -202,11 +202,22 @@ impl ElementInfo {
 #[derive(Default)]
 pub struct SizeAlign {
     map: Vec<ElementInfo>,
+    symmetric: bool,
 }
 
 impl SizeAlign {
     pub fn new() -> Self {
-        Self { map: Vec::new() }
+        Self {
+            map: Vec::new(),
+            symmetric: Default::default(),
+        }
+    }
+
+    pub fn new_symmetric() -> Self {
+        Self {
+            map: Vec::new(),
+            symmetric: true,
+        }
     }
 
     pub fn fill(&mut self, resolve: &Resolve) {
@@ -238,7 +249,13 @@ impl SizeAlign {
             TypeDefKind::Option(t) => self.variant(Int::U8, [Some(t)]),
             TypeDefKind::Result(r) => self.variant(Int::U8, [r.ok.as_ref(), r.err.as_ref()]),
             // A resource is represented as an index.
-            TypeDefKind::Handle(_) => int_size_align(Int::U32),
+            TypeDefKind::Handle(_) => {
+                if self.symmetric {
+                    ElementInfo::new(ArchitectureSize::new(4, 4), Alignment::Pointer)
+                } else {
+                    int_size_align(Int::U32)
+                }
+            }
             // A future is represented as an index.
             TypeDefKind::Future(_) => int_size_align(Int::U32),
             // A stream is represented as an index.
