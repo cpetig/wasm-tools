@@ -1550,7 +1550,9 @@ impl Resolve {
     fn include_stability(&self, stability: &Stability) -> bool {
         match stability {
             Stability::Stable { .. } | Stability::Unknown => true,
-            Stability::Unstable { feature } => self.features.contains(feature) || self.all_features,
+            Stability::Unstable { feature, .. } => {
+                self.features.contains(feature) || self.all_features
+            }
         }
     }
 }
