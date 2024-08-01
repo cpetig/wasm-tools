@@ -2758,7 +2758,7 @@ mod test {
     #[test]
     fn it_renames_imports() {
         let mut resolve = Resolve::new();
-        let pkgs = resolve
+        let pkg = resolve
             .push_str(
                 "test.wit",
                 r#"
@@ -2777,7 +2777,7 @@ world test {
 "#,
             )
             .unwrap();
-        let world = resolve.select_world(&pkgs, None).unwrap();
+        let world = resolve.select_world(pkg, None).unwrap();
 
         let mut module = dummy_module(&resolve, world);
 
