@@ -2,6 +2,7 @@ use crate::{Error, UnresolvedPackageGroup};
 use anyhow::{bail, Context, Result};
 use lex::{Span, Token, Tokenizer};
 use semver::Version;
+use std::any::Any;
 use std::borrow::Cow;
 use std::fmt;
 use std::mem;
@@ -1894,4 +1895,245 @@ pub fn parse_use_path(s: &str) -> Result<ParsedUsePath> {
             ParsedUsePath::Package(id.package_name(), name.name.to_string())
         }
     })
+}
+
+fn print_docs<'a>(docs: &Docs<'a>, prefix: &str) {
+    for i in docs.docs.iter() {
+        print!("{prefix}{i}");
+    }
+}
+
+fn print_args<'a>(args: &Vec<(Id<'a>, Type<'a>)>) {
+    for (n, (i, t)) in args.iter().enumerate() {
+        if n != 0 {
+            print!(", ");
+        }
+        print!("{}: {}", i.name, type_string(t, "").unwrap());
+    }
+}
+
+fn print_func_signature<'a>(func: &Func<'a>) {
+    print!("(");
+    print_args(&func.params);
+    print!(")");
+    match &func.results {
+        ResultList::Named(n) => {
+            if !n.is_empty() {
+                print!(" -> ");
+                todo!();
+            }
+        }
+        ResultList::Anon(a) => print!(" -> {}", type_string(a, "").unwrap()),
+    }
+}
+
+fn type_string<'a>(ty: &Type<'a>, name: &str) -> Option<String> {
+    match ty {
+        Type::Bool(_) => Some("bool".into()),
+        Type::U8(_) => Some("u8".into()),
+        Type::U16(_) => Some("u16".into()),
+        Type::U32(_) => Some("u32".into()),
+        Type::U64(_) => Some("u64".into()),
+        Type::S8(_) => Some("s8".into()),
+        Type::S16(_) => Some("s16".into()),
+        Type::S32(_) => Some("s32".into()),
+        Type::S64(_) => Some("s64".into()),
+        Type::F32(_) => Some("f32".into()),
+        Type::F64(_) => Some("f64".into()),
+        Type::Char(_) => Some("char".into()),
+        Type::String(_) => Some("string".into()),
+        Type::Name(n) => Some(String::from(n.name)),
+        Type::List(l) => Some(String::from("list<") + &type_string(&l.ty, "").unwrap() + ">"),
+        Type::Handle(h) => match h {
+            Handle::Own { resource } => Some(resource.name.into()),
+            Handle::Borrow { resource } => Some(String::from("borrow<") + &resource.name + ">"),
+        },
+        Type::Resource(r) => {
+            println!("\tresource {name} {{");
+            for i in r.funcs.iter() {
+                match i {
+                    ResourceFunc::Method(f)
+                    | ResourceFunc::Static(f)
+                    | ResourceFunc::Constructor(f) => print_docs(&f.docs, "\t\t"),
+                }
+                match i {
+                    ResourceFunc::Method(f) => {
+                        print!("\t\t{}: func", f.name.name);
+                        print_func_signature(&f.func);
+                        println!(";");
+                    }
+                    ResourceFunc::Static(f) => {
+                        print!("\t\t{}: static func", f.name.name);
+                        print_func_signature(&f.func);
+                        println!(";");
+                    }
+                    ResourceFunc::Constructor(f) => {
+                        print!("\t\tconstructor");
+                        print_func_signature(&f.func);
+                        println!(";");
+                    }
+                }
+            }
+            println!("\t}}");
+            None
+        }
+        Type::Record(r) => {
+            println!("\trecord {name} {{");
+            for i in r.fields.iter() {
+                print_docs(&i.docs, "\t\t");
+                println!("\t\t{}: {},", i.name.name, type_string(&i.ty, "").unwrap());
+            }
+            println!("\t}}");
+            None
+        }
+        Type::Flags(_) => todo!(),
+        Type::Variant(v) => {
+            println!("\tvariant {name} {{");
+            for i in v.cases.iter() {
+                print_docs(&i.docs, "\t\t");
+                if let Some(ty) = &i.ty {
+                    println!("\t\t{}({}),", i.name.name, type_string(ty, "").unwrap());
+                } else {
+                    println!("\t\t{},", i.name.name);
+                }
+            }
+            println!("\t}}");
+            None
+        }
+        Type::Tuple(_) => todo!(),
+        Type::Enum(e) => {
+            println!("\tenum {name} {{");
+            for i in e.cases.iter() {
+                print_docs(&i.docs, "\t\t");
+                println!("\t\t{},", i.name.name);
+            }
+            println!("\t}}");
+            None
+        }
+        Type::Option(o) => Some(String::from("option<") + &type_string(&o.ty, "").unwrap() + ">"),
+        Type::Result(r) => Some(
+            String::from("result<")
+                + &r.ok
+                    .as_ref()
+                    .map_or(String::from("_"), |t| type_string(&t, "").unwrap())
+                + ", "
+                + &r.err
+                    .as_ref()
+                    .map_or(String::from("_"), |t| type_string(&t, "").unwrap())
+                + ">",
+        ),
+        Type::Future(_) => todo!(),
+        Type::Stream(_) => todo!(),
+        Type::Error(_) => todo!(),
+    }
+}
+
+pub fn pretty_print(path: impl AsRef<Path> + Clone) {
+    let contents = std::fs::read_to_string(path.clone());
+    match contents {
+        Ok(c) => match lex::Tokenizer::new(&c, 0, Some(true), Some(true)) {
+            Ok(mut token) => {
+                let pkgfile = PackageFile::parse(&mut token);
+                match pkgfile {
+                    Ok(pkgfile) => {
+                        if let Some(name) = pkgfile.package_id {
+                            print_docs(&name.docs, "");
+                            println!(
+                                "package {}:{}{}{};\n",
+                                name.namespace.name,
+                                name.name.name,
+                                if name.version.is_some() { "@" } else { "" },
+                                name.version.map_or(String::default(), |v| v.1.to_string())
+                            );
+                        }
+                        for i in pkgfile.decl_list.items.iter() {
+                            match i {
+                                AstItem::Interface(i) => {
+                                    print_docs(&i.docs, "");
+                                    println!("interface {} {{", i.name.name);
+                                    for it in i.items.iter() {
+                                        match it {
+                                            InterfaceItem::TypeDef(t) => {
+                                                print_docs(&t.docs, "\t");
+                                                if let Some(name) = type_string(&t.ty, t.name.name)
+                                                {
+                                                    println!("\ttype {} = {name};", t.name.name);
+                                                }
+                                            }
+                                            InterfaceItem::Func(f) => {
+                                                print_docs(&f.docs, "\t");
+                                                print!("\t{}: func", f.name.name);
+                                                print_func_signature(&f.func);
+                                                println!(";");
+                                            }
+                                            InterfaceItem::Use(u) => {
+                                                print!("\tuse {}.{{", u.from.name().name);
+                                                for (idx, name) in u.names.iter().enumerate() {
+                                                    if idx != 0 {
+                                                        print!(", ");
+                                                    }
+                                                    print!("{}", name.name.name);
+                                                }
+                                                println!("}};");
+                                            }
+                                        }
+                                    }
+                                    println!("}}");
+                                }
+                                AstItem::World(w) => {
+                                    print_docs(&w.docs, "");
+                                    println!("world {} {{", w.name.name);
+                                    for it in w.items.iter() {
+                                        match it {
+                                            WorldItem::Import(i) => {
+                                                print_docs(&i.docs, "\t");
+                                                match &i.kind {
+                                                    ExternKind::Interface(id, items) => todo!(),
+                                                    ExternKind::Path(p) => {
+                                                        println!("\timport {};", p.name().name);
+                                                    }
+                                                    ExternKind::Func(_, _) => todo!(),
+                                                }
+                                            }
+                                            WorldItem::Export(e) => {
+                                                print_docs(&e.docs, "\t");
+                                                match &e.kind {
+                                                    ExternKind::Interface(id, items) => todo!(),
+                                                    ExternKind::Path(p) => {
+                                                        println!("\texport {};", p.name().name);
+                                                    }
+                                                    ExternKind::Func(_, _) => todo!(),
+                                                }
+                                            }
+                                            WorldItem::Use(_) => todo!(),
+                                            WorldItem::Type(_) => todo!(),
+                                            WorldItem::Include(_) => todo!(),
+                                        }
+                                    }
+                                    println!("}}");
+                                }
+                                AstItem::Use(u) => {
+                                    println!("use {:?};", u.item);
+                                    todo!();
+                                }
+                                AstItem::Package(p) => {
+                                    println!("package {:?};", p.package_id);
+                                    todo!();
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        dbg!((path.as_ref(), e));
+                    }
+                }
+            }
+            Err(e) => {
+                dbg!((path.as_ref(), e));
+            }
+        },
+        Err(e) => {
+            dbg!((path.as_ref(), e));
+        }
+    }
 }

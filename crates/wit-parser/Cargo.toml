@@ -54,3 +54,6 @@ libtest-mimic = { workspace = true }
 [[test]]
 name = "all"
 harness = false
+
+[[bin]]
+name = "witfmt"
