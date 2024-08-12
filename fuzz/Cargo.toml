@@ -29,6 +29,16 @@ wit-smith = { path = "../crates/wit-smith" }
 wit-component = { path = "../crates/wit-component", features = ['dummy-module'] }
 wasm-encoder = { path = "../crates/wasm-encoder" }
 
+[dependencies.wit-parser2]
+package = 'wit-parser'
+git = 'https://github.com/cpetig/wasm-tools'
+branch = 'auto_ptr_size'
+
+[dependencies.wit-component2]
+package = 'wit-component'
+git = 'https://github.com/cpetig/wasm-tools'
+branch = 'auto_ptr_size'
+
 [lib]
 test = false
 doctest = false

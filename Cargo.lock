@@ -1572,7 +1572,7 @@ dependencies = [
  "wasmparser 0.215.0",
  "wasmprinter 0.215.0",
  "wat",
- "wit-component",
+ "wit-component 0.215.0",
 ]
 
 [[package]]
@@ -1595,6 +1595,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-encoder"
+version = "0.215.0"
+source = "git+https://github.com/cpetig/wasm-tools?branch=auto_ptr_size#51d90f35475bc80d93060733155608d1802a49ce"
+dependencies = [
+ "leb128",
+ "wasmparser 0.215.0 (git+https://github.com/cpetig/wasm-tools?branch=auto_ptr_size)",
+]
+
+[[package]]
 name = "wasm-metadata"
 version = "0.215.0"
 dependencies = [
@@ -1608,6 +1617,21 @@ dependencies = [
  "wasm-encoder 0.215.0",
  "wasmparser 0.215.0",
  "wat",
+]
+
+[[package]]
+name = "wasm-metadata"
+version = "0.215.0"
+source = "git+https://github.com/cpetig/wasm-tools?branch=auto_ptr_size#51d90f35475bc80d93060733155608d1802a49ce"
+dependencies = [
+ "anyhow",
+ "indexmap 2.2.6",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "spdx",
+ "wasm-encoder 0.215.0 (git+https://github.com/cpetig/wasm-tools?branch=auto_ptr_size)",
+ "wasmparser 0.215.0 (git+https://github.com/cpetig/wasm-tools?branch=auto_ptr_size)",
 ]
 
 [[package]]
@@ -1710,7 +1734,7 @@ dependencies = [
  "termcolor",
  "wasm-compose",
  "wasm-encoder 0.215.0",
- "wasm-metadata",
+ "wasm-metadata 0.215.0",
  "wasm-mutate",
  "wasm-shrink",
  "wasm-smith",
@@ -1718,7 +1742,7 @@ dependencies = [
  "wasmprinter 0.215.0",
  "wast",
  "wat",
- "wit-component",
+ "wit-component 0.215.0",
  "wit-encoder",
  "wit-parser 0.215.0",
  "wit-smith",
@@ -1756,8 +1780,10 @@ dependencies = [
  "wasmtime",
  "wast",
  "wat",
- "wit-component",
+ "wit-component 0.215.0",
+ "wit-component 0.215.0 (git+https://github.com/cpetig/wasm-tools?branch=auto_ptr_size)",
  "wit-parser 0.215.0",
+ "wit-parser 0.215.0 (git+https://github.com/cpetig/wasm-tools?branch=auto_ptr_size)",
  "wit-smith",
 ]
 
@@ -1805,6 +1831,18 @@ dependencies = [
  "wasm-encoder 0.215.0",
  "wast",
  "wat",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.215.0"
+source = "git+https://github.com/cpetig/wasm-tools?branch=auto_ptr_size#51d90f35475bc80d93060733155608d1802a49ce"
+dependencies = [
+ "ahash",
+ "bitflags",
+ "hashbrown 0.14.5",
+ "indexmap 2.2.6",
+ "semver",
 ]
 
 [[package]]
@@ -2193,13 +2231,31 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "wasm-encoder 0.215.0",
- "wasm-metadata",
+ "wasm-metadata 0.215.0",
  "wasmparser 0.215.0",
  "wasmprinter 0.215.0",
  "wasmtime",
  "wast",
  "wat",
  "wit-parser 0.215.0",
+]
+
+[[package]]
+name = "wit-component"
+version = "0.215.0"
+source = "git+https://github.com/cpetig/wasm-tools?branch=auto_ptr_size#51d90f35475bc80d93060733155608d1802a49ce"
+dependencies = [
+ "anyhow",
+ "bitflags",
+ "indexmap 2.2.6",
+ "log",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "wasm-encoder 0.215.0 (git+https://github.com/cpetig/wasm-tools?branch=auto_ptr_size)",
+ "wasm-metadata 0.215.0 (git+https://github.com/cpetig/wasm-tools?branch=auto_ptr_size)",
+ "wasmparser 0.215.0 (git+https://github.com/cpetig/wasm-tools?branch=auto_ptr_size)",
+ "wit-parser 0.215.0 (git+https://github.com/cpetig/wasm-tools?branch=auto_ptr_size)",
 ]
 
 [[package]]
@@ -2254,6 +2310,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "wit-parser"
+version = "0.215.0"
+source = "git+https://github.com/cpetig/wasm-tools?branch=auto_ptr_size#51d90f35475bc80d93060733155608d1802a49ce"
+dependencies = [
+ "anyhow",
+ "id-arena",
+ "indexmap 2.2.6",
+ "log",
+ "semver",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "unicode-xid",
+ "wasmparser 0.215.0 (git+https://github.com/cpetig/wasm-tools?branch=auto_ptr_size)",
+]
+
+[[package]]
 name = "wit-parser-fuzz"
 version = "0.0.0"
 dependencies = [
@@ -2274,7 +2347,7 @@ dependencies = [
  "indexmap 2.2.6",
  "log",
  "semver",
- "wit-component",
+ "wit-component 0.215.0",
  "wit-parser 0.215.0",
 ]
 
