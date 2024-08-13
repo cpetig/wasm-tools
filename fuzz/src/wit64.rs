@@ -13,11 +13,11 @@ pub fn run(u: &mut Unstructured<'_>) -> Result<()> {
     let r2 = wit_component2::decode(&wasm).unwrap();
     let r2 = r2.resolve();
 
-    let mut s32 = SizeAlign::new(AddressSize::Wasm32);
-    let mut s64 = SizeAlign::new(AddressSize::Wasm64);
+    let mut sa32 = SizeAlign::new(AddressSize::Wasm32);
+    let mut sa64 = SizeAlign::new(AddressSize::Wasm64);
 
-    s32.fill(r1);
-    s64.fill(r1);
+    sa32.fill(r1);
+    sa64.fill(r1);
 
     let mut alt = wit_parser2::SizeAlign64::default();
     alt.fill(r2);
@@ -25,8 +25,8 @@ pub fn run(u: &mut Unstructured<'_>) -> Result<()> {
     for ((t1, _), (t2, _)) in r1.types.iter().zip(r2.types.iter()) {
         let t1 = &wit_parser::Type::Id(t1);
         let t2 = &wit_parser2::Type::Id(t2);
-        let (s32, a32) = (s32.size(t1), s32.align(t1));
-        let (s64, a64) = (s64.size(t1), s64.align(t1));
+        let (s32, a32) = (sa32.size(t1), sa32.align(t1));
+        let (s64, a64) = (sa64.size(t1), sa64.align(t1));
         let (salt, aalt) = (alt.size(t2), alt.align(t2));
 
         assert!(s32 <= s64);
@@ -43,6 +43,53 @@ pub fn run(u: &mut Unstructured<'_>) -> Result<()> {
 
         assert_eq!(s32, salt.size_wasm32());
         assert_eq!(s64, salt.bytes + salt.add_for_64bit);
+
+        match (t1, t2) {
+            (wit_parser::Type::Id(id1), wit_parser2::Type::Id(id2)) => {
+                let tp1 = &r1.types[*id1];
+                let tp2 = &r2.types[*id2];
+                match (&tp1.kind, &tp2.kind) {
+                    (wit_parser::TypeDefKind::Record(r1), wit_parser2::TypeDefKind::Record(r2)) => {
+                        let offsets32 = sa32.field_offsets(r1.fields.iter().map(|f| &f.ty));
+                        let offsets64 = sa64.field_offsets(r1.fields.iter().map(|f| &f.ty));
+                        let offsetsalt = alt.field_offsets(r2.fields.iter().map(|f| &f.ty));
+                        for ((fd32, fd64), fdalt) in offsets32
+                            .iter()
+                            .zip(offsets64.iter())
+                            .zip(offsetsalt.iter())
+                        {
+                            assert_eq!(fd32.0, fdalt.0.size_wasm32());
+                            assert_eq!(fd64.0, fdalt.0.bytes + fdalt.0.add_for_64bit);
+                        }
+                    }
+                    (wit_parser::TypeDefKind::Tuple(t1), wit_parser2::TypeDefKind::Tuple(t2)) => {
+                        let offsets32 = sa32.field_offsets(t1.types.iter());
+                        let offsets64 = sa64.field_offsets(t1.types.iter());
+                        let offsetsalt = alt.field_offsets(t2.types.iter());
+                        for ((fd32, fd64), fdalt) in offsets32
+                            .iter()
+                            .zip(offsets64.iter())
+                            .zip(offsetsalt.iter())
+                        {
+                            assert_eq!(fd32.0, fdalt.0.size_wasm32());
+                            assert_eq!(fd64.0, fdalt.0.bytes + fdalt.0.add_for_64bit);
+                        }
+                    }
+                    (
+                        wit_parser::TypeDefKind::Variant(v1),
+                        wit_parser2::TypeDefKind::Variant(v2),
+                    ) => {
+                        let offset32 = sa32.payload_offset(v1.tag(), v1.cases.iter().map(|f| f.ty.as_ref()));
+                        let offset64 = sa64.payload_offset(v1.tag(), v1.cases.iter().map(|f| f.ty.as_ref()));
+                        let offsetalt = alt.payload_offset(v2.tag(), v2.cases.iter().map(|f| f.ty.as_ref()));
+                        assert_eq!(offset32, offsetalt.size_wasm32());
+                        assert_eq!(offset64, offsetalt.bytes + offsetalt.add_for_64bit);
+                    }
+                    _ => (),
+                }
+            }
+            _ => (),
+        }
     }
 
     Ok(())
