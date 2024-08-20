@@ -5,6 +5,10 @@
 
 use std::convert::Infallible;
 
+mod component;
+
+pub use self::component::*;
+
 #[allow(missing_docs)] // FIXME
 pub trait Reencode {
     type Error;
@@ -41,8 +45,21 @@ pub trait Reencode {
         utils::type_index(self, ty)
     }
 
-    fn component_type_index(&mut self, ty: u32) -> u32 {
-        utils::component_type_index(self, ty)
+    fn type_index_unpacked(
+        &mut self,
+        ty: wasmparser::UnpackedIndex,
+    ) -> Result<u32, Error<Self::Error>> {
+        utils::type_index_unpacked(self, ty)
+    }
+
+    fn external_index(&mut self, kind: wasmparser::ExternalKind, index: u32) -> u32 {
+        match kind {
+            wasmparser::ExternalKind::Func => self.function_index(index),
+            wasmparser::ExternalKind::Table => self.table_index(index),
+            wasmparser::ExternalKind::Memory => self.memory_index(index),
+            wasmparser::ExternalKind::Global => self.global_index(index),
+            wasmparser::ExternalKind::Tag => self.tag_index(index),
+        }
     }
 
     fn abstract_heap_type(
@@ -64,52 +81,6 @@ pub trait Reencode {
         arg: wasmparser::BlockType,
     ) -> Result<crate::BlockType, Error<Self::Error>> {
         utils::block_type(self, arg)
-    }
-
-    fn component_primitive_val_type(
-        &mut self,
-        ty: wasmparser::PrimitiveValType,
-    ) -> crate::component::PrimitiveValType {
-        utils::component_primitive_val_type(self, ty)
-    }
-
-    fn component_export_kind(
-        &mut self,
-        ty: wasmparser::ComponentExternalKind,
-    ) -> crate::component::ComponentExportKind {
-        utils::component_export_kind(self, ty)
-    }
-
-    fn component_outer_alias_kind(
-        &mut self,
-        kind: wasmparser::ComponentOuterAliasKind,
-    ) -> crate::component::ComponentOuterAliasKind {
-        utils::component_outer_alias_kind(self, kind)
-    }
-
-    fn component_val_type(
-        &mut self,
-        ty: wasmparser::ComponentValType,
-    ) -> crate::component::ComponentValType {
-        utils::component_val_type(self, ty)
-    }
-
-    fn type_bounds(&mut self, ty: wasmparser::TypeBounds) -> crate::component::TypeBounds {
-        utils::type_bounds(self, ty)
-    }
-
-    fn canonical_option(
-        &mut self,
-        ty: wasmparser::CanonicalOption,
-    ) -> crate::component::CanonicalOption {
-        utils::canonical_option(self, ty)
-    }
-
-    fn component_type_ref(
-        &mut self,
-        ty: wasmparser::ComponentTypeRef,
-    ) -> crate::component::ComponentTypeRef {
-        utils::component_type_ref(self, ty)
     }
 
     fn const_expr(
@@ -286,12 +257,11 @@ pub trait Reencode {
     }
 
     /// Parses a single instruction from `reader` and adds it to `function`.
-    fn parse_instruction(
+    fn parse_instruction<'a>(
         &mut self,
-        function: &mut crate::Function,
-        reader: &mut wasmparser::OperatorsReader<'_>,
-    ) -> Result<(), Error<Self::Error>> {
-        utils::parse_instruction(self, function, reader)
+        reader: &mut wasmparser::OperatorsReader<'a>,
+    ) -> Result<crate::Instruction<'a>, Error<Self::Error>> {
+        utils::parse_instruction(self, reader)
     }
 
     /// Parses the input `section` given from the `wasmparser` crate and adds
@@ -500,6 +470,21 @@ pub trait Reencode {
     ) -> Result<(), Error<Self::Error>> {
         utils::parse_core_module(self, module, parser, data)
     }
+
+    fn custom_name_section(
+        &mut self,
+        section: wasmparser::NameSectionReader<'_>,
+    ) -> Result<crate::NameSection, Error<Self::Error>> {
+        utils::custom_name_section(self, section)
+    }
+
+    fn parse_custom_name_subsection(
+        &mut self,
+        names: &mut crate::NameSection,
+        section: wasmparser::Name<'_>,
+    ) -> Result<(), Error<Self::Error>> {
+        utils::parse_custom_name_subsection(self, names, section)
+    }
 }
 
 /// An error when re-encoding from `wasmparser` to `wasm-encoder`.
@@ -514,6 +499,10 @@ pub enum Error<E = Infallible> {
     InvalidConstExpr,
     /// There was a section that does not belong into a core wasm module.
     UnexpectedNonCoreModuleSection,
+    /// There was a section that does not belong into a compoennt module.
+    UnexpectedNonComponentSection,
+    /// A core type definition was found in a component that's not supported.
+    UnsupportedCoreTypeInComponent,
     /// There was an error when parsing.
     ParseError(wasmparser::BinaryReaderError),
     /// There was a user-defined error when re-encoding.
@@ -538,10 +527,17 @@ impl<E: std::fmt::Display> std::fmt::Display for Error<E> {
                 fmt,
                 "There was a section that does not belong into a core wasm module"
             ),
+            Self::UnexpectedNonComponentSection => write!(
+                fmt,
+                "There was a section that does not belong into a component"
+            ),
             Self::CanonicalizedHeapTypeReference => write!(
                 fmt,
                 "There was a canonicalized heap type reference without type index information"
             ),
+            Self::UnsupportedCoreTypeInComponent => {
+                fmt.write_str("unsupported core type in a component")
+            }
         }
     }
 }
@@ -553,7 +549,9 @@ impl<E: 'static + std::error::Error> std::error::Error for Error<E> {
             Self::UserError(e) => Some(e),
             Self::InvalidConstExpr
             | Self::CanonicalizedHeapTypeReference
-            | Self::UnexpectedNonCoreModuleSection => None,
+            | Self::UnexpectedNonCoreModuleSection
+            | Self::UnexpectedNonComponentSection
+            | Self::UnsupportedCoreTypeInComponent => None,
         }
     }
 }
@@ -570,6 +568,7 @@ impl Reencode for RoundtripReencoder {
 #[allow(missing_docs)] // FIXME
 pub mod utils {
     use super::{Error, Reencode};
+    use crate::Encode;
 
     pub fn parse_core_module<T: ?Sized + Reencode>(
         reencoder: &mut T,
@@ -1018,7 +1017,14 @@ pub mod utils {
         module: &mut crate::Module,
         section: wasmparser::CustomSectionReader<'_>,
     ) -> Result<(), Error<T::Error>> {
-        module.section(&reencoder.custom_section(section));
+        match section.as_known() {
+            wasmparser::KnownCustom::Name(name) => {
+                module.section(&reencoder.custom_name_section(name)?);
+            }
+            _ => {
+                module.section(&reencoder.custom_section(section));
+            }
+        }
         Ok(())
     }
 
@@ -1073,8 +1079,13 @@ pub mod utils {
         ty
     }
 
-    pub fn component_type_index<T: ?Sized + Reencode>(_reencoder: &mut T, ty: u32) -> u32 {
-        ty
+    pub fn type_index_unpacked<T: ?Sized + Reencode>(
+        reencoder: &mut T,
+        ty: wasmparser::UnpackedIndex,
+    ) -> Result<u32, Error<T::Error>> {
+        ty.as_module_index()
+            .map(|ty| reencoder.type_index(ty))
+            .ok_or(Error::CanonicalizedHeapTypeReference)
     }
 
     pub fn tag_type<T: ?Sized + Reencode>(
@@ -1148,11 +1159,7 @@ pub mod utils {
             is_final: sub_ty.is_final,
             supertype_idx: sub_ty
                 .supertype_idx
-                .map(|i| {
-                    i.as_module_index()
-                        .map(|ty| reencoder.type_index(ty))
-                        .ok_or(Error::CanonicalizedHeapTypeReference)
-                })
+                .map(|i| reencoder.type_index_unpacked(i.unpack()))
                 .transpose()?,
             composite_type: reencoder.composite_type(sub_ty.composite_type)?,
         })
@@ -1263,11 +1270,9 @@ pub mod utils {
         heap_type: wasmparser::HeapType,
     ) -> Result<crate::HeapType, Error<T::Error>> {
         Ok(match heap_type {
-            wasmparser::HeapType::Concrete(i) => crate::HeapType::Concrete(
-                i.as_module_index()
-                    .map(|ty| reencoder.type_index(ty))
-                    .ok_or(Error::CanonicalizedHeapTypeReference)?,
-            ),
+            wasmparser::HeapType::Concrete(i) => {
+                crate::HeapType::Concrete(reencoder.type_index_unpacked(i)?)
+            }
             wasmparser::HeapType::Abstract { shared, ty } => crate::HeapType::Abstract {
                 shared,
                 ty: reencoder.abstract_heap_type(ty),
@@ -1356,13 +1361,7 @@ pub mod utils {
         exports.export(
             export.name,
             reencoder.export_kind(export.kind),
-            match export.kind {
-                wasmparser::ExternalKind::Func => reencoder.function_index(export.index),
-                wasmparser::ExternalKind::Table => reencoder.table_index(export.index),
-                wasmparser::ExternalKind::Memory => reencoder.memory_index(export.index),
-                wasmparser::ExternalKind::Global => reencoder.global_index(export.index),
-                wasmparser::ExternalKind::Tag => reencoder.tag_index(export.index),
-            },
+            reencoder.external_index(export.kind, export.index),
         );
     }
 
@@ -1578,45 +1577,15 @@ pub mod utils {
         reencoder: &mut T,
         const_expr: wasmparser::ConstExpr,
     ) -> Result<crate::ConstExpr, Error<T::Error>> {
-        let mut ops = const_expr.get_operators_reader().into_iter();
+        let mut ops = const_expr.get_operators_reader();
+        let mut bytes = Vec::new();
 
-        let result = match ops.next() {
-            Some(Ok(wasmparser::Operator::I32Const { value })) => {
-                crate::ConstExpr::i32_const(value)
-            }
-            Some(Ok(wasmparser::Operator::I64Const { value })) => {
-                crate::ConstExpr::i64_const(value)
-            }
-            Some(Ok(wasmparser::Operator::F32Const { value })) => {
-                crate::ConstExpr::f32_const(f32::from_bits(value.bits()))
-            }
-            Some(Ok(wasmparser::Operator::F64Const { value })) => {
-                crate::ConstExpr::f64_const(f64::from_bits(value.bits()))
-            }
-            Some(Ok(wasmparser::Operator::V128Const { value })) => {
-                crate::ConstExpr::v128_const(i128::from_le_bytes(*value.bytes()))
-            }
-            Some(Ok(wasmparser::Operator::RefNull { hty })) => {
-                crate::ConstExpr::ref_null(reencoder.heap_type(hty)?)
-            }
-            Some(Ok(wasmparser::Operator::RefFunc { function_index })) => {
-                crate::ConstExpr::ref_func(reencoder.function_index(function_index))
-            }
-            Some(Ok(wasmparser::Operator::GlobalGet { global_index })) => {
-                crate::ConstExpr::global_get(reencoder.global_index(global_index))
-            }
-
-            // TODO: support the extended-const proposal.
-            Some(Ok(_op)) => return Err(Error::InvalidConstExpr),
-
-            Some(Err(e)) => return Err(Error::ParseError(e)),
-            None => return Err(Error::InvalidConstExpr),
-        };
-
-        match (ops.next(), ops.next()) {
-            (Some(Ok(wasmparser::Operator::End)), None) => Ok(result),
-            _ => Err(Error::InvalidConstExpr),
+        while !ops.is_end_then_eof() {
+            let insn = reencoder.parse_instruction(&mut ops)?;
+            insn.encode(&mut bytes);
         }
+
+        Ok(crate::ConstExpr::raw(bytes))
     }
 
     pub fn block_type<T: ?Sized + Reencode>(
@@ -1740,7 +1709,7 @@ pub mod utils {
         let mut f = reencoder.new_function_with_parsed_locals(&func)?;
         let mut reader = func.get_operators_reader()?;
         while !reader.eof() {
-            reencoder.parse_instruction(&mut f, &mut reader)?;
+            f.instruction(&reencoder.parse_instruction(&mut reader)?);
         }
         code.function(&f);
         Ok(())
@@ -1761,13 +1730,12 @@ pub mod utils {
     }
 
     /// Parses a single instruction from `reader` and adds it to `function`.
-    pub fn parse_instruction<T: ?Sized + Reencode>(
+    pub fn parse_instruction<'a, T: ?Sized + Reencode>(
         reencoder: &mut T,
-        function: &mut crate::Function,
-        reader: &mut wasmparser::OperatorsReader<'_>,
-    ) -> Result<(), Error<T::Error>> {
-        function.instruction(&reencoder.instruction(reader.read()?)?);
-        Ok(())
+        reader: &mut wasmparser::OperatorsReader<'a>,
+    ) -> Result<crate::Instruction<'a>, Error<T::Error>> {
+        let instruction = reencoder.instruction(reader.read()?)?;
+        Ok(instruction)
     }
 
     pub fn parse_unknown_section<T: ?Sized + Reencode>(
@@ -1779,47 +1747,89 @@ pub mod utils {
         module.section(&crate::RawSection { id, data: contents });
         Ok(())
     }
-}
 
-impl From<wasmparser::ComponentValType> for crate::ComponentValType {
-    fn from(ty: wasmparser::ComponentValType) -> Self {
-        RoundtripReencoder.component_val_type(ty)
+    pub fn custom_name_section<T: ?Sized + Reencode>(
+        reencoder: &mut T,
+        section: wasmparser::NameSectionReader<'_>,
+    ) -> Result<crate::NameSection, Error<T::Error>> {
+        let mut ret = crate::NameSection::new();
+        for subsection in section {
+            reencoder.parse_custom_name_subsection(&mut ret, subsection?)?;
+        }
+        Ok(ret)
     }
-}
 
-impl From<wasmparser::TypeBounds> for crate::TypeBounds {
-    fn from(ty: wasmparser::TypeBounds) -> Self {
-        RoundtripReencoder.type_bounds(ty)
+    pub fn parse_custom_name_subsection<T: ?Sized + Reencode>(
+        reencoder: &mut T,
+        names: &mut crate::NameSection,
+        section: wasmparser::Name<'_>,
+    ) -> Result<(), Error<T::Error>> {
+        match section {
+            wasmparser::Name::Module { name, .. } => {
+                names.module(name);
+            }
+            wasmparser::Name::Function(map) => {
+                names.functions(&name_map(map, |i| reencoder.function_index(i))?);
+            }
+            wasmparser::Name::Type(map) => {
+                names.types(&name_map(map, |i| reencoder.type_index(i))?);
+            }
+            wasmparser::Name::Local(map) => {
+                names.locals(&indirect_name_map(map, |i| reencoder.function_index(i))?);
+            }
+            wasmparser::Name::Label(map) => {
+                names.labels(&indirect_name_map(map, |i| reencoder.function_index(i))?);
+            }
+            wasmparser::Name::Table(map) => {
+                names.tables(&name_map(map, |i| reencoder.table_index(i))?);
+            }
+            wasmparser::Name::Memory(map) => {
+                names.memories(&name_map(map, |i| reencoder.memory_index(i))?);
+            }
+            wasmparser::Name::Global(map) => {
+                names.globals(&name_map(map, |i| reencoder.global_index(i))?);
+            }
+            wasmparser::Name::Element(map) => {
+                names.elements(&name_map(map, |i| reencoder.element_index(i))?);
+            }
+            wasmparser::Name::Data(map) => {
+                names.data(&name_map(map, |i| reencoder.data_index(i))?);
+            }
+            wasmparser::Name::Tag(map) => {
+                names.tags(&name_map(map, |i| reencoder.tag_index(i))?);
+            }
+            wasmparser::Name::Field(map) => {
+                names.fields(&indirect_name_map(map, |i| reencoder.type_index(i))?);
+            }
+            wasmparser::Name::Unknown { ty, data, .. } => {
+                names.raw(ty, data);
+            }
+        }
+        Ok(())
     }
-}
 
-impl From<wasmparser::CanonicalOption> for crate::CanonicalOption {
-    fn from(opt: wasmparser::CanonicalOption) -> Self {
-        RoundtripReencoder.canonical_option(opt)
+    pub fn name_map(
+        map: wasmparser::NameMap<'_>,
+        mut map_index: impl FnMut(u32) -> u32,
+    ) -> wasmparser::Result<crate::NameMap> {
+        let mut ret = crate::NameMap::new();
+        for naming in map {
+            let naming = naming?;
+            ret.append(map_index(naming.index), naming.name);
+        }
+        Ok(ret)
     }
-}
 
-impl From<wasmparser::ComponentExternalKind> for crate::ComponentExportKind {
-    fn from(kind: wasmparser::ComponentExternalKind) -> Self {
-        RoundtripReencoder.component_export_kind(kind)
-    }
-}
-
-impl From<wasmparser::ComponentOuterAliasKind> for crate::ComponentOuterAliasKind {
-    fn from(kind: wasmparser::ComponentOuterAliasKind) -> Self {
-        RoundtripReencoder.component_outer_alias_kind(kind)
-    }
-}
-
-impl From<wasmparser::ComponentTypeRef> for crate::ComponentTypeRef {
-    fn from(ty: wasmparser::ComponentTypeRef) -> Self {
-        RoundtripReencoder.component_type_ref(ty)
-    }
-}
-
-impl From<wasmparser::PrimitiveValType> for crate::PrimitiveValType {
-    fn from(ty: wasmparser::PrimitiveValType) -> Self {
-        RoundtripReencoder.component_primitive_val_type(ty)
+    pub fn indirect_name_map(
+        map: wasmparser::IndirectNameMap<'_>,
+        mut map_index: impl FnMut(u32) -> u32,
+    ) -> wasmparser::Result<crate::IndirectNameMap> {
+        let mut ret = crate::IndirectNameMap::new();
+        for naming in map {
+            let naming = naming?;
+            ret.append(map_index(naming.index), &name_map(naming.names, |i| i)?);
+        }
+        Ok(ret)
     }
 }
 

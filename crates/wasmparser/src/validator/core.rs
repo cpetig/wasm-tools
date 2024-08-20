@@ -344,6 +344,20 @@ impl ModuleState {
                 }
             }
 
+            fn validate_shared_everything_threads(&mut self, op: &str) -> Result<()> {
+                if self.features.shared_everything_threads() {
+                    Ok(())
+                } else {
+                    Err(BinaryReaderError::new(
+                        format!(
+                            "constant expression required: non-constant operator: {}",
+                            op
+                        ),
+                        self.offset,
+                    ))
+                }
+            }
+
             fn validate_global(&mut self, index: u32) -> Result<()> {
                 let module = &self.resources.module;
                 let global = module.global_at(index, self.offset)?;
@@ -478,6 +492,10 @@ impl ModuleState {
             (@visit $self:ident visit_ref_i31) => {{
                 $self.validate_gc("ref.i31")?;
                 $self.validator().visit_ref_i31()
+            }};
+            (@visit $self:ident visit_ref_i31_shared) => {{
+                $self.validate_shared_everything_threads("ref.i31_shared")?;
+                $self.validator().visit_ref_i31_shared()
             }};
 
             // `global.get` is a valid const expression for imported, immutable
@@ -663,7 +681,7 @@ impl Module {
         };
         if !features.shared_everything_threads() && ty.shared {
             return Err(BinaryReaderError::new(
-                "shared composite types are not supported without the shared-everything-threads feature",
+                "shared composite types require the shared-everything-threads proposal",
                 offset,
             ));
         }
@@ -1322,6 +1340,10 @@ impl WasmModuleResources for OperatorValidatorResources<'_> {
         self.types.valtype_is_subtype(a, b)
     }
 
+    fn is_shared(&self, ty: RefType) -> bool {
+        self.types.reftype_is_shared(ty)
+    }
+
     fn element_count(&self) -> u32 {
         self.module.element_types.len() as u32
     }
@@ -1392,6 +1414,10 @@ impl WasmModuleResources for ValidatorResources {
 
     fn is_subtype(&self, a: ValType, b: ValType) -> bool {
         self.0.snapshot.as_ref().unwrap().valtype_is_subtype(a, b)
+    }
+
+    fn is_shared(&self, ty: RefType) -> bool {
+        self.0.snapshot.as_ref().unwrap().reftype_is_shared(ty)
     }
 
     fn element_count(&self) -> u32 {

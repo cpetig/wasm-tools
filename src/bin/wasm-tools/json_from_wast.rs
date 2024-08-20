@@ -462,6 +462,7 @@ impl<'a> JsonBuilder<'a> {
             RefArray => json::Const::ArrayRef,
             RefStruct => json::Const::StructRef,
             RefI31 => json::Const::I31Ref,
+            RefI31Shared => json::Const::I31RefShared,
             Either(either) => json::Const::Either {
                 values: either
                     .into_iter()
@@ -527,7 +528,11 @@ fn null_heap_ty(ty: HeapType<'_>) -> Result<json::Const> {
                 Exn => json::Const::ExnRef {
                     value: Some("null".to_string()),
                 },
-                _ => bail!("unsupported abstract type found in `ref.null`"),
+                Eq => json::Const::EqRef,
+                Struct => json::Const::StructRef,
+                Array => json::Const::ArrayRef,
+                I31 => json::Const::I31Ref,
+                NoExn => json::Const::NullExnRef,
             }
         }
         _ => bail!("unsupported heap type found in `ref.null`"),
@@ -672,12 +677,15 @@ mod json {
         ArrayRef,
         StructRef,
         I31Ref,
+        I31RefShared,
         // (ref.null none)
         NullRef,
         // (ref.null nofunc)
         NullFuncRef,
         // (ref.null noextern)
         NullExternRef,
+        // (ref.null noexn)
+        NullExnRef,
 
         ExnRef {
             #[serde(skip_serializing_if = "Option::is_none")]

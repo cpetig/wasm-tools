@@ -8,7 +8,9 @@ use crate::{FlagsRepr, Int, Resolve, Type, TypeDef, TypeDefKind};
 /// Architecture specific alignment
 #[derive(Eq, PartialEq, PartialOrd, Clone, Copy, Debug)]
 pub enum Alignment {
+    /// This represents 4 byte alignment on 32bit and 8 byte alignment on 64bit architectures
     Pointer,
+    /// This alignment is architecture independent (derived from integer or float types)
     Bytes(NonZeroUsize),
 }
 
@@ -28,6 +30,9 @@ impl std::fmt::Display for Alignment {
 }
 
 impl Ord for Alignment {
+    /// Needed for determining the max alignment of an object from its parts.
+    /// The ordering is: Bytes(1) < Bytes(2) < Bytes(4) < Pointer < Bytes(8)
+    /// as a Pointer is either four or eight byte aligned, depending on the architecture
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match (self, other) {
             (Alignment::Pointer, Alignment::Pointer) => std::cmp::Ordering::Equal,
@@ -59,6 +64,13 @@ impl Alignment {
         }
     }
 
+    pub fn align_wasm64(&self) -> usize {
+        match self {
+            Alignment::Pointer => 8,
+            Alignment::Bytes(bytes) => bytes.get(),
+        }
+    }
+
     pub fn format(&self, ptrsize_expr: &str) -> String {
         match self {
             Alignment::Pointer => ptrsize_expr.into(),
@@ -69,30 +81,27 @@ impl Alignment {
 
 /// Architecture specific measurement of position,
 /// the combined amount in bytes is
-/// `bytes + if 4 < core::mem::size_of::<*const u8>() { add_for_64bit } else { 0 }`
+/// `bytes + pointers * core::mem::size_of::<*const u8>()`
 #[derive(Default, Clone, Copy, Eq, PartialEq, Debug)]
 pub struct ArchitectureSize {
-    /// exact value for 32-bit pointers
+    /// architecture independent bytes
     pub bytes: usize,
-    /// amount of bytes to add for 64-bit architecture
-    pub add_for_64bit: usize,
+    /// amount of pointer sized units to add
+    pub pointers: usize,
 }
 
 impl Add<ArchitectureSize> for ArchitectureSize {
     type Output = ArchitectureSize;
 
     fn add(self, rhs: ArchitectureSize) -> Self::Output {
-        ArchitectureSize::new(
-            self.bytes + rhs.bytes,
-            self.add_for_64bit + rhs.add_for_64bit,
-        )
+        ArchitectureSize::new(self.bytes + rhs.bytes, self.pointers + rhs.pointers)
     }
 }
 
 impl AddAssign<ArchitectureSize> for ArchitectureSize {
     fn add_assign(&mut self, rhs: ArchitectureSize) {
         self.bytes += rhs.bytes;
-        self.add_for_64bit += rhs.add_for_64bit;
+        self.pointers += rhs.pointers;
     }
 }
 
@@ -100,7 +109,7 @@ impl From<Alignment> for ArchitectureSize {
     fn from(align: Alignment) -> Self {
         match align {
             Alignment::Bytes(bytes) => ArchitectureSize::new(bytes.get(), 0),
-            Alignment::Pointer => ArchitectureSize::new(4, 4),
+            Alignment::Pointer => ArchitectureSize::new(0, 1),
         }
     }
 }
@@ -112,58 +121,67 @@ impl std::fmt::Display for ArchitectureSize {
 }
 
 impl ArchitectureSize {
-    pub fn new(bytes: usize, add_for_64bit: usize) -> Self {
-        Self {
-            bytes,
-            add_for_64bit,
-        }
+    pub fn new(bytes: usize, pointers: usize) -> Self {
+        Self { bytes, pointers }
     }
 
     pub fn max<B: std::borrow::Borrow<Self>>(&self, other: B) -> Self {
-        let new_bytes = self.bytes.max(other.borrow().bytes);
-        Self::new(
-            new_bytes,
-            (self.bytes + self.add_for_64bit)
-                .max(other.borrow().bytes + other.borrow().add_for_64bit)
-                - new_bytes,
-        )
+        let other = other.borrow();
+        let self32 = self.size_wasm32();
+        let self64 = self.size_wasm64();
+        let other32 = other.size_wasm32();
+        let other64 = other.size_wasm64();
+        if self32 >= other32 && self64 >= other64 {
+            *self
+        } else if self32 <= other32 && self64 <= other64 {
+            *other
+        } else {
+            // we can assume a combination of bytes and pointers, so align to at least pointer size
+            let new32 = align_to(self32.max(other32), 4);
+            let new64 = align_to(self64.max(other64), 8);
+            ArchitectureSize::new(new32 + new32 - new64, (new64 - new32) / 4)
+        }
     }
 
     pub fn add_bytes(&self, b: usize) -> Self {
-        Self::new(self.bytes + b, self.add_for_64bit)
+        Self::new(self.bytes + b, self.pointers)
     }
 
     /// The effective offset/size is
     /// `constant_bytes() + core::mem::size_of::<*const u8>() * pointers_to_add()`
     pub fn constant_bytes(&self) -> usize {
-        self.bytes - self.add_for_64bit
+        self.bytes
     }
 
     pub fn pointers_to_add(&self) -> usize {
-        self.add_for_64bit / 4
+        self.pointers
     }
 
     /// Shortcut for compatibility with previous versions
     pub fn size_wasm32(&self) -> usize {
-        self.bytes
+        self.bytes + self.pointers * 4
+    }
+
+    pub fn size_wasm64(&self) -> usize {
+        self.bytes + self.pointers * 8
     }
 
     /// prefer this over >0
     pub fn is_empty(&self) -> bool {
-        self.bytes == 0
+        self.bytes == 0 && self.pointers == 0
     }
 
     // create a suitable expression in bytes from a pointer size argument
     pub fn format(&self, ptrsize_expr: &str) -> String {
-        if self.add_for_64bit != 0 {
-            if self.bytes > self.add_for_64bit {
+        if self.pointers != 0 {
+            if self.bytes > 0 {
                 // both
                 format!(
                     "({}+{}*{ptrsize_expr})",
                     self.constant_bytes(),
                     self.pointers_to_add()
                 )
-            } else if self.add_for_64bit == 4 {
+            } else if self.pointers == 1 {
                 // one pointer
                 ptrsize_expr.into()
             } else {
@@ -201,23 +219,11 @@ impl ElementInfo {
 
 /// Collect size and alignment for sub-elements of a structure
 #[derive(Default)]
-pub struct SizeAlign64 {
+pub struct SizeAlign {
     map: Vec<ElementInfo>,
-    symmetric: bool,
 }
 
-impl SizeAlign64 {
-    // pub fn new() -> Self {
-    //     Default::default()
-    // }
-
-    pub fn new_symmetric() -> Self {
-        Self {
-            map: Vec::new(),
-            symmetric: true,
-        }
-    }
-
+impl SizeAlign {
     pub fn fill(&mut self, resolve: &Resolve) {
         self.map = Vec::new();
         for (_, ty) in resolve.types.iter() {
@@ -230,7 +236,7 @@ impl SizeAlign64 {
         match &ty.kind {
             TypeDefKind::Type(t) => ElementInfo::new(self.size(t), self.align(t)),
             TypeDefKind::List(_) => {
-                ElementInfo::new(ArchitectureSize::new(8, 8), Alignment::Pointer)
+                ElementInfo::new(ArchitectureSize::new(0, 2), Alignment::Pointer)
             }
             TypeDefKind::Record(r) => self.record(r.fields.iter().map(|f| &f.ty)),
             TypeDefKind::Tuple(t) => self.record(t.types.iter()),
@@ -250,18 +256,12 @@ impl SizeAlign64 {
             // A future is represented as an index.
             // A stream is represented as an index.
             TypeDefKind::Handle(_) | TypeDefKind::Future(_) | TypeDefKind::Stream(_) => {
-                if self.symmetric {
-                    ElementInfo::new(ArchitectureSize::new(4, 4), Alignment::Pointer)
-                } else {
-                    int_size_align(Int::U32)
-                }
+                int_size_align(Int::U32)
             }
-            // An error is represented as an index.
-            TypeDefKind::Error => int_size_align(Int::U32),
             // This shouldn't be used for anything since raw resources aren't part of the ABI -- just handles to
             // them.
             TypeDefKind::Resource => ElementInfo::new(
-                ArchitectureSize::new(usize::MAX, usize::MAX),
+                ArchitectureSize::new(usize::MAX, 0),
                 Alignment::Bytes(NonZeroUsize::new(usize::MAX).unwrap()),
             ),
             TypeDefKind::Unknown => unreachable!(),
@@ -274,7 +274,7 @@ impl SizeAlign64 {
             Type::U16 | Type::S16 => ArchitectureSize::new(2, 0),
             Type::U32 | Type::S32 | Type::F32 | Type::Char => ArchitectureSize::new(4, 0),
             Type::U64 | Type::S64 | Type::F64 => ArchitectureSize::new(8, 0),
-            Type::String => ArchitectureSize::new(8, 8),
+            Type::String => ArchitectureSize::new(0, 2),
             Type::Id(id) => self.map[id.index()].size,
         }
     }
@@ -356,10 +356,9 @@ impl SizeAlign64 {
             }
         }
         let align = discrim_align.max(case_align);
-        ElementInfo::new(
-            align_to_arch(align_to_arch(discrim_size, case_align) + case_size, align),
-            align,
-        )
+        let discrim_aligned = align_to_arch(discrim_size, case_align);
+        let size_sum = discrim_aligned + case_size;
+        ElementInfo::new(align_to_arch(size_sum, align), align)
     }
 }
 
@@ -384,75 +383,31 @@ pub(crate) fn align_to(val: usize, align: usize) -> usize {
 pub fn align_to_arch(val: ArchitectureSize, align: Alignment) -> ArchitectureSize {
     match align {
         Alignment::Pointer => {
-            let new_bytes = align_to(val.bytes, 4);
-            let unaligned64 = new_bytes + val.add_for_64bit;
-            ArchitectureSize::new(
-                new_bytes,
-                // increase if necessary for 64bit alignment
-                val.add_for_64bit
-                    + if unaligned64 != align_to(unaligned64, 8) {
-                        4
-                    } else {
-                        0
-                    },
-            )
+            let new32 = align_to(val.bytes, 4);
+            if new32 != align_to(new32, 8) {
+                ArchitectureSize::new(new32 - 4, val.pointers + 1)
+            } else {
+                ArchitectureSize::new(new32, val.pointers)
+            }
         }
         Alignment::Bytes(align_bytes) => {
-            let new_bytes = align_to(val.bytes, align_bytes.get());
-            ArchitectureSize::new(
-                new_bytes,
-                align_to(val.bytes + val.add_for_64bit, align_bytes.get()) - new_bytes,
-            )
+            let align_bytes = align_bytes.get();
+            if align_bytes > 4 && (val.pointers & 1) != 0 {
+                let new_bytes = align_to(val.bytes, align_bytes);
+                if (new_bytes - val.bytes) >= 4 {
+                    // up to four extra bytes fit together with a the extra 32 bit pointer
+                    // and the 64 bit pointer is always 8 bytes (so no change in value)
+                    ArchitectureSize::new(new_bytes - 8, val.pointers + 1)
+                } else {
+                    // there is no room to combine, so the odd pointer aligns to 8 bytes
+                    ArchitectureSize::new(new_bytes + 8, val.pointers - 1)
+                }
+            } else {
+                ArchitectureSize::new(align_to(val.bytes, align_bytes), val.pointers)
+            }
         }
     }
 }
-
-/// Compatibility with older versions:
-/// Collect size and alignment for sub-elements of a structure, simpler interface only supporting wasm32
-#[derive(Default)]
-pub struct SizeAlign32(SizeAlign64);
-
-impl SizeAlign32 {
-    pub fn new() -> Self {
-        Default::default()
-    }
-    pub fn fill(&mut self, resolve: &Resolve) {
-        self.0.fill(resolve);
-    }
-    pub fn size(&self, ty: &Type) -> usize {
-        self.0.size(ty).size_wasm32()
-    }
-    pub fn align(&self, ty: &Type) -> usize {
-        self.0.align(ty).align_wasm32()
-    }
-    pub fn field_offsets<'a>(
-        &self,
-        types: impl IntoIterator<Item = &'a Type>,
-    ) -> Vec<(usize, &'a Type)> {
-        self.0
-            .field_offsets(types)
-            .drain(..)
-            .map(|(offs, ty)| (offs.size_wasm32(), ty))
-            .collect()
-    }
-    pub fn payload_offset<'a>(
-        &self,
-        tag: Int,
-        cases: impl IntoIterator<Item = Option<&'a Type>>,
-    ) -> usize {
-        self.0.payload_offset(tag, cases).size_wasm32()
-    }
-    pub fn record<'a>(&self, types: impl Iterator<Item = &'a Type>) -> (usize, usize) {
-        let info = self.0.record(types);
-        (info.size.size_wasm32(), info.align.align_wasm32())
-    }
-    pub fn params<'a>(&self, types: impl IntoIterator<Item = &'a Type>) -> (usize, usize) {
-        self.record(types.into_iter())
-    }
-}
-
-/// compatibility alias
-pub type SizeAlign = SizeAlign32;
 
 #[cfg(test)]
 mod test {
@@ -463,7 +418,7 @@ mod test {
         // u8 + ptr
         assert_eq!(
             align_to_arch(ArchitectureSize::new(1, 0), Alignment::Pointer),
-            ArchitectureSize::new(4, 4)
+            ArchitectureSize::new(0, 1)
         );
         // u8 + u64
         assert_eq!(
@@ -484,7 +439,7 @@ mod test {
         // ptr + u64
         assert_eq!(
             align_to_arch(
-                ArchitectureSize::new(4, 4),
+                ArchitectureSize::new(0, 1),
                 Alignment::Bytes(NonZeroUsize::new(8).unwrap())
             ),
             ArchitectureSize::new(8, 0)
@@ -492,33 +447,138 @@ mod test {
         // u32 + ptr
         assert_eq!(
             align_to_arch(ArchitectureSize::new(4, 0), Alignment::Pointer),
-            ArchitectureSize::new(4, 4)
+            ArchitectureSize::new(0, 1)
         );
         // u32, ptr + u64
         assert_eq!(
             align_to_arch(
-                ArchitectureSize::new(8, 8),
+                ArchitectureSize::new(0, 2),
                 Alignment::Bytes(NonZeroUsize::new(8).unwrap())
             ),
-            ArchitectureSize::new(8, 8)
+            ArchitectureSize::new(0, 2)
         );
         // ptr, u8 + u64
         assert_eq!(
             align_to_arch(
-                ArchitectureSize::new(5, 4),
+                ArchitectureSize::new(1, 1),
                 Alignment::Bytes(NonZeroUsize::new(8).unwrap())
             ),
-            ArchitectureSize::new(8, 8)
+            ArchitectureSize::new(0, 2)
         );
         // ptr, u8 + ptr
         assert_eq!(
-            align_to_arch(ArchitectureSize::new(5, 4), Alignment::Pointer),
-            ArchitectureSize::new(8, 8)
+            align_to_arch(ArchitectureSize::new(1, 1), Alignment::Pointer),
+            ArchitectureSize::new(0, 2)
+        );
+        // ptr, ptr, u8 + u64
+        assert_eq!(
+            align_to_arch(
+                ArchitectureSize::new(1, 2),
+                Alignment::Bytes(NonZeroUsize::new(8).unwrap())
+            ),
+            ArchitectureSize::new(8, 2)
+        );
+        assert_eq!(
+            align_to_arch(
+                ArchitectureSize::new(30, 3),
+                Alignment::Bytes(NonZeroUsize::new(8).unwrap())
+            ),
+            ArchitectureSize::new(40, 2)
         );
 
         assert_eq!(
-            ArchitectureSize::new(12, 0).max(&ArchitectureSize::new(8, 8)),
-            ArchitectureSize::new(12, 4)
+            ArchitectureSize::new(12, 0).max(&ArchitectureSize::new(0, 2)),
+            ArchitectureSize::new(8, 1)
         );
+        assert_eq!(
+            ArchitectureSize::new(10, 0).max(&ArchitectureSize::new(0, 2)),
+            ArchitectureSize::new(8, 1)
+        );
+
+        assert_eq!(
+            align_to_arch(
+                ArchitectureSize::new(2, 0),
+                Alignment::Bytes(NonZeroUsize::new(8).unwrap())
+            ),
+            ArchitectureSize::new(8, 0)
+        );
+        assert_eq!(
+            align_to_arch(ArchitectureSize::new(2, 0), Alignment::Pointer),
+            ArchitectureSize::new(0, 1)
+        );
+    }
+
+    #[test]
+    fn resource_size() {
+        // keep it identical to the old behavior
+        let obj = SizeAlign::default();
+        let elem = obj.calculate(&TypeDef {
+            name: None,
+            kind: TypeDefKind::Resource,
+            owner: crate::TypeOwner::None,
+            docs: Default::default(),
+            stability: Default::default(),
+        });
+        assert_eq!(elem.size, ArchitectureSize::new(usize::MAX, 0));
+        assert_eq!(
+            elem.align,
+            Alignment::Bytes(NonZeroUsize::new(usize::MAX).unwrap())
+        );
+    }
+    #[test]
+    fn result_ptr_10() {
+        let mut obj = SizeAlign::default();
+        let mut resolve = Resolve::default();
+        let tuple = crate::Tuple {
+            types: vec![Type::U16, Type::U16, Type::U16, Type::U16, Type::U16],
+        };
+        let id = resolve.types.alloc(TypeDef {
+            name: None,
+            kind: TypeDefKind::Tuple(tuple),
+            owner: crate::TypeOwner::None,
+            docs: Default::default(),
+            stability: Default::default(),
+        });
+        obj.fill(&resolve);
+        let my_result = crate::Result_ {
+            ok: Some(Type::String),
+            err: Some(Type::Id(id)),
+        };
+        let elem = obj.calculate(&TypeDef {
+            name: None,
+            kind: TypeDefKind::Result(my_result),
+            owner: crate::TypeOwner::None,
+            docs: Default::default(),
+            stability: Default::default(),
+        });
+        assert_eq!(elem.size, ArchitectureSize::new(8, 2));
+        assert_eq!(elem.align, Alignment::Pointer);
+    }
+    #[test]
+    fn result_ptr_64bit() {
+        let obj = SizeAlign::default();
+        let my_record = crate::Record {
+            fields: vec![
+                crate::Field {
+                    name: String::new(),
+                    ty: Type::String,
+                    docs: Default::default(),
+                },
+                crate::Field {
+                    name: String::new(),
+                    ty: Type::U64,
+                    docs: Default::default(),
+                },
+            ],
+        };
+        let elem = obj.calculate(&TypeDef {
+            name: None,
+            kind: TypeDefKind::Record(my_record),
+            owner: crate::TypeOwner::None,
+            docs: Default::default(),
+            stability: Default::default(),
+        });
+        assert_eq!(elem.size, ArchitectureSize::new(8, 2));
+        assert_eq!(elem.align, Alignment::Bytes(NonZeroUsize::new(8).unwrap()));
     }
 }
