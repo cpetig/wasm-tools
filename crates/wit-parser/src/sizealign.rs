@@ -221,9 +221,17 @@ impl ElementInfo {
 #[derive(Default)]
 pub struct SizeAlign {
     map: Vec<ElementInfo>,
+    symmetric: bool,
 }
 
 impl SizeAlign {
+    pub fn new_symmetric() -> Self {
+        Self {
+            map: Vec::new(),
+            symmetric: true,
+        }
+    }
+
     pub fn fill(&mut self, resolve: &Resolve) {
         self.map = Vec::new();
         for (_, ty) in resolve.types.iter() {
@@ -255,8 +263,15 @@ impl SizeAlign {
             // A resource is represented as an index.
             // A future is represented as an index.
             // A stream is represented as an index.
-            TypeDefKind::Handle(_) | TypeDefKind::Future(_) | TypeDefKind::Stream(_) | TypeDefKind::Error => {
-                int_size_align(Int::U32)
+            TypeDefKind::Handle(_)
+            | TypeDefKind::Future(_)
+            | TypeDefKind::Stream(_)
+            | TypeDefKind::Error => {
+                if self.symmetric {
+                    ElementInfo::new(ArchitectureSize::new(4, 4), Alignment::Pointer)
+                } else {
+                    int_size_align(Int::U32)
+                }
             }
             // This shouldn't be used for anything since raw resources aren't part of the ABI -- just handles to
             // them.
