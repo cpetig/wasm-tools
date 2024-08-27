@@ -2603,6 +2603,7 @@ impl ComponentEncoder {
         library_info: Option<LibraryInfo>,
     ) -> Result<Self> {
         let (wasm, metadata) = metadata::decode(bytes)?;
+        let wasm = wasm.as_deref().unwrap_or(bytes);
         // Merge the adapter's document into our own document to have one large
         // document, and then afterwards merge worlds as well.
         //

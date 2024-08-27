@@ -2,7 +2,6 @@ use crate::{Error, UnresolvedPackageGroup};
 use anyhow::{bail, Context, Result};
 use lex::{Span, Token, Tokenizer};
 use semver::Version;
-use std::any::Any;
 use std::borrow::Cow;
 use std::fmt;
 use std::mem;

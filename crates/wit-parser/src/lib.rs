@@ -17,7 +17,7 @@ pub mod abi;
 mod ast;
 use ast::lex::Span;
 pub use ast::SourceMap;
-pub use ast::{parse_use_path, pretty_print, ParsedUsePath};
+pub use ast::{parse_use_path, ParsedUsePath};
 mod sizealign;
 pub use sizealign::*;
 mod resolve;

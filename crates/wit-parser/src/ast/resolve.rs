@@ -1282,7 +1282,6 @@ impl<'a> Resolver<'a> {
             _ => {}
         }
         let kind = self.resolve_type_def(ty, stability)?;
-
         Ok(self.anon_type_def(
             TypeDef {
                 kind,

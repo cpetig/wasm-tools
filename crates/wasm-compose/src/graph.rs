@@ -430,7 +430,7 @@ pub(crate) struct Instance {
 }
 
 /// The options for encoding a composition graph.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
 pub struct EncodeOptions {
     /// Whether or not to define instantiated components.
     ///

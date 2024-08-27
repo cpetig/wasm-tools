@@ -2197,7 +2197,7 @@ impl ComponentState {
             cx.entity_type(arg, expected, offset).with_context(|| {
                 format!(
                     "type mismatch for export `{name}` of module \
-                     instantiation argument `{module}`"
+                         instantiation argument `{module}`"
                 )
             })?;
         }
