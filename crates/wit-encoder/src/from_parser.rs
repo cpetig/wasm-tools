@@ -255,6 +255,7 @@ impl<'a> Converter<'a> {
                         TypeDefKind::Type(output)
                     }
                     wit_parser::TypeDefKind::Unknown => unreachable!(),
+                    wit_parser::TypeDefKind::Error => todo!(),
                 };
 
                 Some(TypeDef::new(name.clone(), kind))
@@ -310,6 +311,7 @@ impl<'a> Converter<'a> {
                             panic!("type doesn't have a name, and can't be inlined")
                         }
                         wit_parser::TypeDefKind::Unknown => unreachable!(),
+                        wit_parser::TypeDefKind::Error => todo!(),
                     },
                 }
             }

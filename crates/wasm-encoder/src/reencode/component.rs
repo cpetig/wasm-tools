@@ -798,6 +798,9 @@ pub mod component_utils {
             wasmparser::ComponentDefinedType::Borrow(i) => {
                 defined.borrow(reencoder.component_type_index(i));
             }
+            wasmparser::ComponentDefinedType::Future(_) => todo!(),
+            wasmparser::ComponentDefinedType::Stream(_) => todo!(),
+            wasmparser::ComponentDefinedType::Error => todo!(),
         }
         Ok(())
     }
@@ -979,6 +982,20 @@ pub mod component_utils {
                 let resource = reencoder.component_type_index(resource);
                 section.resource_rep(resource);
             }
+            wasmparser::CanonicalFunction::AsyncStart { .. } => todo!(),
+            wasmparser::CanonicalFunction::AsyncReturn { .. } => todo!(),
+            wasmparser::CanonicalFunction::FutureNew { .. } => todo!(),
+            wasmparser::CanonicalFunction::FutureSend { .. } => todo!(),
+            wasmparser::CanonicalFunction::FutureReceive { .. } => todo!(),
+            wasmparser::CanonicalFunction::FutureDropSender { .. } => todo!(),
+            wasmparser::CanonicalFunction::FutureDropReceiver { .. } => todo!(),
+            wasmparser::CanonicalFunction::StreamNew { .. } => todo!(),
+            wasmparser::CanonicalFunction::StreamSend { .. } => todo!(),
+            wasmparser::CanonicalFunction::StreamReceive { .. } => todo!(),
+            wasmparser::CanonicalFunction::StreamDropSender { .. } => todo!(),
+            wasmparser::CanonicalFunction::StreamDropReceiver { .. } => todo!(),
+            wasmparser::CanonicalFunction::ErrorDrop => todo!(),
+            wasmparser::CanonicalFunction::TaskWait { .. } => todo!(),
         }
         Ok(())
     }
@@ -1261,6 +1278,8 @@ pub mod component_utils {
             wasmparser::CanonicalOption::PostReturn(u) => {
                 crate::component::CanonicalOption::PostReturn(reencoder.function_index(u))
             }
+            wasmparser::CanonicalOption::Async => todo!(),
+            wasmparser::CanonicalOption::Callback(_) => todo!(),
         }
     }
 

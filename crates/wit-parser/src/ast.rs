@@ -2069,7 +2069,7 @@ pub fn pretty_print(path: impl AsRef<Path> + Clone) {
                                             WorldItem::Import(i) => {
                                                 print_docs(&i.docs, "\t");
                                                 match &i.kind {
-                                                    ExternKind::Interface(id, items) => todo!(),
+                                                    ExternKind::Interface(_id, _items) => todo!(),
                                                     ExternKind::Path(p) => {
                                                         println!("\timport {};", p.name().name);
                                                     }
@@ -2079,7 +2079,7 @@ pub fn pretty_print(path: impl AsRef<Path> + Clone) {
                                             WorldItem::Export(e) => {
                                                 print_docs(&e.docs, "\t");
                                                 match &e.kind {
-                                                    ExternKind::Interface(id, items) => todo!(),
+                                                    ExternKind::Interface(_id, _items) => todo!(),
                                                     ExternKind::Path(p) => {
                                                         println!("\texport {};", p.name().name);
                                                     }
