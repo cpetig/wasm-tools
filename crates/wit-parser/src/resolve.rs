@@ -1562,6 +1562,12 @@ package {name} is defined in two different locations:\n\
             }
         })
     }
+
+    fn invert_direction(&mut self, world_id: WorldId) {
+        if let Some(world) = self.worlds.get_mut(world_id) {
+            std::mem::swap(&mut world.exports, &mut world.imports);
+        }
+    }
 }
 
 /// Structure returned by [`Resolve::merge`] which contains mappings from
