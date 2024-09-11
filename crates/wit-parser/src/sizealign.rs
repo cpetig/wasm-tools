@@ -285,7 +285,7 @@ impl SizeAlign {
             | TypeDefKind::Stream(_)
             | TypeDefKind::Error => {
                 if self.symmetric {
-                    ElementInfo::new(ArchitectureSize::new(4, 4), Alignment::Pointer)
+                    ElementInfo::new(ArchitectureSize::new(0, 1), Alignment::Pointer)
                 } else {
                     int_size_align(Int::U32)
                 }
