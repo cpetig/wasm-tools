@@ -2,6 +2,7 @@ use crate::encoding::{Instance, Item, LibraryInfo, MainOrAdapter};
 use crate::ComponentEncoder;
 use anyhow::{bail, Context, Result};
 use indexmap::{map::Entry, IndexMap, IndexSet};
+use std::hash::{Hash, Hasher};
 use std::mem;
 use wasm_encoder::ExportKind;
 use wasmparser::names::{ComponentName, ComponentNameKind};
@@ -11,7 +12,8 @@ use wasmparser::{
 };
 use wit_parser::{
     abi::{AbiVariant, WasmSignature, WasmType},
-    Function, InterfaceId, PackageName, Resolve, TypeDefKind, TypeId, WorldId, WorldItem, WorldKey,
+    Function, InterfaceId, PackageName, Resolve, TypeDefKind, TypeId, World, WorldId, WorldItem,
+    WorldKey,
 };
 
 fn wasm_sig_to_func_type(signature: WasmSignature) -> FuncType {
@@ -126,6 +128,7 @@ pub struct ValidatedModule<'a> {
 /// module. Each of these specialized types contains "connection" information
 /// between a module's imports/exports and the WIT or component-level constructs
 /// they correspond to.
+
 #[derive(Default)]
 pub struct ValidatedModule {
     /// Information about a module's imports.
@@ -201,6 +204,26 @@ pub enum ImportInstance {
     Names(IndexMap<String, Import>),
 }
 
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub struct PayloadInfo {
+    pub name: String,
+    pub ty: TypeId,
+    pub function: Function,
+    pub key: WorldKey,
+    pub interface: Option<InterfaceId>,
+    pub imported: bool,
+}
+
+impl Hash for PayloadInfo {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.ty.hash(state);
+        self.key.hash(state);
+        self.interface.hash(state);
+        self.imported.hash(state);
+    }
+}
+
 /// The different kinds of items that a module or an adapter can import.
 ///
 /// This is intended to be an exhaustive definition of what can be imported into
@@ -209,14 +232,14 @@ pub enum ImportInstance {
 pub enum Import {
     /// A top-level world function, with the name provided here, is imported
     /// into the module.
-    WorldFunc(WorldKey, String),
+    WorldFunc(WorldKey, String, AbiVariant),
 
     /// An interface's function is imported into the module.
     ///
     /// The `WorldKey` here is the name of the interface in the world in
     /// question. The `InterfaceId` is the interface that was imported from and
     /// `String` is the WIT name of the function.
-    InterfaceFunc(WorldKey, InterfaceId, String),
+    InterfaceFunc(WorldKey, InterfaceId, String, AbiVariant),
 
     /// An imported resource's destructor is imported.
     ///
@@ -259,7 +282,10 @@ pub enum Import {
     MainModuleMemory,
 
     /// An adapter is importing an arbitrary item from the main module.
-    MainModuleExport { name: String, kind: ExportKind },
+    MainModuleExport {
+        name: String,
+        kind: ExportKind,
+    },
 
     /// An arbitrary item from either the main module or an adapter is being
     /// imported.
@@ -267,13 +293,31 @@ pub enum Import {
     /// (should probably subsume `MainModule*` and maybe `AdapterExport` above
     /// one day.
     Item(Item),
+
+    ErrorDrop,
+    TaskBackpressure,
+    TaskWait,
+    TaskPoll,
+    TaskYield,
+    SubtaskDrop,
+    FutureNew(PayloadInfo),
+    FutureWrite(PayloadInfo),
+    FutureRead(PayloadInfo),
+    FutureDropWriter(TypeId),
+    FutureDropReader(TypeId),
+    StreamNew(PayloadInfo),
+    StreamWrite(PayloadInfo),
+    StreamRead(PayloadInfo),
+    StreamDropWriter(TypeId),
+    StreamDropReader(TypeId),
+    ExportedTaskReturn(Function),
 }
 
 impl ImportMap {
     /// Returns whether the top-level world function `func` is imported.
     pub fn uses_toplevel_func(&self, func: &str) -> bool {
         self.imports().any(|(_, _, item)| match item {
-            Import::WorldFunc(_, name) => func == name,
+            Import::WorldFunc(_, name, _) => func == name,
             _ => false,
         })
     }
@@ -281,7 +325,7 @@ impl ImportMap {
     /// Returns whether the interface function specified is imported.
     pub fn uses_interface_func(&self, interface: InterfaceId, func: &str) -> bool {
         self.imports().any(|(_, _, import)| match import {
-            Import::InterfaceFunc(_, id, name) => *id == interface && name == func,
+            Import::InterfaceFunc(_, id, name, _) => *id == interface && name == func,
             _ => false,
         })
     }
@@ -415,11 +459,72 @@ impl ImportMap {
         let world_id = encoder.metadata.world;
         let world = &resolve.worlds[world_id];
 
+        if let Some(import) = names.payload_import(module, name, resolve, world, ty)? {
+            return Ok(import);
+        }
+
+        let async_import = |interface: Option<(WorldKey, InterfaceId)>| {
+            Ok::<_, anyhow::Error>(if let Some(function_name) = names.task_return_name(name) {
+                let interface_id = interface.as_ref().map(|(_, id)| *id);
+                let func = get_function(resolve, world, function_name, interface_id, true)?;
+                validate_task_return(resolve, ty, &func)?;
+                Some(Import::ExportedTaskReturn(func))
+            } else {
+                None
+            })
+        };
+
+        let (abi, name) = if let Some(name) = names.async_name(name) {
+            (AbiVariant::GuestImportAsync, name)
+        } else {
+            (AbiVariant::GuestImport, name)
+        };
+
         if module == names.import_root() {
+            if Some(name) == names.error_drop() {
+                let expected = FuncType::new([ValType::I32], []);
+                validate_func_sig(name, &expected, ty)?;
+                return Ok(Import::ErrorDrop);
+            }
+
+            if Some(name) == names.task_backpressure() {
+                let expected = FuncType::new([ValType::I32], []);
+                validate_func_sig(name, &expected, ty)?;
+                return Ok(Import::TaskBackpressure);
+            }
+
+            if Some(name) == names.task_wait() {
+                let expected = FuncType::new([ValType::I32], [ValType::I32]);
+                validate_func_sig(name, &expected, ty)?;
+                return Ok(Import::TaskWait);
+            }
+
+            if Some(name) == names.task_poll() {
+                let expected = FuncType::new([ValType::I32], [ValType::I32]);
+                validate_func_sig(name, &expected, ty)?;
+                return Ok(Import::TaskPoll);
+            }
+
+            if Some(name) == names.task_yield() {
+                let expected = FuncType::new([], []);
+                validate_func_sig(name, &expected, ty)?;
+                return Ok(Import::TaskYield);
+            }
+
+            if Some(name) == names.subtask_drop() {
+                let expected = FuncType::new([ValType::I32], []);
+                validate_func_sig(name, &expected, ty)?;
+                return Ok(Import::SubtaskDrop);
+            }
+
+            if let Some(import) = async_import(None)? {
+                return Ok(import);
+            }
+
             let key = WorldKey::Name(name.to_string());
             if let Some(WorldItem::Function(func)) = world.imports.get(&key) {
-                validate_func(resolve, ty, func, AbiVariant::GuestImport)?;
-                return Ok(Import::WorldFunc(key, func.name.clone()));
+                validate_func(resolve, ty, func, abi)?;
+                return Ok(Import::WorldFunc(key, func.name.clone(), abi));
             }
 
             let get_resource = resource_test_for_world(resolve, world_id);
@@ -443,6 +548,14 @@ impl ImportMap {
         };
 
         if let Some(interface) = interface.strip_prefix(names.import_exported_intrinsic_prefix()) {
+            if let Some(import) = async_import(Some(names.module_to_interface(
+                interface,
+                resolve,
+                &world.exports,
+            )?))? {
+                return Ok(import);
+            }
+
             let (key, id) = names.module_to_interface(interface, resolve, &world.exports)?;
 
             let get_resource = resource_test_for_interface(resolve, id);
@@ -474,11 +587,11 @@ impl ImportMap {
         let interface = &resolve.interfaces[id];
         let get_resource = resource_test_for_interface(resolve, id);
         if let Some(f) = interface.functions.get(name) {
-            validate_func(resolve, ty, f, AbiVariant::GuestImport).with_context(|| {
+            validate_func(resolve, ty, f, abi).with_context(|| {
                 let name = resolve.name_world_key(&key);
                 format!("failed to validate import interface `{name}`")
             })?;
-            return Ok(Import::InterfaceFunc(key, id, f.name.clone()));
+            return Ok(Import::InterfaceFunc(key, id, f.name.clone(), abi));
         } else if let Some(resource) = names.resource_drop_name(name) {
             if let Some(resource) = get_resource(resource) {
                 let expected = FuncType::new([ValType::I32], []);
@@ -576,13 +689,13 @@ pub struct ExportMap {
 pub enum Export {
     /// An export of a top-level function of a world, where the world function
     /// is named here.
-    WorldFunc(String),
+    WorldFunc(WorldKey, String, AbiVariant),
 
     /// A post-return for a top-level function of a world.
     WorldFuncPostReturn(WorldKey),
 
     /// An export of a function in an interface.
-    InterfaceFunc(InterfaceId, String),
+    InterfaceFunc(WorldKey, InterfaceId, String, AbiVariant),
 
     /// A post-return for the above function.
     InterfaceFuncPostReturn(WorldKey, String),
@@ -607,6 +720,10 @@ pub enum Export {
 
     /// `cabi_realloc_adapter`
     ReallocForAdapter,
+
+    WorldFuncCallback(WorldKey),
+
+    InterfaceFuncCallback(WorldKey, String),
 }
 
 impl ExportMap {
@@ -700,18 +817,29 @@ impl ExportMap {
             return Ok(Some(Export::Initialize));
         }
 
+        let (abi, name) = if let Some(name) = names.async_name(export.name) {
+            (AbiVariant::GuestExportAsync, name)
+        } else {
+            (AbiVariant::GuestExport, export.name)
+        };
+
         // Try to match this to a known WIT export that `exports` allows.
         if let Some((key, id, f)) = names.match_wit_export(name, resolve, world, exports) {
-            validate_func(resolve, ty, f, AbiVariant::GuestExport).with_context(|| {
+            validate_func(resolve, ty, f, abi).with_context(|| {
                 let key = resolve.name_world_key(key);
                 format!("failed to validate export for `{key}`")
             })?;
             match id {
                 Some(id) => {
-                    return Ok(Some(Export::InterfaceFunc(id, f.name.clone())));
+                    return Ok(Some(Export::InterfaceFunc(
+                        key.clone(),
+                        id,
+                        f.name.clone(),
+                        abi,
+                    )));
                 }
                 None => {
-                    return Ok(Some(Export::WorldFunc(f.name.clone())));
+                    return Ok(Some(Export::WorldFunc(key.clone(), f.name.clone(), abi)));
                 }
             }
         }
@@ -737,6 +865,21 @@ impl ExportMap {
             }
         }
 
+        if let Some(suffix) = names.callback_name(export.name) {
+            if let Some((key, id, f)) = names.match_wit_export(suffix, resolve, world, exports) {
+                validate_func_sig(
+                    export.name,
+                    &FuncType::new([ValType::I32; 4], [ValType::I32]),
+                    ty,
+                )?;
+                return Ok(Some(if id.is_some() {
+                    Export::InterfaceFuncCallback(key.clone(), f.name.clone())
+                } else {
+                    Export::WorldFuncCallback(key.clone())
+                }));
+            }
+        }
+
         // And, finally, see if it matches a known destructor.
         if let Some(dtor) = names.match_wit_resource_dtor(name, resolve, world, exports) {
             let expected = FuncType::new([ValType::I32], []);
@@ -747,13 +890,31 @@ impl ExportMap {
         Ok(None)
     }
 
-    /// Returns the name of the post-return export, if any, for the `interface`
-    /// and `func` combo.
+    /// Returns the name of the post-return export, if any, for the `key` and
+    /// `func` combo.
     pub fn post_return(&self, key: &WorldKey, func: &Function) -> Option<&str> {
         self.find(|m| match m {
             Export::WorldFuncPostReturn(k) => k == key,
             Export::InterfaceFuncPostReturn(k, f) => k == key && func.name == *f,
             _ => false,
+        })
+    }
+
+    /// Returns the name of the async callback export, if any, for the `key` and
+    /// `func` combo.
+    pub fn callback(&self, key: &WorldKey, func: &Function) -> Option<&str> {
+        self.find(|m| match m {
+            Export::WorldFuncCallback(k) => k == key,
+            Export::InterfaceFuncCallback(k, f) => k == key && func.name == *f,
+            _ => false,
+        })
+    }
+
+    pub fn abi(&self, key: &WorldKey, func: &Function) -> Option<AbiVariant> {
+        self.names.values().find_map(|m| match m {
+            Export::WorldFunc(k, f, abi) if k == key && func.name == *f => Some(*abi),
+            Export::InterfaceFunc(k, _, f, abi) if k == key && func.name == *f => Some(*abi),
+            _ => None,
         })
     }
 
@@ -846,7 +1007,7 @@ impl ExportMap {
         for export in exports {
             let require_interface_func = |interface: InterfaceId, name: &str| -> Result<()> {
                 let result = self.find(|e| match e {
-                    Export::InterfaceFunc(id, s) => interface == *id && name == s,
+                    Export::InterfaceFunc(_, id, s, _) => interface == *id && name == s,
                     _ => false,
                 });
                 if result.is_some() {
@@ -858,7 +1019,7 @@ impl ExportMap {
             };
             let require_world_func = |name: &str| -> Result<()> {
                 let result = self.find(|e| match e {
-                    Export::WorldFunc(s) => name == s,
+                    Export::WorldFunc(_, s, _) => name == s,
                     _ => false,
                 });
                 if result.is_some() {
@@ -915,6 +1076,23 @@ trait NameMangling {
     fn resource_drop_name<'a>(&self, s: &'a str) -> Option<&'a str>;
     fn resource_new_name<'a>(&self, s: &'a str) -> Option<&'a str>;
     fn resource_rep_name<'a>(&self, s: &'a str) -> Option<&'a str>;
+    fn task_return_name<'a>(&self, s: &'a str) -> Option<&'a str>;
+    fn task_backpressure(&self) -> Option<&str>;
+    fn task_wait(&self) -> Option<&str>;
+    fn task_poll(&self) -> Option<&str>;
+    fn task_yield(&self) -> Option<&str>;
+    fn subtask_drop(&self) -> Option<&str>;
+    fn callback_name<'a>(&self, s: &'a str) -> Option<&'a str>;
+    fn async_name<'a>(&self, s: &'a str) -> Option<&'a str>;
+    fn error_drop(&self) -> Option<&str>;
+    fn payload_import(
+        &self,
+        module: &str,
+        name: &str,
+        resolve: &Resolve,
+        world: &World,
+        ty: &FuncType,
+    ) -> Result<Option<Import>>;
     fn module_to_interface(
         &self,
         module: &str,
@@ -971,6 +1149,47 @@ impl NameMangling for Standard {
     }
     fn resource_rep_name<'a>(&self, s: &'a str) -> Option<&'a str> {
         s.strip_suffix("_rep")
+    }
+    fn task_return_name<'a>(&self, s: &'a str) -> Option<&'a str> {
+        _ = s;
+        None
+    }
+    fn task_backpressure(&self) -> Option<&str> {
+        None
+    }
+    fn task_wait(&self) -> Option<&str> {
+        None
+    }
+    fn task_poll(&self) -> Option<&str> {
+        None
+    }
+    fn task_yield(&self) -> Option<&str> {
+        None
+    }
+    fn subtask_drop(&self) -> Option<&str> {
+        None
+    }
+    fn callback_name<'a>(&self, s: &'a str) -> Option<&'a str> {
+        _ = s;
+        None
+    }
+    fn async_name<'a>(&self, s: &'a str) -> Option<&'a str> {
+        _ = s;
+        None
+    }
+    fn error_drop(&self) -> Option<&str> {
+        None
+    }
+    fn payload_import(
+        &self,
+        module: &str,
+        name: &str,
+        resolve: &Resolve,
+        world: &World,
+        ty: &FuncType,
+    ) -> Result<Option<Import>> {
+        _ = (module, name, resolve, world, ty);
+        Ok(None)
     }
     fn module_to_interface(
         &self,
@@ -1106,6 +1325,181 @@ impl NameMangling for Legacy {
     }
     fn resource_rep_name<'a>(&self, s: &'a str) -> Option<&'a str> {
         s.strip_prefix("[resource-rep]")
+    }
+    fn task_return_name<'a>(&self, s: &'a str) -> Option<&'a str> {
+        s.strip_prefix("[task-return]")
+    }
+    fn task_backpressure(&self) -> Option<&str> {
+        Some("[task-backpressure]")
+    }
+    fn task_wait(&self) -> Option<&str> {
+        Some("[task-wait]")
+    }
+    fn task_poll(&self) -> Option<&str> {
+        Some("[task-poll]")
+    }
+    fn task_yield(&self) -> Option<&str> {
+        Some("[task-yield]")
+    }
+    fn subtask_drop(&self) -> Option<&str> {
+        Some("[subtask-drop]")
+    }
+    fn callback_name<'a>(&self, s: &'a str) -> Option<&'a str> {
+        s.strip_prefix("[callback][async]")
+    }
+    fn async_name<'a>(&self, s: &'a str) -> Option<&'a str> {
+        s.strip_prefix("[async]")
+    }
+    fn error_drop(&self) -> Option<&str> {
+        Some("[error-drop]")
+    }
+    fn payload_import(
+        &self,
+        module: &str,
+        name: &str,
+        resolve: &Resolve,
+        world: &World,
+        ty: &FuncType,
+    ) -> Result<Option<Import>> {
+        Ok(
+            if let Some((suffix, imported)) = module
+                .strip_prefix("[import-payload]")
+                .map(|v| (v, true))
+                .or_else(|| name.strip_prefix("[export-payload]").map(|v| (v, false)))
+            {
+                let (key, interface) = if suffix == self.import_root() {
+                    (WorldKey::Name(name.to_string()), None)
+                } else {
+                    let (key, id) = self.module_to_interface(
+                        suffix,
+                        resolve,
+                        if imported {
+                            &world.imports
+                        } else {
+                            &world.exports
+                        },
+                    )?;
+                    (key, Some(id))
+                };
+
+                let orig_name = name;
+
+                let (name, async_) = if let Some(name) = self.async_name(name) {
+                    (name, true)
+                } else {
+                    (name, false)
+                };
+
+                let info = |payload_key, validate: &dyn Fn() -> Result<()>| {
+                    let (function, ty) =
+                        get_payload_type(resolve, world, &payload_key, interface, imported)?;
+                    validate()?;
+                    Ok::<_, anyhow::Error>(PayloadInfo {
+                        name: orig_name.to_string(),
+                        ty,
+                        function,
+                        key: key.clone(),
+                        interface,
+                        imported,
+                    })
+                };
+
+                // TODO: move
+                Some(
+                    if let Some(key) = match_payload_prefix(name, "[future-new-") {
+                        if async_ {
+                            bail!("async `future.new` calls not supported");
+                        }
+                        Import::FutureNew(info(key, &|| {
+                            validate_func_sig(name, &FuncType::new([], [ValType::I32]), ty)
+                        })?)
+                    } else if let Some(key) = match_payload_prefix(name, "[future-write-") {
+                        if !async_ {
+                            bail!("TODO: sync `future.write` calls not yet supported");
+                        }
+                        Import::FutureWrite(info(key, &|| {
+                            validate_func_sig(
+                                name,
+                                &FuncType::new([ValType::I32; 2], [ValType::I32]),
+                                ty,
+                            )
+                        })?)
+                    } else if let Some(key) = match_payload_prefix(name, "[future-read-") {
+                        if !async_ {
+                            bail!("TODO: sync `future.read` calls not yet supported");
+                        }
+                        Import::FutureRead(info(key, &|| {
+                            validate_func_sig(
+                                name,
+                                &FuncType::new([ValType::I32; 2], [ValType::I32]),
+                                ty,
+                            )
+                        })?)
+                    } else if let Some(key) = match_payload_prefix(name, "[future-drop-writer-") {
+                        Import::FutureDropWriter(
+                            info(key, &|| {
+                                validate_func_sig(name, &FuncType::new([ValType::I32], []), ty)
+                            })?
+                            .ty,
+                        )
+                    } else if let Some(key) = match_payload_prefix(name, "[future-drop-reader-") {
+                        Import::FutureDropReader(
+                            info(key, &|| {
+                                validate_func_sig(name, &FuncType::new([ValType::I32], []), ty)
+                            })?
+                            .ty,
+                        )
+                    } else if let Some(key) = match_payload_prefix(name, "[stream-new-") {
+                        if async_ {
+                            bail!("async `stream.new` calls not supported");
+                        }
+                        Import::StreamNew(info(key, &|| {
+                            validate_func_sig(name, &FuncType::new([], [ValType::I32]), ty)
+                        })?)
+                    } else if let Some(key) = match_payload_prefix(name, "[stream-write-") {
+                        if !async_ {
+                            bail!("TODO: sync `stream.write` calls not yet supported");
+                        }
+                        Import::StreamWrite(info(key, &|| {
+                            validate_func_sig(
+                                name,
+                                &FuncType::new([ValType::I32; 3], [ValType::I32]),
+                                ty,
+                            )
+                        })?)
+                    } else if let Some(key) = match_payload_prefix(name, "[stream-read-") {
+                        if !async_ {
+                            bail!("TODO: sync `stream.read` calls not yet supported");
+                        }
+                        Import::StreamRead(info(key, &|| {
+                            validate_func_sig(
+                                name,
+                                &FuncType::new([ValType::I32; 3], [ValType::I32]),
+                                ty,
+                            )
+                        })?)
+                    } else if let Some(key) = match_payload_prefix(name, "[stream-drop-writer-") {
+                        Import::StreamDropWriter(
+                            info(key, &|| {
+                                validate_func_sig(name, &FuncType::new([ValType::I32], []), ty)
+                            })?
+                            .ty,
+                        )
+                    } else if let Some(key) = match_payload_prefix(name, "[stream-drop-reader-") {
+                        Import::StreamDropReader(
+                            info(key, &|| {
+                                validate_func_sig(name, &FuncType::new([ValType::I32], []), ty)
+                            })?
+                            .ty,
+                        )
+                    } else {
+                        bail!("unrecognized payload import: {name}");
+                    },
+                )
+            } else {
+                None
+            },
+        )
     }
     fn module_to_interface(
         &self,
@@ -2236,135 +2630,59 @@ fn validate_func_sig(name: &str, expected: &FuncType, ty: &wasmparser::FuncType)
     Ok(())
 }
 
-fn validate_exported_item<'a>(
-    resolve: &'a Resolve,
-    item: &'a WorldItem,
-    export_name: &str,
-    exports: &IndexMap<&str, u32>,
-    types: &Types,
-    post_returns: &mut IndexSet<String>,
-    callbacks: &mut IndexSet<String>,
-    required_payload_funcs: &mut IndexMap<
-        (String, bool),
-        IndexMap<(String, usize), PayloadInfo<'a>>,
-    >,
-    required_async_funcs: &mut IndexMap<String, IndexMap<String, AsyncExportInfo<'a>>>,
-    required_resource_funcs: &mut IndexMap<String, IndexMap<String, ResourceInfo>>,
-) -> Result<()> {
-    let mut validate =
-        |func: &'a Function,
-         interface: Option<(&str, InterfaceId)>,
-         async_map: &mut IndexMap<String, AsyncExportInfo<'a>>,
-         payload_map: &mut IndexMap<(String, usize), PayloadInfo<'a>>| {
-            let expected_export_name = func.core_export_name(interface.map(|(n, _)| n));
-            let (abi, func_index) = match exports.get(expected_export_name.as_ref()) {
-                Some(func_index) => (AbiVariant::GuestExport, func_index),
-                None => match exports.get(format!("[async]{expected_export_name}").as_str()) {
-                    Some(func_index) => {
-                        async_map.insert(
-                            func.name.clone(),
-                            AsyncExportInfo {
-                                interface: interface.map(|(_, id)| id),
-                                function: func,
-                                start_import: None,
-                                return_import: None,
-                            },
-                        );
+fn match_payload_prefix(name: &str, prefix: &str) -> Option<(String, usize)> {
+    let suffix = name.strip_prefix(prefix)?;
+    let index = suffix.find(']')?;
+    Some((
+        suffix[index + 1..].to_owned(),
+        suffix[..index].parse().ok()?,
+    ))
+}
 
-                        (AbiVariant::GuestExportAsync, func_index)
-                    }
-                    None => bail!(
-                        "module does not export required function `{}`",
-                        expected_export_name
-                    ),
-                },
-            };
-            let id = types.core_function_at(*func_index);
-            let ty = types[id].unwrap_func();
-            validate_func(resolve, ty, func, abi)?;
-            find_payloads(resolve, interface.map(|(_, id)| id), func, payload_map);
+fn get_payload_type(
+    resolve: &Resolve,
+    world: &World,
+    (name, index): &(String, usize),
+    interface: Option<InterfaceId>,
+    imported: bool,
+) -> Result<(Function, TypeId)> {
+    let function = get_function(resolve, world, name, interface, imported)?;
+    let ty = function.find_futures_and_streams(resolve)[*index];
+    Ok((function, ty))
+}
 
-            let post_return = format!("{POST_RETURN_PREFIX}{expected_export_name}");
-            if let Some(index) = exports.get(&post_return[..]) {
-                let ok = post_returns.insert(post_return);
-                assert!(ok);
-                let id = types.core_function_at(*index);
-                let ty = types[id].unwrap_func();
-                validate_post_return(resolve, ty, func)?;
-            }
+fn get_function(
+    resolve: &Resolve,
+    world: &World,
+    name: &str,
+    interface: Option<InterfaceId>,
+    imported: bool,
+) -> Result<Function> {
+    let function = if let Some(id) = interface {
+        resolve.interfaces[id]
+            .functions
+            .get(name)
+            .cloned()
+            .map(WorldItem::Function)
+    } else if imported {
+        world
+            .imports
+            .get(&WorldKey::Name(name.to_string()))
+            .cloned()
+    } else {
+        world
+            .exports
+            .get(&WorldKey::Name(name.to_string()))
+            .cloned()
+    };
+    let Some(WorldItem::Function(function)) = function else {
+        bail!("no export `{name}` export found");
+    };
+    Ok(function)
+}
 
-            let callback = format!("{CALLBACK_PREFIX}{expected_export_name}");
-            if let Some(index) = exports.get(&callback[..]) {
-                let ok = callbacks.insert(callback);
-                assert!(ok);
-                let id = types.core_function_at(*index);
-                let ty = types[id].unwrap_func();
-                validate_callback(ty, func)?;
-            }
-
-            Ok(())
-        };
-
-    match item {
-        WorldItem::Function(func) => validate(
-            func,
-            None,
-            required_async_funcs
-                .entry(format!("[export]{BARE_FUNC_MODULE_NAME}"))
-                .or_default(),
-            required_payload_funcs
-                .entry((BARE_FUNC_MODULE_NAME.to_string(), false))
-                .or_default(),
-        )?,
-        WorldItem::Interface {
-            id: interface_id, ..
-        } => {
-            let interface = &resolve.interfaces[*interface_id];
-            let mut async_map = IndexMap::new();
-            for (_, f) in interface.functions.iter() {
-                validate(
-                    f,
-                    Some((export_name, *interface_id)),
-                    &mut async_map,
-                    required_payload_funcs
-                        .entry((export_name.to_string(), false))
-                        .or_default(),
-                )
-                .with_context(|| {
-                    format!("failed to validate exported interface `{export_name}`")
-                })?;
-            }
-            let prev = required_async_funcs.insert(format!("[export]{export_name}"), async_map);
-            assert!(prev.is_none());
-            let mut map = IndexMap::new();
-            for (name, id) in interface.types.iter() {
-                if !matches!(resolve.types[*id].kind, TypeDefKind::Resource) {
-                    continue;
-                }
-                let mut info = ResourceInfo {
-                    id: *id,
-                    dtor_export: None,
-                    drop_import: None,
-                    rep_import: None,
-                    new_import: None,
-                };
-                let dtor = format!("{export_name}#[dtor]{name}");
-                if let Some((_, name, func_idx)) = exports.get_full(dtor.as_str()) {
-                    let id = types.core_function_at(*func_idx);
-                    let ty = types[id].unwrap_func();
-                    let expected = FuncType::new([ValType::I32], []);
-                    validate_func_sig(name, &expected, ty)?;
-                    info.dtor_export = Some(name.to_string());
-                }
-                let prev = map.insert(name.to_string(), info);
-                assert!(prev.is_none());
-            }
-            let prev = required_resource_funcs.insert(format!("[export]{export_name}"), map);
-            assert!(prev.is_none());
-        }
-        // not required to have anything exported in the core wasm module
-        WorldItem::Type(_) => {}
-    }
-
+fn validate_task_return(resolve: &Resolve, ty: &FuncType, function: &Function) -> Result<()> {
+    // TODO
+    _ = (resolve, ty, function);
     Ok(())
 }

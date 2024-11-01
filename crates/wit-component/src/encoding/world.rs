@@ -215,19 +215,19 @@ impl<'a> ComponentWorld<'a> {
             .chain(self.info.imports.imports())
         {
             match import {
-                Import::WorldFunc(_, name) => {
+                Import::WorldFunc(_, name, abi) => {
                     required
                         .interface_funcs
                         .entry(None)
                         .or_default()
-                        .insert(name);
+                        .insert((name, *abi));
                 }
-                Import::InterfaceFunc(_, id, name) => {
+                Import::InterfaceFunc(_, id, name, abi) => {
                     required
                         .interface_funcs
                         .entry(Some(*id))
                         .or_default()
-                        .insert(name);
+                        .insert((name, *abi));
                 }
                 Import::ImportedResourceDrop(_, _, id) => {
                     required.resource_drops.insert(*id);
@@ -414,21 +414,20 @@ impl<'a> ComponentWorld<'a> {
 
 #[derive(Default)]
 struct Required<'a> {
-    interface_funcs: IndexMap<Option<InterfaceId>, IndexSet<&'a str>>,
+    interface_funcs: IndexMap<Option<InterfaceId>, IndexSet<(&'a str, AbiVariant)>>,
     resource_drops: IndexSet<TypeId>,
 }
 
 impl ImportedInterface {
     fn add_func(&mut self, required: &Required<'_>, resolve: &Resolve, func: &Function) {
-        let (name, abi) = if required.interface_funcs.contains(func.name.as_str()) {
-            (func.name.clone(), AbiVariant::GuestImport)
-        } else {
-            let async_name = format!("[async]{}", func.name);
-            if required.interface_funcs.contains(async_name.as_str()) {
-                (async_name, AbiVariant::GuestImportAsync)
-            } else {
-                return;
+        let abi = match required.interface_funcs.get(&self.interface) {
+            Some(set) if set.contains(&(func.name.as_str(), AbiVariant::GuestImport)) => {
+                AbiVariant::GuestImport
             }
+            Some(set) if set.contains(&(func.name.as_str(), AbiVariant::GuestImportAsync)) => {
+                AbiVariant::GuestImportAsync
+            }
+            _ => return,
         };
         log::trace!("add func {}", func.name);
         let options = RequiredOptions::for_import(resolve, func, abi);

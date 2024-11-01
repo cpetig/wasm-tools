@@ -1395,15 +1395,13 @@ impl WitPackageDecoder<'_> {
                 Ok(TypeDefKind::Handle(Handle::Borrow(id)))
             }
 
-            types::ComponentDefinedType::Future(ty) => Ok(TypeDefKind::Future(
+            ComponentDefinedType::Future(ty) => Ok(TypeDefKind::Future(
                 ty.as_ref().map(|ty| self.convert_valtype(ty)).transpose()?,
             )),
 
-            types::ComponentDefinedType::Stream(ty) => {
-                Ok(TypeDefKind::Stream(self.convert_valtype(ty)?))
-            }
+            ComponentDefinedType::Stream(ty) => Ok(TypeDefKind::Stream(self.convert_valtype(ty)?)),
 
-            types::ComponentDefinedType::Error => Ok(TypeDefKind::Error),
+            ComponentDefinedType::Error => Ok(TypeDefKind::Error),
         }
     }
 
@@ -1674,7 +1672,7 @@ impl Registrar<'_> {
                 Ok(())
             }
 
-            types::ComponentDefinedType::Future(payload) => {
+            ComponentDefinedType::Future(payload) => {
                 let ty = match &self.resolve.types[id].kind {
                     TypeDefKind::Future(p) => p,
                     TypeDefKind::Type(Type::Id(_)) => return Ok(()),
@@ -1687,7 +1685,7 @@ impl Registrar<'_> {
                 }
             }
 
-            types::ComponentDefinedType::Stream(payload) => {
+            ComponentDefinedType::Stream(payload) => {
                 let ty = match &self.resolve.types[id].kind {
                     TypeDefKind::Stream(p) => p,
                     TypeDefKind::Type(Type::Id(_)) => return Ok(()),
@@ -1700,12 +1698,9 @@ impl Registrar<'_> {
             types::ComponentDefinedType::Flags(_)
             | types::ComponentDefinedType::Enum(_)
             | types::ComponentDefinedType::Own(_)
-            | types::ComponentDefinedType::Borrow(_)
-            | types::ComponentDefinedType::Error => Ok(()),
+            | ComponentDefinedType::Error => Ok(()),
         }
-    }
 
-    fn valtype(&mut self, wasm: &ComponentValType, wit: &Type) -> Result<()> {
         let wasm = match wasm {
             ComponentValType::Type(wasm) => *wasm,
             ComponentValType::Primitive(_wasm) => {

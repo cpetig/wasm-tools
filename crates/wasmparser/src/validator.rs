@@ -1343,6 +1343,51 @@ impl Validator {
                     crate::CanonicalFunction::ThreadHwConcurrency => {
                         current.thread_hw_concurrency(types, offset, features)
                     }
+                    crate::CanonicalFunction::TaskBackpressure => {
+                        current.task_backpressure(types, offset)
+                    }
+                    crate::CanonicalFunction::TaskReturn { type_index } => {
+                        current.task_return(type_index, offset)
+                    }
+                    crate::CanonicalFunction::TaskWait { memory } => {
+                        current.task_wait(memory, types, offset)
+                    }
+                    crate::CanonicalFunction::TaskPoll { memory } => {
+                        current.task_poll(memory, types, offset)
+                    }
+                    crate::CanonicalFunction::TaskYield => current.task_yield(types, offset),
+                    crate::CanonicalFunction::SubtaskDrop => current.subtask_drop(types, offset),
+                    crate::CanonicalFunction::FutureNew { ty } => {
+                        current.future_new(ty, types, offset)
+                    }
+                    crate::CanonicalFunction::FutureWrite { ty, options } => {
+                        current.future_write(ty, options.into_vec(), types, offset)
+                    }
+                    crate::CanonicalFunction::FutureRead { ty, options } => {
+                        current.future_read(ty, options.into_vec(), types, offset)
+                    }
+                    crate::CanonicalFunction::FutureDropWriter { ty } => {
+                        current.future_drop_writer(ty, types, offset)
+                    }
+                    crate::CanonicalFunction::FutureDropReader { ty } => {
+                        current.future_drop_reader(ty, types, offset)
+                    }
+                    crate::CanonicalFunction::StreamNew { ty } => {
+                        current.stream_new(ty, types, offset)
+                    }
+                    crate::CanonicalFunction::StreamWrite { ty, options } => {
+                        current.stream_write(ty, options.into_vec(), types, offset)
+                    }
+                    crate::CanonicalFunction::StreamRead { ty, options } => {
+                        current.stream_read(ty, options.into_vec(), types, offset)
+                    }
+                    crate::CanonicalFunction::StreamDropWriter { ty } => {
+                        current.stream_drop_writer(ty, types, offset)
+                    }
+                    crate::CanonicalFunction::StreamDropReader { ty } => {
+                        current.stream_drop_reader(ty, types, offset)
+                    }
+                    crate::CanonicalFunction::ErrorDrop => current.error_drop(types, offset),
                 }
             },
         )

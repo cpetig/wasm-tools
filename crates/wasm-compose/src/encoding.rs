@@ -680,9 +680,9 @@ impl<'a> TypeEncoder<'a> {
                 state.cur.encodable.ty().defined_type().borrow(ty);
                 index
             }
-            wasmparser::types::ComponentDefinedType::Future(ty) => self.future(state, *ty),
-            wasmparser::types::ComponentDefinedType::Stream(ty) => self.stream(state, *ty),
-            wasmparser::types::ComponentDefinedType::Error => self.error(state),
+            ComponentDefinedType::Future(ty) => self.future(state, *ty),
+            ComponentDefinedType::Stream(ty) => self.stream(state, *ty),
+            ComponentDefinedType::Error => self.error(state),
         }
     }
 
@@ -805,11 +805,7 @@ impl<'a> TypeEncoder<'a> {
         export
     }
 
-    fn future(
-        &self,
-        state: &mut TypeState<'a>,
-        ty: Option<wasmparser::types::ComponentValType>,
-    ) -> u32 {
+    fn future(&self, state: &mut TypeState<'a>, ty: Option<ct::ComponentValType>) -> u32 {
         let ty = ty.map(|ty| self.component_val_type(state, ty));
 
         let index = state.cur.encodable.type_count();
@@ -817,7 +813,7 @@ impl<'a> TypeEncoder<'a> {
         index
     }
 
-    fn stream(&self, state: &mut TypeState<'a>, ty: wasmparser::types::ComponentValType) -> u32 {
+    fn stream(&self, state: &mut TypeState<'a>, ty: ct::ComponentValType) -> u32 {
         let ty = self.component_val_type(state, ty);
 
         let index = state.cur.encodable.type_count();
@@ -1255,14 +1251,14 @@ impl DependencyRegistrar<'_, '_> {
 
     fn defined(&mut self, ty: ComponentDefinedTypeId) {
         match &self.types[ty] {
-            types::ComponentDefinedType::Primitive(_)
-            | types::ComponentDefinedType::Enum(_)
-            | types::ComponentDefinedType::Flags(_)
-            | types::ComponentDefinedType::Error => {}
-            types::ComponentDefinedType::List(t)
-            | types::ComponentDefinedType::Option(t)
-            | types::ComponentDefinedType::Stream(t) => self.val_type(*t),
-            types::ComponentDefinedType::Own(r) | types::ComponentDefinedType::Borrow(r) => {
+            ComponentDefinedType::Primitive(_)
+            | ComponentDefinedType::Enum(_)
+            | ComponentDefinedType::Flags(_)
+            | ComponentDefinedType::Error => {}
+            ComponentDefinedType::List(t)
+            | ComponentDefinedType::Option(t)
+            | ComponentDefinedType::Stream(t) => self.val_type(*t),
+            ComponentDefinedType::Own(r) | ComponentDefinedType::Borrow(r) => {
                 self.ty(ComponentAnyTypeId::Resource(*r))
             }
             ComponentDefinedType::Record(r) => {
@@ -1290,7 +1286,7 @@ impl DependencyRegistrar<'_, '_> {
                     self.val_type(*err);
                 }
             }
-            types::ComponentDefinedType::Future(ty) => {
+            ComponentDefinedType::Future(ty) => {
                 if let Some(ty) = ty {
                     self.val_type(*ty);
                 }
@@ -1468,6 +1464,7 @@ impl<'a> CompositionGraphEncoder<'a> {
                 }
             }
         }
+
         let instance_type = match state.pop() {
             Encodable::Instance(c) => c,
             _ => unreachable!(),

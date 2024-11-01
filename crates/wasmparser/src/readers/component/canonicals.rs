@@ -151,6 +151,87 @@ pub enum CanonicalFunction {
     /// A function which returns the number of threads that can be expected to
     /// execute concurrently
     ThreadHwConcurrency,
+    /// TODO: docs
+    TaskBackpressure,
+    /// TODO: docs
+    TaskReturn {
+        /// TODO: docs
+        type_index: u32,
+    },
+    /// TODO: docs
+    TaskWait {
+        /// TODO: docs
+        memory: u32,
+    },
+    /// TODO: docs
+    TaskPoll {
+        /// TODO: docs
+        memory: u32,
+    },
+    /// TODO: docs
+    TaskYield,
+    /// TODO: docs
+    SubtaskDrop,
+    /// TODO: docs
+    FutureNew {
+        /// TODO: docs
+        ty: u32,
+    },
+    /// TODO: docs
+    FutureWrite {
+        /// TODO: docs
+        ty: u32,
+        /// TODO: docs
+        options: Box<[CanonicalOption]>,
+    },
+    /// TODO: docs
+    FutureRead {
+        /// TODO: docs
+        ty: u32,
+        /// TODO: docs
+        options: Box<[CanonicalOption]>,
+    },
+    /// TODO: docs
+    FutureDropWriter {
+        /// TODO: docs
+        ty: u32,
+    },
+    /// TODO: docs
+    FutureDropReader {
+        /// TODO: docs
+        ty: u32,
+    },
+    /// TODO: docs
+    StreamNew {
+        /// TODO: docs
+        ty: u32,
+    },
+    /// TODO: docs
+    StreamWrite {
+        /// TODO: docs
+        ty: u32,
+        /// TODO: docs
+        options: Box<[CanonicalOption]>,
+    },
+    /// TODO: docs
+    StreamRead {
+        /// TODO: docs
+        ty: u32,
+        /// TODO: docs
+        options: Box<[CanonicalOption]>,
+    },
+    /// TODO: docs
+    StreamDropWriter {
+        /// TODO: docs
+        ty: u32,
+    },
+    /// TODO: docs
+    StreamDropReader {
+        /// TODO: docs
+        ty: u32,
+    },
+    /// TODO: docs
+    ErrorDrop,
 }
 
 /// A reader for the canonical section of a WebAssembly component.
@@ -242,6 +323,61 @@ impl<'a> FromReader<'a> for CanonicalFunction {
                 func_ty_index: reader.read()?,
             },
             0x06 => CanonicalFunction::ThreadHwConcurrency,
+            0x08 => CanonicalFunction::TaskBackpressure,
+            0x09 => CanonicalFunction::TaskReturn {
+                type_index: reader.read()?,
+            },
+            0x0a => CanonicalFunction::TaskWait {
+                memory: reader.read()?,
+            },
+            0x0b => CanonicalFunction::TaskPoll {
+                memory: reader.read()?,
+            },
+            0x0c => CanonicalFunction::TaskYield,
+            0x0d => CanonicalFunction::SubtaskDrop,
+            0x0e => CanonicalFunction::StreamNew { ty: reader.read()? },
+            0x0f => CanonicalFunction::StreamRead {
+                ty: reader.read()?,
+                options: reader
+                    .read_iter(MAX_WASM_CANONICAL_OPTIONS, "canonical options")?
+                    .collect::<Result<_>>()?,
+            },
+            0x10 => CanonicalFunction::StreamWrite {
+                ty: reader.read()?,
+                options: reader
+                    .read_iter(MAX_WASM_CANONICAL_OPTIONS, "canonical options")?
+                    .collect::<Result<_>>()?,
+            },
+            0xfe => CanonicalFunction::StreamDropWriter { ty: reader.read()? },
+            0xfd => CanonicalFunction::StreamDropReader { ty: reader.read()? },
+            0x11 => {
+                return reader.invalid_leading_byte(0x11, "stream.cancel-read not yet supported")
+            }
+            0x12 => {
+                return reader.invalid_leading_byte(0x12, "stream.cancel-write not yet supported")
+            }
+            0x13 => CanonicalFunction::FutureNew { ty: reader.read()? },
+            0x14 => CanonicalFunction::FutureRead {
+                ty: reader.read()?,
+                options: reader
+                    .read_iter(MAX_WASM_CANONICAL_OPTIONS, "canonical options")?
+                    .collect::<Result<_>>()?,
+            },
+            0x15 => CanonicalFunction::FutureWrite {
+                ty: reader.read()?,
+                options: reader
+                    .read_iter(MAX_WASM_CANONICAL_OPTIONS, "canonical options")?
+                    .collect::<Result<_>>()?,
+            },
+            0xfc => CanonicalFunction::FutureDropWriter { ty: reader.read()? },
+            0xfb => CanonicalFunction::FutureDropReader { ty: reader.read()? },
+            0x16 => {
+                return reader.invalid_leading_byte(0x16, "future.cancel-read not yet supported")
+            }
+            0x17 => {
+                return reader.invalid_leading_byte(0x17, "future.cancel-write not yet supported")
+            }
+            0xff => CanonicalFunction::ErrorDrop,
             x => return reader.invalid_leading_byte(x, "canonical function"),
         })
     }

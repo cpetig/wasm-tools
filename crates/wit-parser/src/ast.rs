@@ -1463,7 +1463,8 @@ impl<'a> Type<'a> {
             | Type::F32(span)
             | Type::F64(span)
             | Type::Char(span)
-            | Type::String(span) => *span,
+            | Type::String(span)
+            | Type::Error(span) => *span,
             Type::Name(id) => id.span,
             Type::List(l) => l.span,
             Type::Handle(h) => h.span(),

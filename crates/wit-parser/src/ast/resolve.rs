@@ -1252,10 +1252,10 @@ impl<'a> Resolver<'a> {
                 ok: self.resolve_optional_type(r.ok.as_deref(), stability)?,
                 err: self.resolve_optional_type(r.err.as_deref(), stability)?,
             }),
-            ast::Type::Future(t) => TypeDefKind::Future(
-                self.resolve_optional_type(t.ty.as_ref().map(|bx| &**bx), stability)?,
-            ),
-            ast::Type::Stream(t) => TypeDefKind::Stream(self.resolve_type(&t.ty, stability)?),
+            ast::Type::Future(t) => {
+                TypeDefKind::Future(self.resolve_optional_type(t.ty.as_deref(), stability)?)
+            }
+            ast::Type::Stream(s) => TypeDefKind::Stream(self.resolve_type(&s.ty, stability)?),
             ast::Type::Error(_) => TypeDefKind::Error,
         })
     }
@@ -1547,7 +1547,6 @@ fn collect_deps<'a>(ty: &ast::Type<'a>, deps: &mut Vec<ast::Id<'a>>) {
         | ast::Type::Enum(_)
         | ast::Type::Error(_) => {}
         ast::Type::Name(name) => deps.push(name.clone()),
-        ast::Type::List(list) => collect_deps(&list.ty, deps),
         ast::Type::Handle(handle) => match handle {
             ast::Handle::Own { resource } => deps.push(resource.clone()),
             ast::Handle::Borrow { resource } => deps.push(resource.clone()),
@@ -1570,8 +1569,9 @@ fn collect_deps<'a>(ty: &ast::Type<'a>, deps: &mut Vec<ast::Id<'a>>) {
                 }
             }
         }
-        ast::Type::Stream(ty) => collect_deps(&ty.ty, deps),
-        ast::Type::Option(ty) => collect_deps(&ty.ty, deps),
+        ast::Type::Option(ast::Option_ { ty, .. })
+        | ast::Type::List(ast::List { ty, .. })
+        | ast::Type::Stream(ast::Stream { ty, .. }) => collect_deps(ty, deps),
         ast::Type::Result(r) => {
             if let Some(ty) = &r.ok {
                 collect_deps(ty, deps);
