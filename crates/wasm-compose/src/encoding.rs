@@ -619,15 +619,17 @@ impl<'a> TypeEncoder<'a> {
         return match id {
             AnyTypeId::Core(ComponentCoreTypeId::Sub(_)) => unreachable!(),
             AnyTypeId::Core(ComponentCoreTypeId::Module(id)) => self.module_type(state, id),
-            AnyTypeId::Component(id) => match id {
-                ComponentAnyTypeId::Resource(r) => {
-                    unreachable!("should have been handled in `TypeEncoder::component_entity_type`: {r:?}")
+            AnyTypeId::Component(id) => {
+                match id {
+                    ComponentAnyTypeId::Resource(r) => {
+                        unreachable!("should have been handled in `TypeEncoder::component_entity_type`: {r:?}")
+                    }
+                    ComponentAnyTypeId::Defined(id) => self.defined_type(state, id),
+                    ComponentAnyTypeId::Func(id) => self.component_func_type(state, id),
+                    ComponentAnyTypeId::Instance(id) => self.component_instance_type(state, id),
+                    ComponentAnyTypeId::Component(id) => self.component_type(state, id),
                 }
-                ComponentAnyTypeId::Defined(id) => self.defined_type(state, id),
-                ComponentAnyTypeId::Func(id) => self.component_func_type(state, id),
-                ComponentAnyTypeId::Instance(id) => self.component_instance_type(state, id),
-                ComponentAnyTypeId::Component(id) => self.component_type(state, id),
-            },
+            }
         };
     }
 

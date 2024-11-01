@@ -1656,16 +1656,17 @@ impl Printer<'_, '_> {
             Self::print_operators(&mut reader, &[], 0, &mut folded_printer)?;
             folded_printer.finalize()?;
         } else {
-        let mut op_printer =
-            operator::PrintOperator::new(self, state, operator::OperatorSeparator::None);
-        while !reader.is_end_then_eof() {
-            if first {
-                first = false;
-            } else {
-                write!(op_printer.printer.result, " ")?;
+            let mut op_printer =
+                operator::PrintOperator::new(self, state, operator::OperatorSeparator::None);
+            while !reader.is_end_then_eof() {
+                if first {
+                    first = false;
+                } else {
+                    write!(op_printer.printer.result, " ")?;
+                }
+                reader.visit_operator(&mut op_printer)??;
             }
-            reader.visit_operator(&mut op_printer)??;
-        }}
+        }
         Ok(())
     }
 

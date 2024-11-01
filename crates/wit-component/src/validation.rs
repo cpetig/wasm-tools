@@ -114,7 +114,7 @@ pub struct ValidatedModule<'a> {
     /// Callback functions annotated with `[callback]*` in their function
     /// name.
     pub callbacks: IndexSet<String>,
-    
+
     /// Exported function like `_initialize` which needs to be run after
     /// everything else has been instantiated.
     pub initialize: Option<&'a str>,

@@ -18,8 +18,8 @@ use crate::ast::{parse_use_path, ParsedUsePath};
 use crate::serde_::{serialize_arena, serialize_id_map};
 use crate::{
     AstItem, Docs, Error, Function, FunctionKind, Handle, IncludeName, Interface, InterfaceId,
-    InterfaceSpan, Mangling, PackageName, PackageNotFoundError, Result_, Results, SourceMap, Stability,
-    Type, TypeDef, TypeDefKind, TypeId, TypeIdVisitor, TypeOwner, UnresolvedPackage,
+    InterfaceSpan, Mangling, PackageName, PackageNotFoundError, Result_, Results, SourceMap,
+    Stability, Type, TypeDef, TypeDefKind, TypeId, TypeIdVisitor, TypeOwner, UnresolvedPackage,
     UnresolvedPackageGroup, World, WorldId, WorldItem, WorldKey, WorldSpan,
 };
 

@@ -2194,12 +2194,7 @@ impl<'a> EncodingState<'a> {
     /// This function is called for individual imports and uses the results of
     /// validation, notably the `Import` type, to determine what WIT-level or
     /// component-level construct is being hooked up.
-    fn materialize_import(
-        &mut self,
-        shims: &Shims<'_>,
-        name: &'a str,
-        adapter: &'a WorldAdapter,
-    ) {
+    fn materialize_import(&mut self, shims: &Shims<'_>, name: &'a str, adapter: &'a WorldAdapter) {
         let mut args = Vec::new();
 
         let mut core_exports = Vec::new();

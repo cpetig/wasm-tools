@@ -471,7 +471,7 @@ impl ComponentBuilder {
         self.canonical_functions().task_wait(memory);
         inc(&mut self.core_funcs)
     }
-    
+
     /// Declares a new `thread.spawn` intrinsic.
     pub fn thread_spawn(&mut self, ty: u32) -> u32 {
         self.canonical_functions().thread_spawn(ty);
