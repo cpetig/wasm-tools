@@ -13,10 +13,10 @@ use super::{
     core::{InternRecGroup, Module},
     types::{CoreTypeId, EntityType, TypeAlloc, TypeInfo, TypeList},
 };
-use crate::collections::index_map::Entry;
 use crate::limits::*;
 use crate::prelude::*;
 use crate::validator::names::{ComponentName, ComponentNameKind, KebabStr, KebabString};
+use crate::{collections::index_map::Entry, CompositeType, RecGroup};
 use crate::{
     BinaryReaderError, CanonicalOption, ComponentExportName, ComponentExternalKind,
     ComponentOuterAliasKind, ComponentTypeRef, CompositeInnerType, ExternalKind, FuncType,

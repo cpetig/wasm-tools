@@ -893,7 +893,7 @@ impl TypeData for ComponentFuncType {
 impl ComponentFuncType {
     /// Lowers the component function type to core parameter and result types for the
     /// canonical ABI.
-    pub(crate) fn lower(&self, types: &TypeList, is_lower: bool) -> LoweringInfo {
+    pub(crate) fn lower(&self, types: &TypeList, is_lower: bool, async_: bool) -> LoweringInfo {
         let mut info = LoweringInfo::default();
 
         for (_, ty) in self.params.iter() {

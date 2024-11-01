@@ -3,16 +3,22 @@
 use super::core::Module;
 #[cfg(feature = "component-model")]
 use crate::validator::component::ComponentState;
+use crate::validator::component_types::{
+    ComponentAnyTypeId, ComponentCoreInstanceTypeId, ComponentCoreModuleTypeId,
+    ComponentFuncTypeId, ComponentInstanceTypeId, ComponentTypeId,
+};
 #[cfg(feature = "component-model")]
 use crate::validator::component_types::{ComponentTypeAlloc, ComponentTypeList};
 use crate::{collections::map::Entry, AbstractHeapType};
 use crate::{prelude::*, CompositeInnerType};
 use crate::{
-    Export, ExternalKind, GlobalType, Import, Matches, MemoryType, PackedIndex, RecGroup, RefType,
-    Result, SubType, TableType, TypeRef, UnpackedIndex, ValType, WithRecGroup,
+    ComponentValType, Export, ExternalKind, GlobalType, Import, Matches, MemoryType, PackedIndex,
+    RecGroup, RefType, Result, SubType, TableType, TypeRef, UnpackedIndex, ValType, WithRecGroup,
 };
 use crate::{HeapType, ValidatorId};
 use alloc::sync::Arc;
+use core::borrow::Borrow;
+use core::hash::Hasher;
 use core::ops::{Deref, DerefMut, Index, Range};
 use core::{hash::Hash, mem};
 
