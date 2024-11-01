@@ -957,20 +957,6 @@ pub mod component_utils {
                 let resource = reencoder.component_type_index(resource);
                 section.resource_rep(resource);
             }
-            wasmparser::CanonicalFunction::AsyncStart { .. } => todo!(),
-            wasmparser::CanonicalFunction::AsyncReturn { .. } => todo!(),
-            wasmparser::CanonicalFunction::FutureNew { .. } => todo!(),
-            wasmparser::CanonicalFunction::FutureSend { .. } => todo!(),
-            wasmparser::CanonicalFunction::FutureReceive { .. } => todo!(),
-            wasmparser::CanonicalFunction::FutureDropSender { .. } => todo!(),
-            wasmparser::CanonicalFunction::FutureDropReceiver { .. } => todo!(),
-            wasmparser::CanonicalFunction::StreamNew { .. } => todo!(),
-            wasmparser::CanonicalFunction::StreamSend { .. } => todo!(),
-            wasmparser::CanonicalFunction::StreamReceive { .. } => todo!(),
-            wasmparser::CanonicalFunction::StreamDropSender { .. } => todo!(),
-            wasmparser::CanonicalFunction::StreamDropReceiver { .. } => todo!(),
-            wasmparser::CanonicalFunction::ErrorDrop => todo!(),
-            wasmparser::CanonicalFunction::TaskWait { .. } => todo!(),
             wasmparser::CanonicalFunction::ThreadSpawn { func_ty_index } => {
                 let func_ty = reencoder.type_index(func_ty_index);
                 section.thread_spawn(func_ty);

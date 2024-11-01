@@ -438,7 +438,7 @@ impl ImportedInterface {
             Lowering::Indirect { sig, options }
         };
 
-        let prev = self.lowerings.insert(name, lowering);
+        let prev = self.lowerings.insert(func.name.clone(), lowering);
         assert!(prev.is_none());
     }
 

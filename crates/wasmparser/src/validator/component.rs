@@ -13,10 +13,10 @@ use super::{
     core::{InternRecGroup, Module},
     types::{CoreTypeId, EntityType, TypeAlloc, TypeInfo, TypeList},
 };
+use crate::collections::index_map::Entry;
 use crate::limits::*;
 use crate::prelude::*;
 use crate::validator::names::{ComponentName, ComponentNameKind, KebabStr, KebabString};
-use crate::{collections::index_map::Entry, CompositeType, RecGroup};
 use crate::{
     BinaryReaderError, CanonicalOption, ComponentExportName, ComponentExternalKind,
     ComponentOuterAliasKind, ComponentTypeRef, CompositeInnerType, CompositeType, ExternalKind,
@@ -1299,7 +1299,10 @@ impl ComponentState {
         ));
         let id = types[group_id].start;
         self.core_funcs.push(id);
-    pub fn stream_send(
+        Ok(())
+    }
+
+    pub fn stream_write(
         &mut self,
         ty: u32,
         options: Vec<CanonicalOption>,
@@ -1357,6 +1360,9 @@ impl ComponentState {
                         [ValType::I32; 3],
                         [ValType::I32],
                     )),
+                },
+            },
+        ));
         let id = types[group_id].start;
         self.core_funcs.push(id);
         Ok(())

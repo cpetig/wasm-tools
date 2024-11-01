@@ -156,14 +156,6 @@ impl CanonicalFunctionSection {
         self
     }
 
-    /// TODO: docs
-    pub fn async_start(&mut self, ty: u32) -> &mut Self {
-        self.bytes.push(0x05);
-        ty.encode(&mut self.bytes);
-        self.num_added += 1;
-        self
-    }
-
     /// Defines a function which will spawns a new thread by invoking a shared
     /// function of type `ty_index`.
     pub fn thread_spawn(&mut self, ty_index: u32) -> &mut Self {
@@ -173,143 +165,10 @@ impl CanonicalFunctionSection {
         self
     }
 
-    /// TODO: docs
-    pub fn async_return(&mut self, ty: u32) -> &mut Self {
+    /// Defines a function which will return the number of threads that can be
+    /// expected to execute concurrently.
+    pub fn thread_hw_concurrency(&mut self) -> &mut Self {
         self.bytes.push(0x06);
-        ty.encode(&mut self.bytes);
-        self.num_added += 1;
-        self
-    }
-
-    /// TODO: docs
-    pub fn future_new(&mut self, ty: u32, memory: u32) -> &mut Self {
-        self.bytes.push(0x07);
-        ty.encode(&mut self.bytes);
-        memory.encode(&mut self.bytes);
-        self.num_added += 1;
-        self
-    }
-
-    /// TODO: docs
-    pub fn future_send<O>(&mut self, ty: u32, options: O) -> &mut Self
-    where
-        O: IntoIterator<Item = CanonicalOption>,
-        O::IntoIter: ExactSizeIterator,
-    {
-        self.bytes.push(0x08);
-        ty.encode(&mut self.bytes);
-        let options = options.into_iter();
-        options.len().encode(&mut self.bytes);
-        for option in options {
-            option.encode(&mut self.bytes);
-        }
-        self.num_added += 1;
-        self
-    }
-
-    /// TODO: docs
-    pub fn future_receive<O>(&mut self, ty: u32, options: O) -> &mut Self
-    where
-        O: IntoIterator<Item = CanonicalOption>,
-        O::IntoIter: ExactSizeIterator,
-    {
-        self.bytes.push(0x09);
-        ty.encode(&mut self.bytes);
-        let options = options.into_iter();
-        options.len().encode(&mut self.bytes);
-        for option in options {
-            option.encode(&mut self.bytes);
-        }
-        self.num_added += 1;
-        self
-    }
-
-    /// TODO: docs
-    pub fn future_drop_sender(&mut self, ty: u32) -> &mut Self {
-        self.bytes.push(0x0a);
-        ty.encode(&mut self.bytes);
-        self.num_added += 1;
-        self
-    }
-
-    /// TODO: docs
-    pub fn future_drop_receiver(&mut self, ty: u32) -> &mut Self {
-        self.bytes.push(0x0b);
-        ty.encode(&mut self.bytes);
-        self.num_added += 1;
-        self
-    }
-
-    /// TODO: docs
-    pub fn stream_new(&mut self, ty: u32, memory: u32) -> &mut Self {
-        self.bytes.push(0x0c);
-        ty.encode(&mut self.bytes);
-        memory.encode(&mut self.bytes);
-        self.num_added += 1;
-        self
-    }
-
-    /// TODO: docs
-    pub fn stream_send<O>(&mut self, ty: u32, options: O) -> &mut Self
-    where
-        O: IntoIterator<Item = CanonicalOption>,
-        O::IntoIter: ExactSizeIterator,
-    {
-        self.bytes.push(0x0d);
-        ty.encode(&mut self.bytes);
-        let options = options.into_iter();
-        options.len().encode(&mut self.bytes);
-        for option in options {
-            option.encode(&mut self.bytes);
-        }
-        self.num_added += 1;
-        self
-    }
-
-    /// TODO: docs
-    pub fn stream_receive<O>(&mut self, ty: u32, options: O) -> &mut Self
-    where
-        O: IntoIterator<Item = CanonicalOption>,
-        O::IntoIter: ExactSizeIterator,
-    {
-        self.bytes.push(0x0e);
-        ty.encode(&mut self.bytes);
-        let options = options.into_iter();
-        options.len().encode(&mut self.bytes);
-        for option in options {
-            option.encode(&mut self.bytes);
-        }
-        self.num_added += 1;
-        self
-    }
-
-    /// TODO: docs
-    pub fn stream_drop_sender(&mut self, ty: u32) -> &mut Self {
-        self.bytes.push(0x0f);
-        ty.encode(&mut self.bytes);
-        self.num_added += 1;
-        self
-    }
-
-    /// TODO: docs
-    pub fn stream_drop_receiver(&mut self, ty: u32) -> &mut Self {
-        self.bytes.push(0x10);
-        ty.encode(&mut self.bytes);
-        self.num_added += 1;
-        self
-    }
-
-    /// TODO: docs
-    pub fn error_drop(&mut self) -> &mut Self {
-        self.bytes.push(0x11);
-        self.num_added += 1;
-        self
-    }
-
-    /// TODO: docs
-    pub fn task_wait(&mut self, memory: u32) -> &mut Self {
-        self.bytes.push(0x12);
-        memory.encode(&mut self.bytes);
         self.num_added += 1;
         self
     }

@@ -1695,12 +1695,15 @@ impl Registrar<'_> {
             }
 
             // These have no recursive structure so they can bail out.
-            types::ComponentDefinedType::Flags(_)
-            | types::ComponentDefinedType::Enum(_)
-            | types::ComponentDefinedType::Own(_)
+            ComponentDefinedType::Flags(_)
+            | ComponentDefinedType::Enum(_)
+            | ComponentDefinedType::Own(_)
+            | ComponentDefinedType::Borrow(_)
             | ComponentDefinedType::Error => Ok(()),
         }
+    }
 
+    fn valtype(&mut self, wasm: &ComponentValType, wit: &Type) -> Result<()> {
         let wasm = match wasm {
             ComponentValType::Type(wasm) => *wasm,
             ComponentValType::Primitive(_wasm) => {
