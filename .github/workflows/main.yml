@@ -56,7 +56,7 @@ jobs:
         name: bins-${{ matrix.build }}
         path: dist
 
-  test-no-hash-maps:
+  test-prefer-btree-collections:
     name: Test (no-hash-maps)
     runs-on: ubuntu-latest
     steps:
@@ -64,8 +64,8 @@ jobs:
         with:
           submodules: true
       - uses: bytecodealliance/wasmtime/.github/actions/install-rust@v20.0.0
-      - name: Test (no-hash-maps)
-        run: cargo test --workspace --locked --features no-hash-maps
+      - name: Test (prefer-btree-collections)
+        run: cargo test --workspace --locked --features prefer-btree-collections
 
   test:
     name: Test
@@ -91,7 +91,7 @@ jobs:
           # this is the rust nightly that oss-fuzz currently uses so we don't
           # want this to break.
           - os: ubuntu-latest
-            rust: nightly-2024-02-12
+            rust: nightly-2024-07-12
           # test that if `RUST_BACKTRACE=1` is set in the environment that all
           # tests with blessed error messages still pass.
           - os: ubuntu-latest
@@ -119,6 +119,7 @@ jobs:
     - run: cargo test --locked -p wasmparser --benches
     - run: cargo test --locked -p wasm-encoder --all-features
     - run: cargo test -p wasm-smith --features wasmparser
+    - run: cargo test -p wasm-smith --features component-model
 
   test_capi:
     name: Test the C API
@@ -237,16 +238,33 @@ jobs:
       - run: cargo check --no-default-features -p wasmparser
       - run: cargo check --no-default-features -p wasmparser --target x86_64-unknown-none
       - run: cargo check --no-default-features -p wasmparser --target x86_64-unknown-none --features validate,serde
-      - run: cargo check --no-default-features -p wasmparser --target x86_64-unknown-none --features validate,serde,no-hash-maps
+      - run: cargo check --no-default-features -p wasmparser --target x86_64-unknown-none --features validate,serde,prefer-btree-collections
       - run: cargo check --no-default-features -p wasmparser --features std
       - run: cargo check --no-default-features -p wasmparser --features validate
       - run: cargo check --no-default-features -p wasmparser --features features
       - run: cargo check --no-default-features -p wasmparser --features features,validate
-      - run: cargo check --no-default-features -p wasmparser --features no-hash-maps
+      - run: cargo check --no-default-features -p wasmparser --features prefer-btree-collections
       - run: cargo check --no-default-features -p wasmparser --features serde
-      - run: cargo check --no-default-features -p wasmparser --features serde,no-hash-maps
+      - run: cargo check --no-default-features -p wasmparser --features serde,prefer-btree-collections
+      - run: cargo check --no-default-features -p wasmparser --features component-model
+      - run: cargo check --no-default-features -p wasmparser --features component-model,validate
+      - run: cargo check --no-default-features -p wasmparser --features std,component-model
+      - run: cargo check --no-default-features -p wasmparser --features std,component-model,validate
+      - run: cargo check --no-default-features -p wasmprinter
+      - run: cargo check --no-default-features -p wasmprinter --features component-model
       - run: cargo check --no-default-features -p wast
       - run: cargo check --no-default-features -p wast --features wasm-module
+      - run: cargo check --no-default-features -p wast --features wasm-module,component-model
+      - run: cargo check --no-default-features -p wat
+      - run: cargo check --no-default-features -p wat --features component-model
+      - run: cargo check --no-default-features -p wat --features dwarf
+      - run: cargo check --no-default-features -p wasm-encoder
+      - run: cargo check --no-default-features -p wasm-encoder --features component-model
+      - run: cargo check --no-default-features -p wasm-encoder --features wasmparser
+      - run: cargo check --no-default-features -p wasm-smith
+      - run: cargo check --no-default-features -p wasm-smith --features component-model
+      - run: cargo check --no-default-features -p wasm-smith --features wasmparser
+      - run: cargo check --no-default-features -p wasm-smith --features wasmparser,component-model
       - run: |
           if cargo tree -p wasm-smith --no-default-features -e no-dev | grep wasmparser; then
             echo wasm-smith without default features should not depend on wasmparser
@@ -265,7 +283,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: bytecodealliance/wasmtime/.github/actions/install-rust@v20.0.0
       - run: rustup component add clippy
-      - run: cargo clippy --workspace --exclude dl --exclude component
+      - run: cargo clippy --workspace --all-targets --exclude dl --exclude component
 
   verify-publish:
     if: github.repository_owner == 'bytecodealliance'
@@ -297,7 +315,7 @@ jobs:
       - verify-publish
       - test_capi
       - test_extra_features
-      - test-no-hash-maps
+      - test-prefer-btree-collections
       - clippy
     if: always()
 

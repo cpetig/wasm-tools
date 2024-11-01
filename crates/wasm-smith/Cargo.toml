@@ -12,6 +12,9 @@ version.workspace = true
 exclude = ["/benches/corpus"]
 rust-version.workspace = true
 
+[package.metadata.docs.rs]
+all-features = true
+
 [[bench]]
 name = "corpus"
 harness = false
@@ -29,15 +32,15 @@ leb128 = { workspace = true }
 serde = { workspace = true, optional = true }
 serde_derive = { workspace = true, optional = true }
 wasm-encoder = { workspace = true }
-wasmparser = { workspace = true, optional = true, features = ['validate'] }
+wasmparser = { workspace = true, optional = true, features = ['validate', 'features'] }
 wat = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
 rand = { workspace = true }
 wasmparser = { workspace = true, features = ["validate", "features"] }
-wasmprinter = { path = "../wasmprinter" }
-wat = { path = "../wat" }
+wasmprinter = { workspace = true }
+wat = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 libfuzzer-sys = { workspace = true }
@@ -45,3 +48,4 @@ libfuzzer-sys = { workspace = true }
 [features]
 _internal_cli = ["clap", "flagset/serde", "serde", "serde_derive", "wasmparser", "wat"]
 wasmparser = ['dep:wasmparser', 'wasm-encoder/wasmparser']
+component-model = ['wasm-encoder/component-model']

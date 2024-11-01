@@ -12,7 +12,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use indexmap::IndexMap;
 use std::{collections::VecDeque, ffi::OsStr, path::Path};
 use wasmparser::{
-    types::{ComponentEntityType, ComponentInstanceTypeId, TypesRef},
+    component_types::{ComponentEntityType, ComponentInstanceTypeId},
+    types::TypesRef,
     ComponentExternalKind, ComponentTypeRef,
 };
 
@@ -249,7 +250,7 @@ impl<'a> CompositionGraphBuilder<'a> {
 
         match component.export_by_name(export) {
             Some((export_index, kind, index)) if kind == ComponentExternalKind::Instance => {
-                let export_ty = component.types.component_instance_at(index);
+                let export_ty = component.types.as_ref().component_instance_at(index);
 
                 if self.graph.try_connection(
                     component_id,
@@ -289,6 +290,7 @@ impl<'a> CompositionGraphBuilder<'a> {
                 name,
                 component
                     .types
+                    .as_ref()
                     .component_any_type_at(index)
                     .unwrap_instance(),
             ),

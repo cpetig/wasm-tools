@@ -1,23 +1,20 @@
 use super::{Adapter, ComponentEncoder, LibraryInfo, RequiredOptions};
 use crate::validation::{
-    validate_adapter_module, validate_module, RequiredImports, ValidatedAdapter, ValidatedModule,
-    BARE_FUNC_MODULE_NAME, RESOURCE_DROP,
+    validate_adapter_module, validate_module, Import, ImportMap, ValidatedModule,
 };
 use anyhow::{Context, Result};
 use indexmap::{IndexMap, IndexSet};
-use std::borrow::{Borrow, Cow};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::hash::Hash;
-use wasmparser::FuncType;
 use wit_parser::{
-    abi::{AbiVariant, WasmSignature, WasmType},
+    abi::{AbiVariant, WasmSignature},
     Function, InterfaceId, LiveTypes, Resolve, TypeDefKind, TypeId, TypeOwner, WorldId, WorldItem,
     WorldKey,
 };
 
 pub struct WorldAdapter<'a> {
     pub wasm: Cow<'a, [u8]>,
-    pub info: ValidatedAdapter<'a>,
+    pub info: ValidatedModule,
     pub library_info: Option<&'a LibraryInfo>,
 }
 
@@ -31,7 +28,7 @@ pub struct ComponentWorld<'a> {
     pub encoder: &'a ComponentEncoder,
     /// Validation information of the input module, or `None` in `--types-only`
     /// mode.
-    pub info: ValidatedModule<'a>,
+    pub info: ValidatedModule,
     /// Validation information about adapters populated only for required
     /// adapters. Additionally stores the gc'd wasm for each adapter.
     pub adapters: IndexMap<&'a str, WorldAdapter<'a>>,
@@ -66,18 +63,7 @@ pub enum Lowering {
 
 impl<'a> ComponentWorld<'a> {
     pub fn new(encoder: &'a ComponentEncoder) -> Result<Self> {
-        let adapters = encoder
-            .adapters
-            .keys()
-            .map(|s| s.as_str())
-            .collect::<IndexSet<_>>();
-        let info = validate_module(
-            &encoder.module,
-            &encoder.metadata,
-            &encoder.main_module_exports,
-            &adapters,
-        )
-        .context("module was not valid")?;
+        let info = validate_module(encoder, &encoder.module).context("module was not valid")?;
 
         let mut ret = ComponentWorld {
             encoder,
@@ -88,7 +74,7 @@ impl<'a> ComponentWorld<'a> {
             exports_used: HashMap::new(),
         };
 
-        ret.process_adapters(&adapters)?;
+        ret.process_adapters()?;
         ret.process_imports()?;
         ret.process_exports_used();
         ret.process_live_type_imports();
@@ -100,21 +86,21 @@ impl<'a> ComponentWorld<'a> {
     /// adapters and figure out what functions are required from the
     /// adapter itself, either because the functions are imported by the
     /// main module or they're part of the adapter's exports.
-    fn process_adapters(&mut self, adapters: &IndexSet<&str>) -> Result<()> {
+    fn process_adapters(&mut self) -> Result<()> {
         let resolve = &self.encoder.metadata.resolve;
         let world = self.encoder.metadata.world;
         for (
             name,
             Adapter {
                 wasm,
-                metadata,
+                metadata: _,
                 required_exports,
                 library_info,
             },
         ) in self.encoder.adapters.iter()
         {
-            let required_by_import = self.info.adapters_required.get(name.as_str());
-            let no_required_by_import = || required_by_import.map(|m| m.is_empty()).unwrap_or(true);
+            let required_by_import = self.info.imports.required_from_adapter(name.as_str());
+            let no_required_by_import = || required_by_import.is_empty();
             let no_required_exports = || {
                 required_exports
                     .iter()
@@ -132,12 +118,49 @@ impl<'a> ComponentWorld<'a> {
             let wasm = if library_info.is_some() {
                 Cow::Borrowed(wasm as &[u8])
             } else {
-                let required = self.required_adapter_exports(
-                    resolve,
-                    world,
+                // Without `library_info` this means that this is an adapter.
+                // The goal of the adapter is to provide a suite of symbols that
+                // can be imported, but not all symbols may be imported. Here
+                // the module is trimmed down to only what's needed by the
+                // original main module.
+                //
+                // The main module requires `required_by_import` above, but
+                // adapters may themselves also export WIT items. To handle this
+                // the sequence of operations here are:
+                //
+                // 1. First the adapter is validated as-is. This ensures that
+                //    everything looks good before GC.
+                // 2. The metadata from step (1) is used to determine the set of
+                //    WIT-level exports that are needed. This includes things
+                //    like realloc functions and such.
+                // 3. The set of WIT-level functions from (2) is unioned with
+                //    `required_by_import` to create the set of required exports
+                //    of the adapter.
+                // 4. This set of exports is used to delete some exports of the
+                //    adapter and then perform a GC pass.
+                //
+                // Finally at the end of all of this the
+                // `validate_adapter_module` method is called for a second time
+                // on the minimized adapter. This is done because deleting
+                // imports may have deleted some imports which means that the
+                // final component may not need to import as many interfaces.
+                let info = validate_adapter_module(
+                    self.encoder,
+                    &wasm,
+                    &required_by_import,
                     required_exports,
-                    required_by_import,
-                );
+                    library_info.as_ref(),
+                )
+                .with_context(|| {
+                    format!("failed to validate the imports of the adapter module `{name}`")
+                })?;
+                let mut required = IndexSet::new();
+                for (name, _ty) in required_by_import.iter() {
+                    required.insert(name.to_string());
+                }
+                for (name, _export) in info.exports.iter() {
+                    required.insert(name.to_string());
+                }
 
                 Cow::Owned(
                     crate::gc::run(
@@ -146,23 +169,22 @@ impl<'a> ComponentWorld<'a> {
                         if self.encoder.realloc_via_memory_grow {
                             None
                         } else {
-                            self.info.realloc
+                            self.info.exports.realloc_to_import_into_adapter()
                         },
                     )
                     .context("failed to reduce input adapter module to its minimal size")?,
                 )
             };
             let info = validate_adapter_module(
+                self.encoder,
                 &wasm,
-                resolve,
-                world,
-                metadata,
-                required_by_import,
+                &required_by_import,
                 required_exports,
-                library_info.is_some(),
-                adapters,
+                library_info.as_ref(),
             )
-            .context("failed to validate the imports of the minimized adapter module")?;
+            .with_context(|| {
+                format!("failed to validate the imports of the minimized adapter module `{name}`")
+            })?;
             self.adapters.insert(
                 name,
                 WorldAdapter {
@@ -175,95 +197,46 @@ impl<'a> ComponentWorld<'a> {
         Ok(())
     }
 
-    /// Returns the set of functions required to be exported from an adapter,
-    /// either because they're exported from the adapter's world or because
-    /// they're required as an import to the main module.
-    fn required_adapter_exports<'r>(
-        &self,
-        resolve: &'r Resolve,
-        world: WorldId,
-        required_exports: &IndexSet<WorldKey>,
-        required_by_import: Option<&IndexMap<&str, FuncType>>,
-    ) -> IndexMap<String, (FuncType, Option<&'r Function>)> {
-        use wasmparser::ValType;
-
-        let mut required = IndexMap::new();
-        if let Some(imports) = required_by_import {
-            for (name, ty) in imports {
-                required.insert(name.to_string(), (ty.clone(), None));
-            }
-        }
-        let mut add_func = |func: &'r Function, name: Option<&str>| {
-            let name = func.core_export_name(name);
-            let ty = resolve.wasm_signature(AbiVariant::GuestExport, func);
-            let prev = required.insert(
-                name.into_owned(),
-                (
-                    wasmparser::FuncType::new(
-                        ty.params.iter().map(to_valty),
-                        ty.results.iter().map(to_valty),
-                    ),
-                    Some(func),
-                ),
-            );
-            assert!(prev.is_none());
-        };
-        for name in required_exports {
-            match &resolve.worlds[world].exports[name] {
-                WorldItem::Function(func) => add_func(func, None),
-                WorldItem::Interface { id, .. } => {
-                    let name = resolve.name_world_key(name);
-                    for (_, func) in resolve.interfaces[*id].functions.iter() {
-                        add_func(func, Some(&name));
-                    }
-                }
-                WorldItem::Type(_) => {}
-            }
-        }
-        return required;
-
-        fn to_valty(ty: &WasmType) -> ValType {
-            match ty {
-                WasmType::I32 => ValType::I32,
-                WasmType::I64 => ValType::I64,
-                WasmType::F32 => ValType::F32,
-                WasmType::F64 => ValType::F64,
-                WasmType::Pointer => ValType::I32,
-                WasmType::PointerOrI64 => ValType::I64,
-                WasmType::Length => ValType::I32,
-            }
-        }
-    }
-
     /// Fills out the `import_map` field of `self` by determining the live
     /// functions from all imports. This additionally classifies imported
     /// functions into direct or indirect lowerings for managing shims.
     fn process_imports(&mut self) -> Result<()> {
         let resolve = &self.encoder.metadata.resolve;
         let world = self.encoder.metadata.world;
-        let mut all_required_imports = IndexMap::new();
-        for map in self.adapters.values().map(|a| &a.info.required_imports) {
-            for (k, v) in map {
-                all_required_imports
-                    .entry(k.as_str())
-                    .or_insert_with(IndexSet::new)
-                    .extend(v.funcs.iter().map(|v| v.as_str()));
+
+        // Inspect all imports of the main module and adapters to find all
+        // WIT-looking things and register those as required. This is used to
+        // prune out unneeded things in the `add_item` function below.
+        let mut required = Required::default();
+        for (_, _, import) in self
+            .adapters
+            .values()
+            .flat_map(|a| a.info.imports.imports())
+            .chain(self.info.imports.imports())
+        {
+            match import {
+                Import::WorldFunc(_, name) => {
+                    required
+                        .interface_funcs
+                        .entry(None)
+                        .or_default()
+                        .insert(name);
+                }
+                Import::InterfaceFunc(_, id, name) => {
+                    required
+                        .interface_funcs
+                        .entry(Some(*id))
+                        .or_default()
+                        .insert(name);
+                }
+                Import::ImportedResourceDrop(_, _, id) => {
+                    required.resource_drops.insert(*id);
+                }
+                _ => {}
             }
         }
-        for (k, v) in self.info.required_imports.iter() {
-            all_required_imports
-                .entry(*k)
-                .or_insert_with(IndexSet::new)
-                .extend(v.funcs.iter().map(|v| v.as_str()));
-        }
         for (name, item) in resolve.worlds[world].imports.iter() {
-            add_item(
-                &mut self.import_map,
-                resolve,
-                name,
-                item,
-                &all_required_imports,
-            )?;
+            add_item(&mut self.import_map, resolve, name, item, &required)?;
         }
         return Ok(());
 
@@ -272,11 +245,10 @@ impl<'a> ComponentWorld<'a> {
             resolve: &Resolve,
             name: &WorldKey,
             item: &WorldItem,
-            required: &IndexMap<&str, IndexSet<&str>>,
+            required: &Required<'_>,
         ) -> Result<()> {
             let name = resolve.name_world_key(name);
             log::trace!("register import `{name}`");
-            let empty = IndexSet::new();
             let import_map_key = match item {
                 WorldItem::Function(_) | WorldItem::Type(_) => None,
                 WorldItem::Interface { .. } => Some(name),
@@ -285,9 +257,6 @@ impl<'a> ComponentWorld<'a> {
                 WorldItem::Function(_) | WorldItem::Type(_) => None,
                 WorldItem::Interface { id, .. } => Some(*id),
             };
-            let required = required
-                .get(import_map_key.as_deref().unwrap_or(BARE_FUNC_MODULE_NAME))
-                .unwrap_or(&empty);
             let interface = import_map
                 .entry(import_map_key)
                 .or_insert_with(|| ImportedInterface {
@@ -324,10 +293,10 @@ impl<'a> ComponentWorld<'a> {
 
         // First use the previously calculated metadata about live imports to
         // determine the set of live types in those imports.
-        self.add_live_imports(world, &self.info.required_imports, &mut live);
+        self.add_live_imports(world, &self.info.imports, &mut live);
         for (adapter_name, adapter) in self.adapters.iter() {
             log::trace!("processing adapter `{adapter_name}`");
-            self.add_live_imports(world, &adapter.info.required_imports, &mut live);
+            self.add_live_imports(world, &adapter.info.imports, &mut live);
         }
 
         // Next any imported types used by an export must also be considered
@@ -379,43 +348,28 @@ impl<'a> ComponentWorld<'a> {
         }
     }
 
-    fn add_live_imports<S>(
-        &self,
-        world: WorldId,
-        required: &IndexMap<S, RequiredImports>,
-        live: &mut LiveTypes,
-    ) where
-        S: Borrow<str> + Hash + Eq,
-    {
+    fn add_live_imports(&self, world: WorldId, imports: &ImportMap, live: &mut LiveTypes) {
         let resolve = &self.encoder.metadata.resolve;
         for (name, item) in resolve.worlds[world].imports.iter() {
             let name = resolve.name_world_key(name);
             match item {
                 WorldItem::Function(func) => {
-                    let required = match required.get(BARE_FUNC_MODULE_NAME) {
-                        Some(set) => set,
-                        None => continue,
-                    };
-                    if !required.funcs.contains(name.as_str()) {
+                    if !imports.uses_toplevel_func(name.as_str()) {
                         continue;
                     }
                     log::trace!("add live function import `{name}`");
                     live.add_func(resolve, func);
                 }
                 WorldItem::Interface { id, .. } => {
-                    let required = match required.get(name.as_str()) {
-                        Some(set) => set,
-                        None => continue,
-                    };
                     log::trace!("add live interface import `{name}`");
                     for (name, func) in resolve.interfaces[*id].functions.iter() {
-                        if required.funcs.contains(name.as_str()) {
+                        if imports.uses_interface_func(*id, name.as_str()) {
                             log::trace!("add live func `{name}`");
                             live.add_func(resolve, func);
                         }
                     }
-                    for (name, ty) in resolve.interfaces[*id].types.iter() {
-                        if required.resources.contains(name.as_str()) {
+                    for (_name, ty) in resolve.interfaces[*id].types.iter() {
+                        if imports.uses_imported_resource_drop(*ty) {
                             live.add_type_id(resolve, *ty);
                         }
                     }
@@ -458,13 +412,19 @@ impl<'a> ComponentWorld<'a> {
     }
 }
 
+#[derive(Default)]
+struct Required<'a> {
+    interface_funcs: IndexMap<Option<InterfaceId>, IndexSet<&'a str>>,
+    resource_drops: IndexSet<TypeId>,
+}
+
 impl ImportedInterface {
-    fn add_func(&mut self, required: &IndexSet<&str>, resolve: &Resolve, func: &Function) {
-        let (name, abi) = if required.contains(func.name.as_str()) {
+    fn add_func(&mut self, required: &Required<'_>, resolve: &Resolve, func: &Function) {
+        let (name, abi) = if required.interface_funcs.contains(func.name.as_str()) {
             (func.name.clone(), AbiVariant::GuestImport)
         } else {
             let async_name = format!("[async]{}", func.name);
-            if required.contains(async_name.as_str()) {
+            if required.interface_funcs.contains(async_name.as_str()) {
                 (async_name, AbiVariant::GuestImportAsync)
             } else {
                 return;
@@ -483,7 +443,7 @@ impl ImportedInterface {
         assert!(prev.is_none());
     }
 
-    fn add_type(&mut self, required: &IndexSet<&str>, resolve: &Resolve, id: TypeId) {
+    fn add_type(&mut self, required: &Required<'_>, resolve: &Resolve, id: TypeId) {
         let ty = &resolve.types[id];
         match &ty.kind {
             TypeDefKind::Resource => {}
@@ -491,13 +451,10 @@ impl ImportedInterface {
         }
         let name = ty.name.as_deref().expect("resources must be named");
 
-        let mut maybe_add = |name: String, lowering: Lowering| {
-            if !required.contains(name.as_str()) {
-                return;
-            }
-            let prev = self.lowerings.insert(name, lowering);
+        if required.resource_drops.contains(&id) {
+            let name = format!("{name}_drop");
+            let prev = self.lowerings.insert(name, Lowering::ResourceDrop(id));
             assert!(prev.is_none());
-        };
-        maybe_add(format!("{RESOURCE_DROP}{name}"), Lowering::ResourceDrop(id));
+        }
     }
 }

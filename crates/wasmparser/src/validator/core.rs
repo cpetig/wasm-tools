@@ -408,7 +408,7 @@ impl ModuleState {
         }
 
         macro_rules! define_visit_operator {
-            ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident)*) => {
+            ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
                 $(
                     #[allow(unused_variables)]
                     fn $visit(&mut self $($(,$arg: $argty)*)?) -> Self::Output {
@@ -552,7 +552,7 @@ pub(crate) struct Module {
 }
 
 impl Module {
-    pub fn add_types(
+    pub(crate) fn add_types(
         &mut self,
         rec_group: RecGroup,
         features: &WasmFeatures,
@@ -862,6 +862,7 @@ impl Module {
         Ok(())
     }
 
+    #[cfg(feature = "component-model")]
     pub(crate) fn imports_for_module_type(
         &self,
         offset: usize,
@@ -946,7 +947,7 @@ impl Module {
             ));
         }
         let ty = self.func_type_at(ty.func_type_idx, types, offset)?;
-        if !ty.results().is_empty() {
+        if !ty.results().is_empty() && !features.stack_switching() {
             return Err(BinaryReaderError::new(
                 "invalid exception type: non-empty tag result type",
                 offset,
@@ -1165,6 +1166,10 @@ impl WasmModuleResources for OperatorValidatorResources<'_> {
         Some(&self.types[id])
     }
 
+    fn sub_type_at_id(&self, at: CoreTypeId) -> &SubType {
+        &self.types[at]
+    }
+
     fn type_id_of_function(&self, at: u32) -> Option<CoreTypeId> {
         let type_index = self.module.functions.get(at as usize)?;
         self.module.types.get(*type_index as usize).copied()
@@ -1238,6 +1243,11 @@ impl WasmModuleResources for ValidatorResources {
         let id = *self.0.types.get(at as usize)?;
         let types = self.0.snapshot.as_ref().unwrap();
         Some(&types[id])
+    }
+
+    fn sub_type_at_id(&self, at: CoreTypeId) -> &SubType {
+        let types = self.0.snapshot.as_ref().unwrap();
+        &types[at]
     }
 
     fn type_id_of_function(&self, at: u32) -> Option<CoreTypeId> {

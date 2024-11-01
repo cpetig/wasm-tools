@@ -3,7 +3,7 @@
 
 use super::eggsy::encoder::rebuild::build_expr;
 use crate::mutators::peephole::{
-    Lang, MemArg, MemArgLane, MemoryCopy, MemoryInit, RefType, TableCopy, TableInit,
+    Lang, MemArg, MemArgLane, MemoryCopy, MemoryInit, RefType, Shuffle, TableCopy, TableInit,
 };
 use crate::mutators::OperatorAndByteOffset;
 use crate::{ModuleInfo, WasmMutate};
@@ -767,9 +767,6 @@ impl<'a> DFGBuilder {
                 } => {
                     self.push_node(Lang::RefNull(RefType::Func), idx);
                 }
-                Operator::RefNull { .. } => {
-                    unimplemented!()
-                }
                 Operator::RefFunc { function_index } => {
                     self.push_node(Lang::RefFunc(*function_index), idx);
                 }
@@ -868,6 +865,11 @@ impl<'a> DFGBuilder {
                 }
 
                 Operator::I8x16Swizzle => self.binop(idx, Lang::I8x16Swizzle),
+                Operator::I8x16Shuffle { lanes } => {
+                    let a = Id::from(self.pop_operand(idx, false));
+                    let b = Id::from(self.pop_operand(idx, false));
+                    self.push_node(Lang::I8x16Shuffle(Shuffle { indices: *lanes }, [b, a]), idx);
+                }
                 Operator::I8x16Splat => self.unop(idx, Lang::I8x16Splat),
                 Operator::I16x8Splat => self.unop(idx, Lang::I16x8Splat),
                 Operator::I32x4Splat => self.unop(idx, Lang::I32x4Splat),

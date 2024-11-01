@@ -143,6 +143,14 @@ pub enum CanonicalFunction {
         /// TODO: docs
         memory: u32,
     },
+    /// A function which spawns a new thread by invoking the shared function.
+    ThreadSpawn {
+        /// The index of the function to spawn.
+        func_ty_index: u32,
+    },
+    /// A function which returns the number of threads that can be expected to
+    /// execute concurrently
+    ThreadHwConcurrency,
 }
 
 /// A reader for the canonical section of a WebAssembly component.
@@ -230,6 +238,10 @@ impl<'a> FromReader<'a> for CanonicalFunction {
             0x12 => CanonicalFunction::TaskWait {
                 memory: reader.read()?,
             },
+            0x05 => CanonicalFunction::ThreadSpawn {
+                func_ty_index: reader.read()?,
+            },
+            0x06 => CanonicalFunction::ThreadHwConcurrency,
             x => return reader.invalid_leading_byte(x, "canonical function"),
         })
     }

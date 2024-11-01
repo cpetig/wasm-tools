@@ -8,7 +8,7 @@ use wasmparser::{
 };
 
 mod common;
-use common::{parser_features_from_config, validate};
+use common::validate;
 
 #[derive(Debug, PartialEq)]
 enum ExportType {
@@ -95,6 +95,7 @@ fn smoke_test_with_mutable_global_exports() {
 fn get_func_and_global_exports(features: WasmFeatures, module: &[u8]) -> Vec<(String, ExportType)> {
     let mut validator = Validator::new_with_features(features);
     let types = validate(&mut validator, module);
+    let types = types.as_ref();
     let mut exports = vec![];
 
     for payload in Parser::new(0).parse_all(module) {
@@ -143,7 +144,7 @@ fn smoke_test_exports(exports_test_case: &str, seed: u64) {
         let mut config = Config::arbitrary(&mut u).expect("arbitrary config");
         config.exports = Some(wasm.clone());
 
-        let features = parser_features_from_config(&config);
+        let features = config.features();
         let module = Module::new(config, &mut u).unwrap();
         let wasm_bytes = module.to_bytes();
 

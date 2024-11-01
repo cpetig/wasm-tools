@@ -116,7 +116,7 @@ macro_rules! define_config {
         #[cfg(feature = "_internal_cli")]
         #[doc(hidden)]
         #[derive(Clone, Debug, Default, clap::Parser, serde_derive::Deserialize)]
-        #[serde(rename_all = "kebab-case")]
+        #[serde(rename_all = "kebab-case", deny_unknown_fields)]
         pub struct InternalOptionalConfig {
             /// The imports that may be used when generating the module.
             ///
@@ -253,6 +253,11 @@ define_config! {
         /// specification](https://webassembly.github.io/spec/core/syntax/instructions.html);
         /// e.g., numeric, vector, control, memory, etc.
         ///
+        /// Additionally, we include finer-grained categories which exclude floating point
+        /// instructions, e.g. [`InstructionKind::NumericInt`] is a subset of
+        /// [`InstructionKind::Numeric`] consisting of all numeric instructions which
+        /// don't involve floats.
+        ///
         /// Note that modifying this setting is separate from the proposal
         /// flags; that is, if `simd_enabled() == true` but
         /// `allowed_instruction()` does not include vector instructions, the
@@ -260,11 +265,16 @@ define_config! {
         /// contain vector types.
         pub allowed_instructions: InstructionKinds = InstructionKinds::all(),
 
+        /// Determines whether we generate floating point instructions and types.
+        ///
+        /// Defaults to `true`.
+        pub allow_floats: bool = true,
+
         /// Determines whether the bulk memory proposal is enabled for
         /// generating instructions.
         ///
-        /// Defaults to `false`.
-        pub bulk_memory_enabled: bool = false,
+        /// Defaults to `true`.
+        pub bulk_memory_enabled: bool = true,
 
         /// Returns whether NaN values are canonicalized after all f32/f64
         /// operation. Defaults to false.
@@ -299,8 +309,8 @@ define_config! {
         /// Determines whether the exception-handling proposal is enabled for
         /// generating instructions.
         ///
-        /// Defaults to `false`.
-        pub exceptions_enabled: bool = false,
+        /// Defaults to `true`.
+        pub exceptions_enabled: bool = true,
 
         /// Export all WebAssembly objects in the module. Defaults to false.
         ///
@@ -310,8 +320,8 @@ define_config! {
         /// Determines whether the GC proposal is enabled when generating a Wasm
         /// module.
         ///
-        /// Defaults to `false`.
-        pub gc_enabled: bool = false,
+        /// Defaults to `true`.
+        pub gc_enabled: bool = true,
 
         /// Determines whether the custom-page-sizes proposal is enabled when
         /// generating a Wasm module.
@@ -532,37 +542,50 @@ define_config! {
         /// Determines whether the reference types proposal is enabled for
         /// generating instructions.
         ///
-        /// Defaults to `false`.
-        pub reference_types_enabled: bool = false,
+        /// Defaults to `true`.
+        pub reference_types_enabled: bool = true,
 
         /// Determines whether the Relaxed SIMD proposal is enabled for
         /// generating instructions.
         ///
-        /// Defaults to `false`.
-        pub relaxed_simd_enabled: bool = false,
+        /// Defaults to `true`.
+        pub relaxed_simd_enabled: bool = true,
 
-        /// Determines whether the nontrapping-float-to-int-conversions propsal
-        /// is enabled.
+        /// Determines whether the non-trapping float-to-int conversions
+        /// proposal is enabled.
         ///
         /// Defaults to `true`.
         pub saturating_float_to_int_enabled: bool = true,
 
-        /// Determines whether the sign-extension-ops propsal is enabled.
+        /// Determines whether the sign-extension-ops proposal is enabled.
         ///
         /// Defaults to `true`.
         pub sign_extension_ops_enabled: bool = true,
 
+        /// Determines whether the shared-everything-threads proposal is
+        /// enabled.
+        ///
+        /// The [shared-everything-threads] proposal, among other things,
+        /// extends `shared` attributes to all WebAssembly objects; it builds on
+        /// the [threads] proposal.
+        ///
+        /// [shared-everything-threads]: https://github.com/WebAssembly/shared-everything-threads
+        /// [threads]: https://github.com/WebAssembly/threads
+        ///
+        /// Defaults to `false`.
+        pub shared_everything_threads_enabled: bool = false,
+
         /// Determines whether the SIMD proposal is enabled for generating
         /// instructions.
         ///
-        /// Defaults to `false`.
-        pub simd_enabled: bool = false,
+        /// Defaults to `true`.
+        pub simd_enabled: bool = true,
 
         /// Determines whether the tail calls proposal is enabled for generating
         /// instructions.
         ///
-        /// Defaults to `false`.
-        pub tail_call_enabled: bool = false,
+        /// Defaults to `true`.
+        pub tail_call_enabled: bool = true,
 
         /// Whether every Wasm table must have a maximum size
         /// specified. Defaults to `false`.
@@ -575,8 +598,8 @@ define_config! {
         ///
         /// [threads proposal]: https://github.com/WebAssembly/threads/blob/master/proposals/threads/Overview.md
         ///
-        /// Defaults to `false`.
-        pub threads_enabled: bool = false,
+        /// Defaults to `true`.
+        pub threads_enabled: bool = true,
 
         /// Indicates whether wasm-smith is allowed to generate invalid function
         /// bodies.
@@ -589,6 +612,20 @@ define_config! {
         ///
         /// Defaults to `false`.
         pub allow_invalid_funcs: bool = false,
+
+        /// Determines whether the [wide-arithmetic proposal] is enabled.
+        ///
+        /// [wide-arithmetic proposal]: https://github.com/WebAssembly/wide-arithmetic
+        ///
+        /// Defaults to `false`.
+        pub wide_arithmetic_enabled: bool = false,
+
+        /// Determines whether the [extended-const proposal] is enabled.
+        ///
+        /// [extended-const proposal]: https://github.com/WebAssembly/extended-const
+        ///
+        /// Defaults to `true`.
+        pub extended_const_enabled: bool = true,
     }
 }
 
@@ -652,10 +689,7 @@ impl<'a> Arbitrary<'a> for Config {
     fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self> {
         const MAX_MAXIMUM: usize = 1000;
 
-        let reference_types_enabled: bool = u.arbitrary()?;
-        let max_tables = if reference_types_enabled { 100 } else { 1 };
-
-        Ok(Config {
+        let mut config = Config {
             max_types: u.int_in_range(0..=MAX_MAXIMUM)?,
             max_imports: u.int_in_range(0..=MAX_MAXIMUM)?,
             max_tags: u.int_in_range(0..=MAX_MAXIMUM)?,
@@ -667,18 +701,23 @@ impl<'a> Arbitrary<'a> for Config {
             max_data_segments: u.int_in_range(0..=MAX_MAXIMUM)?,
             max_instructions: u.int_in_range(0..=MAX_MAXIMUM)?,
             max_memories: u.int_in_range(0..=100)?,
-            max_tables,
+            max_tables: u.int_in_range(0..=100)?,
             max_memory32_bytes: u.int_in_range(0..=u32::MAX as u64 + 1)?,
             max_memory64_bytes: u.int_in_range(0..=u64::MAX as u128 + 1)?,
             min_uleb_size: u.int_in_range(0..=5)?,
             bulk_memory_enabled: u.arbitrary()?,
-            reference_types_enabled,
+            reference_types_enabled: u.arbitrary()?,
             simd_enabled: u.arbitrary()?,
             multi_value_enabled: u.arbitrary()?,
             max_aliases: u.int_in_range(0..=MAX_MAXIMUM)?,
             max_nesting_depth: u.int_in_range(0..=10)?,
             saturating_float_to_int_enabled: u.arbitrary()?,
             sign_extension_ops_enabled: u.arbitrary()?,
+            relaxed_simd_enabled: u.arbitrary()?,
+            exceptions_enabled: u.arbitrary()?,
+            threads_enabled: u.arbitrary()?,
+            tail_call_enabled: u.arbitrary()?,
+            gc_enabled: u.arbitrary()?,
             allowed_instructions: {
                 use flagset::Flags;
                 let mut allowed = Vec::new();
@@ -692,6 +731,8 @@ impl<'a> Arbitrary<'a> for Config {
             table_max_size_required: u.arbitrary()?,
             max_table_elements: u.int_in_range(0..=1_000_000)?,
             disallow_traps: u.arbitrary()?,
+            allow_floats: u.arbitrary()?,
+            extended_const_enabled: u.arbitrary()?,
 
             // These fields, unlike the ones above, are less useful to set.
             // They either make weird inputs or are for features not widely
@@ -714,20 +755,104 @@ impl<'a> Arbitrary<'a> for Config {
             max_values: 0,
             memory_offset_choices: MemoryOffsetChoices::default(),
             allow_start_export: true,
-            relaxed_simd_enabled: false,
-            exceptions_enabled: false,
-            memory64_enabled: false,
             max_type_size: 1000,
             canonicalize_nans: false,
             available_imports: None,
             exports: None,
-            threads_enabled: false,
             export_everything: false,
-            tail_call_enabled: false,
-            gc_enabled: false,
-            custom_page_sizes_enabled: false,
             generate_custom_sections: false,
             allow_invalid_funcs: false,
-        })
+
+            // Proposals that are not stage4+ are disabled by default.
+            memory64_enabled: false,
+            custom_page_sizes_enabled: false,
+            wide_arithmetic_enabled: false,
+            shared_everything_threads_enabled: false,
+        };
+        config.sanitize();
+        Ok(config)
+    }
+}
+
+impl Config {
+    /// "Shrink" this `Config` where appropriate to ensure its configuration is
+    /// valid for wasm-smith.
+    ///
+    /// This method will take the arbitrary state that this `Config` is in and
+    /// will possibly mutate dependent options as needed by `wasm-smith`. For
+    /// example if the `reference_types_enabled` field is turned off then
+    /// `wasm-smith`, as of the time of this writing, additionally requires that
+    /// the `gc_enabled` is not turned on.
+    ///
+    /// This method will not enable anything that isn't already enabled or
+    /// increase any limit of an item, but it may turn features off or shrink
+    /// limits from what they're previously specified as.
+    pub(crate) fn sanitize(&mut self) {
+        // If reference types are disabled then automatically flag tables as
+        // capped at 1 and disable gc as well.
+        if !self.reference_types_enabled {
+            self.max_tables = self.max_tables.min(1);
+            self.gc_enabled = false;
+            self.shared_everything_threads_enabled = false;
+        }
+
+        // If simd is disabled then disable all relaxed simd instructions as
+        // well.
+        if !self.simd_enabled {
+            self.relaxed_simd_enabled = false;
+        }
+
+        // It is impossible to use the shared-everything-threads proposal
+        // without threads, which it is built on.
+        if !self.threads_enabled {
+            self.shared_everything_threads_enabled = false;
+        }
+    }
+
+    /// Returns the set of features that are necessary for validating against
+    /// this `Config`.
+    #[cfg(feature = "wasmparser")]
+    pub fn features(&self) -> wasmparser::WasmFeatures {
+        use wasmparser::WasmFeatures;
+
+        // Currently wasm-smith doesn't have knobs for the MVP (floats) or
+        // `mutable-global`. These are unconditionally enabled.
+        let mut features = WasmFeatures::MUTABLE_GLOBAL | WasmFeatures::WASM1;
+
+        // All other features that can be generated by wasm-smith are gated by
+        // configuration fields. Conditionally set each feature based on the
+        // status of the fields in `self`.
+        features.set(
+            WasmFeatures::SATURATING_FLOAT_TO_INT,
+            self.saturating_float_to_int_enabled,
+        );
+        features.set(
+            WasmFeatures::SIGN_EXTENSION,
+            self.sign_extension_ops_enabled,
+        );
+        features.set(WasmFeatures::REFERENCE_TYPES, self.reference_types_enabled);
+        features.set(WasmFeatures::MULTI_VALUE, self.multi_value_enabled);
+        features.set(WasmFeatures::BULK_MEMORY, self.bulk_memory_enabled);
+        features.set(WasmFeatures::SIMD, self.simd_enabled);
+        features.set(WasmFeatures::RELAXED_SIMD, self.relaxed_simd_enabled);
+        features.set(WasmFeatures::MULTI_MEMORY, self.max_memories > 1);
+        features.set(WasmFeatures::EXCEPTIONS, self.exceptions_enabled);
+        features.set(WasmFeatures::MEMORY64, self.memory64_enabled);
+        features.set(WasmFeatures::TAIL_CALL, self.tail_call_enabled);
+        features.set(WasmFeatures::FUNCTION_REFERENCES, self.gc_enabled);
+        features.set(WasmFeatures::GC, self.gc_enabled);
+        features.set(WasmFeatures::THREADS, self.threads_enabled);
+        features.set(
+            WasmFeatures::SHARED_EVERYTHING_THREADS,
+            self.shared_everything_threads_enabled,
+        );
+        features.set(
+            WasmFeatures::CUSTOM_PAGE_SIZES,
+            self.custom_page_sizes_enabled,
+        );
+        features.set(WasmFeatures::EXTENDED_CONST, self.extended_const_enabled);
+        features.set(WasmFeatures::WIDE_ARITHMETIC, self.wide_arithmetic_enabled);
+
+        features
     }
 }

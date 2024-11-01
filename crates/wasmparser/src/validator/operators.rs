@@ -24,32 +24,28 @@
 
 use crate::{
     limits::MAX_WASM_FUNCTION_LOCALS, AbstractHeapType, BinaryReaderError, BlockType, BrTable,
-    Catch, FieldType, FuncType, GlobalType, HeapType, Ieee32, Ieee64, MemArg, RefType, Result,
-    StorageType, StructType, SubType, TableType, TryTable, UnpackedIndex, ValType, VisitOperator,
-    WasmFeatures, WasmModuleResources, V128,
+    Catch, ContType, FieldType, FrameKind, FuncType, GlobalType, Handle, HeapType, Ieee32, Ieee64,
+    MemArg, ModuleArity, RefType, Result, ResumeTable, StorageType, StructType, SubType, TableType,
+    TryTable, UnpackedIndex, ValType, VisitOperator, WasmFeatures, WasmModuleResources, V128,
 };
 use crate::{prelude::*, CompositeInnerType, Ordering};
 use core::ops::{Deref, DerefMut};
 
 pub(crate) struct OperatorValidator {
     pub(super) locals: Locals,
-    pub(super) local_inits: Vec<bool>,
+    local_inits: LocalInits,
 
     // This is a list of flags for wasm features which are used to gate various
     // instructions.
     pub(crate) features: WasmFeatures,
 
-    // Temporary storage used during `pop_push_label_types` and various
-    // branching instructions.
+    // Temporary storage used during `match_stack_operands`
     popped_types_tmp: Vec<MaybeType>,
 
     /// The `control` list is the list of blocks that we're currently in.
     control: Vec<Frame>,
     /// The `operands` is the current type stack.
     operands: Vec<MaybeType>,
-    /// When local_inits is modified, the relevant index is recorded here to be
-    /// undone when control pops
-    inits: Vec<u32>,
 
     /// Offset of the `end` instruction which emptied the `control` stack, which
     /// must be the end of the function.
@@ -57,6 +53,107 @@ pub(crate) struct OperatorValidator {
 
     /// Whether validation is happening in a shared context.
     shared: bool,
+
+    #[cfg(debug_assertions)]
+    pub(crate) pop_push_count: (u32, u32),
+}
+
+/// Captures the initialization of non-defaultable locals.
+struct LocalInits {
+    /// Records if a local is already initialized.
+    local_inits: Vec<bool>,
+    /// When `local_inits` is modified, the relevant `index` is recorded
+    /// here to be undone when control pops.
+    inits: Vec<u32>,
+    /// The index of the first non-defaultable local.
+    ///
+    /// # Note
+    ///
+    /// This is an optimization so that we only have to perform expensive
+    /// look-ups for locals that have a local index equal to or higher than this.
+    first_non_default_local: u32,
+}
+
+impl Default for LocalInits {
+    fn default() -> Self {
+        Self {
+            local_inits: Vec::default(),
+            inits: Vec::default(),
+            first_non_default_local: u32::MAX,
+        }
+    }
+}
+
+impl LocalInits {
+    /// Defines new function local parameters.
+    pub fn define_params(&mut self, count: usize) {
+        let Some(new_len) = self.local_inits.len().checked_add(count) else {
+            panic!("tried to define too many function locals as parameters: {count}");
+        };
+        self.local_inits.resize(new_len, true);
+    }
+
+    /// Defines `count` function locals of type `ty`.
+    pub fn define_locals(&mut self, count: u32, ty: ValType) {
+        let Ok(count) = usize::try_from(count) else {
+            panic!("tried to define too many function locals: {count}");
+        };
+        let len = self.local_inits.len();
+        let Some(new_len) = len.checked_add(count) else {
+            panic!("tried to define too many function locals: {count}");
+        };
+        let is_defaultable = ty.is_defaultable();
+        if !is_defaultable && self.first_non_default_local == u32::MAX {
+            self.first_non_default_local = len as u32;
+        }
+        self.local_inits.resize(new_len, is_defaultable);
+    }
+
+    /// Returns `true` if the local at `local_index` has already been initialized.
+    #[inline]
+    pub fn is_uninit(&self, local_index: u32) -> bool {
+        if local_index < self.first_non_default_local {
+            return false;
+        }
+        !self.local_inits[local_index as usize]
+    }
+
+    /// Marks the local at `local_index` as initialized.
+    #[inline]
+    pub fn set_init(&mut self, local_index: u32) {
+        if self.is_uninit(local_index) {
+            self.local_inits[local_index as usize] = true;
+            self.inits.push(local_index);
+        }
+    }
+
+    /// Registers a new control frame and returns its `height`.
+    pub fn push_ctrl(&mut self) -> usize {
+        self.inits.len()
+    }
+
+    /// Pops a control frame via its `height`.
+    ///
+    /// This uninitializes all locals that have been initialized within it.
+    pub fn pop_ctrl(&mut self, height: usize) {
+        for local_index in self.inits.split_off(height) {
+            self.local_inits[local_index as usize] = false;
+        }
+    }
+
+    /// Clears the [`LocalInits`].
+    ///
+    /// After this operation `self` will be empty and ready for reuse.
+    pub fn clear(&mut self) {
+        self.local_inits.clear();
+        self.inits.clear();
+        self.first_non_default_local = u32::MAX;
+    }
+
+    /// Returns `true` if `self` is empty.
+    pub fn is_empty(&self) -> bool {
+        self.local_inits.is_empty()
+    }
 }
 
 // No science was performed in the creation of this number, feel free to change
@@ -107,43 +204,6 @@ pub struct Frame {
     pub init_height: usize,
 }
 
-/// The kind of a control flow [`Frame`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum FrameKind {
-    /// A Wasm `block` control block.
-    Block,
-    /// A Wasm `if` control block.
-    If,
-    /// A Wasm `else` control block.
-    Else,
-    /// A Wasm `loop` control block.
-    Loop,
-    /// A Wasm `try` control block.
-    ///
-    /// # Note
-    ///
-    /// This belongs to the Wasm exception handling proposal.
-    TryTable,
-    /// A Wasm legacy `try` control block.
-    ///
-    /// # Note
-    ///
-    /// See: `WasmFeatures::legacy_exceptions` Note in `crates/wasmparser/src/features.rs`
-    LegacyTry,
-    /// A Wasm legacy `catch` control block.
-    ///
-    /// # Note
-    ///
-    /// See: `WasmFeatures::legacy_exceptions` Note in `crates/wasmparser/src/features.rs`
-    LegacyCatch,
-    /// A Wasm legacy `catch_all` control block.
-    ///
-    /// # Note
-    ///
-    /// See: `WasmFeatures::legacy_exceptions` Note in `crates/wasmparser/src/features.rs`
-    LegacyCatchAll,
-}
-
 struct OperatorValidatorTemp<'validator, 'resources, T> {
     offset: usize,
     inner: &'validator mut OperatorValidator,
@@ -155,8 +215,7 @@ pub struct OperatorValidatorAllocations {
     popped_types_tmp: Vec<MaybeType>,
     control: Vec<Frame>,
     operands: Vec<MaybeType>,
-    local_inits: Vec<bool>,
-    inits: Vec<u32>,
+    local_inits: LocalInits,
     locals_first: Vec<ValType>,
     locals_all: Vec<(u32, ValType)>,
 }
@@ -261,7 +320,6 @@ impl OperatorValidator {
             control,
             operands,
             local_inits,
-            inits,
             locals_first,
             locals_all,
         } = allocs;
@@ -269,7 +327,7 @@ impl OperatorValidator {
         debug_assert!(control.is_empty());
         debug_assert!(operands.is_empty());
         debug_assert!(local_inits.is_empty());
-        debug_assert!(inits.is_empty());
+        debug_assert!(local_inits.is_empty());
         debug_assert!(locals_first.is_empty());
         debug_assert!(locals_all.is_empty());
         OperatorValidator {
@@ -279,13 +337,14 @@ impl OperatorValidator {
                 all: locals_all,
             },
             local_inits,
-            inits,
             features: *features,
             popped_types_tmp,
             operands,
             control,
             end_which_emptied_control: None,
             shared: false,
+            #[cfg(debug_assertions)]
+            pop_push_count: (0, 0),
         }
     }
 
@@ -326,8 +385,8 @@ impl OperatorValidator {
         if let CompositeInnerType::Func(func_ty) = &sub_ty.composite_type.inner {
             for ty in func_ty.params() {
                 ret.locals.define(1, *ty);
-                ret.local_inits.push(true);
             }
+            ret.local_inits.define_params(func_ty.params().len());
         } else {
             bail!(offset, "expected func type at index {ty}, found {sub_ty}")
         }
@@ -376,8 +435,7 @@ impl OperatorValidator {
                 offset,
             ));
         }
-        self.local_inits
-            .resize(self.local_inits.len() + count as usize, ty.is_defaultable());
+        self.local_inits.define_locals(count, ty);
         Ok(())
     }
 
@@ -417,7 +475,7 @@ impl OperatorValidator {
         &'validator mut self,
         resources: &'resources T,
         offset: usize,
-    ) -> impl VisitOperator<'a, Output = Result<()>> + 'validator
+    ) -> impl VisitOperator<'a, Output = Result<()>> + ModuleArity + 'validator
     where
         T: WasmModuleResources,
         'resources: 'validator,
@@ -451,7 +509,7 @@ impl OperatorValidator {
         format_err!(offset, "operators remaining after end of function")
     }
 
-    pub fn into_allocations(self) -> OperatorValidatorAllocations {
+    pub fn into_allocations(mut self) -> OperatorValidatorAllocations {
         fn clear<T>(mut tmp: Vec<T>) -> Vec<T> {
             tmp.clear();
             tmp
@@ -460,10 +518,26 @@ impl OperatorValidator {
             popped_types_tmp: clear(self.popped_types_tmp),
             control: clear(self.control),
             operands: clear(self.operands),
-            local_inits: clear(self.local_inits),
-            inits: clear(self.inits),
+            local_inits: {
+                self.local_inits.clear();
+                self.local_inits
+            },
             locals_first: clear(self.locals.first),
             locals_all: clear(self.locals.all),
+        }
+    }
+
+    fn record_pop(&mut self) {
+        #[cfg(debug_assertions)]
+        {
+            self.pop_push_count.0 += 1;
+        }
+    }
+
+    fn record_push(&mut self) {
+        #[cfg(debug_assertions)]
+        {
+            self.pop_push_count.1 += 1;
         }
     }
 }
@@ -513,6 +587,7 @@ where
         }
 
         self.operands.push(maybe_ty);
+        self.record_push();
         Ok(())
     }
 
@@ -594,6 +669,7 @@ where
                 if Some(actual_ty) == expected {
                     if let Some(control) = self.control.last() {
                         if self.operands.len() >= control.height {
+                            self.record_pop();
                             return Ok(MaybeType::Known(actual_ty));
                         }
                     }
@@ -693,7 +769,48 @@ where
                 }
             }
         }
+        self.record_pop();
         Ok(actual)
+    }
+
+    /// Match expected vs. actual operand.
+    fn match_operand(
+        &mut self,
+        actual: ValType,
+        expected: ValType,
+    ) -> Result<(), BinaryReaderError> {
+        #[cfg(debug_assertions)]
+        let tmp = self.pop_push_count;
+        self.push_operand(actual)?;
+        self.pop_operand(Some(expected))?;
+        #[cfg(debug_assertions)]
+        {
+            self.pop_push_count = tmp;
+        }
+        Ok(())
+    }
+
+    /// Match a type sequence to the top of the stack.
+    fn match_stack_operands(
+        &mut self,
+        expected_tys: impl PreciseIterator<Item = ValType> + 'resources,
+    ) -> Result<()> {
+        debug_assert!(self.popped_types_tmp.is_empty());
+        self.popped_types_tmp.reserve(expected_tys.len());
+        #[cfg(debug_assertions)]
+        let tmp = self.pop_push_count;
+        for expected_ty in expected_tys.rev() {
+            let actual_ty = self.pop_operand(Some(expected_ty))?;
+            self.popped_types_tmp.push(actual_ty);
+        }
+        for ty in self.inner.popped_types_tmp.drain(..).rev() {
+            self.inner.operands.push(ty.into());
+        }
+        #[cfg(debug_assertions)]
+        {
+            self.pop_push_count = tmp;
+        }
+        Ok(())
     }
 
     /// Pop a reference type from the operand stack.
@@ -792,7 +909,7 @@ where
         // Push a new frame which has a snapshot of the height of the current
         // operand stack.
         let height = self.operands.len();
-        let init_height = self.inits.len();
+        let init_height = self.local_inits.push_ctrl();
         self.control.push(Frame {
             kind,
             block_type: ty,
@@ -824,9 +941,7 @@ where
         let init_height = frame.init_height;
 
         // reset_locals in the spec
-        for init in self.inits.split_off(init_height) {
-            self.local_inits[init as usize] = false;
-        }
+        self.local_inits.pop_ctrl(init_height);
 
         // Pop all the result types, in reverse order, from the operand stack.
         // These types will, possibly, be transferred to the next frame.
@@ -967,8 +1082,25 @@ where
     /// Similar to `check_call_ty` except used for tail-call instructions.
     fn check_return_call_ty(&mut self, ty: &FuncType) -> Result<()> {
         self.check_func_type_same_results(ty)?;
-        self.check_call_ty(ty)?;
-        self.check_return()
+        for &ty in ty.params().iter().rev() {
+            debug_assert_type_indices_are_ids(ty);
+            self.pop_operand(Some(ty))?;
+        }
+
+        // Match the results with this function's, but don't include in pop/push counts.
+        #[cfg(debug_assertions)]
+        let tmp = self.pop_push_count;
+        for &ty in ty.results() {
+            debug_assert_type_indices_are_ids(ty);
+            self.push_operand(ty)?;
+        }
+        self.check_return()?;
+        #[cfg(debug_assertions)]
+        {
+            self.pop_push_count = tmp;
+        }
+
+        Ok(())
     }
 
     /// Checks the immediate `type_index` of a `call_ref`-style instruction
@@ -1008,7 +1140,7 @@ where
         {
             bail!(
                 self.offset,
-                "indirect calls must go through a table with type <= funcref",
+                "type mismatch: indirect calls must go through a table with type <= funcref",
             );
         }
         self.pop_operand(Some(tab.index_type()))?;
@@ -1416,10 +1548,44 @@ where
         }
     }
 
+    fn cont_type_at(&self, at: u32) -> Result<&ContType> {
+        let sub_ty = self.sub_type_at(at)?;
+        if let CompositeInnerType::Cont(cont_ty) = &sub_ty.composite_type.inner {
+            if self.inner.shared && !sub_ty.composite_type.shared {
+                bail!(
+                    self.offset,
+                    "shared continuations cannot access unshared continuations",
+                );
+            }
+            Ok(cont_ty)
+        } else {
+            bail!(self.offset, "non-continuation type {at}",)
+        }
+    }
+
+    fn func_type_of_cont_type(&self, cont_ty: &ContType) -> &'resources FuncType {
+        let func_id = cont_ty.0.as_core_type_id().expect("valid core type id");
+        self.resources.sub_type_at_id(func_id).unwrap_func()
+    }
+
     fn tag_at(&self, at: u32) -> Result<&'resources FuncType> {
         self.resources
             .tag_at(at)
             .ok_or_else(|| format_err!(self.offset, "unknown tag {}: tag index out of bounds", at))
+    }
+
+    // Similar to `tag_at`, but checks that the result type is
+    // empty. This is necessary when enabling the stack switching
+    // feature as it allows non-empty result types on tags.
+    fn exception_tag_at(&self, at: u32) -> Result<&'resources FuncType> {
+        let func_ty = self.tag_at(at)?;
+        if func_ty.results().len() != 0 {
+            bail!(
+                self.offset,
+                "invalid exception type: non-empty tag result type"
+            );
+        }
+        Ok(func_ty)
     }
 
     fn global_type_at(&self, at: u32) -> Result<GlobalType> {
@@ -1488,6 +1654,101 @@ where
             Some(_) => bail!(self.offset, "unknown data segment {data_index}"),
         }
     }
+
+    fn check_resume_table(
+        &mut self,
+        table: ResumeTable,
+        type_index: u32, // The type index annotation on the `resume` instruction, which `table` appears on.
+    ) -> Result<&'resources FuncType> {
+        let cont_ty = self.cont_type_at(type_index)?;
+        // ts1 -> ts2
+        let old_func_ty = self.func_type_of_cont_type(cont_ty);
+        for handle in table.handlers {
+            match handle {
+                Handle::OnLabel { tag, label } => {
+                    // ts1' -> ts2'
+                    let tag_ty = self.tag_at(tag)?;
+                    // ts1'' (ref (cont $ft))
+                    let block = self.jump(label)?;
+                    // Pop the continuation reference.
+                    match self.label_types(block.0, block.1)?.last() {
+                        Some(ValType::Ref(rt)) if rt.is_concrete_type_ref() => {
+                            let sub_ty = self.resources.sub_type_at_id(rt.type_index().unwrap().as_core_type_id().expect("canonicalized index"));
+                            let new_cont =
+                                if let CompositeInnerType::Cont(cont) = &sub_ty.composite_type.inner {
+                                    cont
+                                } else {
+                                    bail!(self.offset, "non-continuation type");
+                                };
+                            let new_func_ty = self.func_type_of_cont_type(&new_cont);
+                            // Check that (ts2' -> ts2) <: $ft
+                            if new_func_ty.params().len() != tag_ty.results().len() || !self.is_subtype_many(new_func_ty.params(), tag_ty.results())
+                                || old_func_ty.results().len() != new_func_ty.results().len() || !self.is_subtype_many(old_func_ty.results(), new_func_ty.results()) {
+                                bail!(self.offset, "type mismatch in continuation type")
+                            }
+                            let expected_nargs = tag_ty.params().len() + 1;
+                            let actual_nargs = self
+                                .label_types(block.0, block.1)?
+                                .len();
+                            if actual_nargs != expected_nargs {
+                                bail!(self.offset, "type mismatch: expected {expected_nargs} label result(s), but label is annotated with {actual_nargs} results")
+                            }
+
+                            let labeltys = self
+                                .label_types(block.0, block.1)?
+                                .take(expected_nargs - 1);
+
+                            // Check that ts1'' <: ts1'.
+                            for (tagty, &lblty) in labeltys.zip(tag_ty.params()) {
+                                if !self.resources.is_subtype(lblty, tagty) {
+                                    bail!(self.offset, "type mismatch between tag type and label type")
+                                }
+                            }
+                        }
+                        Some(ty) => {
+                            bail!(self.offset, "type mismatch: {}", ty_to_str(ty))
+                        }
+                        _ => bail!(self.offset,
+                                   "type mismatch: instruction requires continuation reference type but label has none")
+                    }
+                }
+                Handle::OnSwitch { tag } => {
+                    let tag_ty = self.tag_at(tag)?;
+                    if tag_ty.params().len() != 0 {
+                        bail!(self.offset, "type mismatch: non-empty tag parameter type")
+                    }
+                }
+            }
+        }
+        Ok(old_func_ty)
+    }
+
+    /// Applies `is_subtype` pointwise two equally sized collections
+    /// (i.e. equally sized after skipped elements).
+    fn is_subtype_many(&mut self, ts1: &[ValType], ts2: &[ValType]) -> bool {
+        debug_assert!(ts1.len() == ts2.len());
+        ts1.iter()
+            .zip(ts2.iter())
+            .all(|(ty1, ty2)| self.resources.is_subtype(*ty1, *ty2))
+    }
+
+    fn check_binop128(&mut self) -> Result<()> {
+        self.pop_operand(Some(ValType::I64))?;
+        self.pop_operand(Some(ValType::I64))?;
+        self.pop_operand(Some(ValType::I64))?;
+        self.pop_operand(Some(ValType::I64))?;
+        self.push_operand(ValType::I64)?;
+        self.push_operand(ValType::I64)?;
+        Ok(())
+    }
+
+    fn check_i64_mul_wide(&mut self) -> Result<()> {
+        self.pop_operand(Some(ValType::I64))?;
+        self.pop_operand(Some(ValType::I64))?;
+        self.push_operand(ValType::I64)?;
+        self.push_operand(ValType::I64)?;
+        Ok(())
+    }
 }
 
 pub fn ty_to_str(ty: ValType) -> &'static str {
@@ -1523,7 +1784,7 @@ impl<T> WasmProposalValidator<'_, '_, T> {
 }
 
 macro_rules! validate_proposal {
-    ($( @$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident)*) => {
+    ($( @$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
         $(
             fn $visit(&mut self $($(,$arg: $argty)*)?) -> Result<()> {
                 validate_proposal!(validate self $proposal);
@@ -1551,6 +1812,8 @@ macro_rules! validate_proposal {
     (desc memory_control) => ("memory control");
     (desc gc) => ("gc");
     (desc legacy_exceptions) => ("legacy exceptions");
+    (desc stack_switching) => ("stack switching");
+    (desc wide_arithmetic) => ("wide arithmetic");
 }
 
 impl<'a, T> VisitOperator<'a> for WasmProposalValidator<'_, '_, T>
@@ -1632,7 +1895,7 @@ where
         for catch in ty.catches {
             match catch {
                 Catch::One { tag, label } => {
-                    let tag = self.tag_at(tag)?;
+                    let tag = self.exception_tag_at(tag)?;
                     let (ty, kind) = self.jump(label)?;
                     let params = tag.params();
                     let types = self.label_types(ty, kind)?;
@@ -1643,12 +1906,11 @@ where
                         );
                     }
                     for (expected, actual) in types.zip(params) {
-                        self.push_operand(*actual)?;
-                        self.pop_operand(Some(expected))?;
+                        self.match_operand(*actual, expected)?;
                     }
                 }
                 Catch::OneRef { tag, label } => {
-                    let tag = self.tag_at(tag)?;
+                    let tag = self.exception_tag_at(tag)?;
                     let (ty, kind) = self.jump(label)?;
                     let tag_params = tag.params().iter().copied();
                     let label_types = self.label_types(ty, kind)?;
@@ -1659,11 +1921,10 @@ where
                              more type than tag types",
                         );
                     }
-                    for (expected_label_tyep, actual_tag_param) in
+                    for (expected_label_type, actual_tag_param) in
                         label_types.zip(tag_params.chain([exn_type]))
                     {
-                        self.push_operand(actual_tag_param)?;
-                        self.pop_operand(Some(expected_label_tyep))?;
+                        self.match_operand(actual_tag_param, expected_label_type)?;
                     }
                 }
 
@@ -1705,7 +1966,7 @@ where
     }
     fn visit_throw(&mut self, index: u32) -> Self::Output {
         // Check values associated with the exception.
-        let ty = self.tag_at(index)?;
+        let ty = self.exception_tag_at(index)?;
         for ty in ty.clone().params().iter().rev() {
             self.pop_operand(Some(*ty))?;
         }
@@ -1769,16 +2030,7 @@ where
                     "type mismatch: br_table target labels have different number of types"
                 );
             }
-
-            debug_assert!(self.popped_types_tmp.is_empty());
-            self.popped_types_tmp.reserve(label_tys.len());
-            for expected_ty in label_tys.rev() {
-                let actual_ty = self.pop_operand(Some(expected_ty))?;
-                self.popped_types_tmp.push(actual_ty);
-            }
-            for ty in self.inner.popped_types_tmp.drain(..).rev() {
-                self.inner.operands.push(ty.into());
-            }
+            self.match_stack_operands(label_tys)?;
         }
         for ty in default_types.rev() {
             self.pop_operand(Some(ty))?;
@@ -1873,7 +2125,7 @@ where
     fn visit_local_get(&mut self, local_index: u32) -> Self::Output {
         let ty = self.local(local_index)?;
         debug_assert_type_indices_are_ids(ty);
-        if !self.local_inits[local_index as usize] {
+        if self.local_inits.is_uninit(local_index) {
             bail!(self.offset, "uninitialized local: {}", local_index);
         }
         self.push_operand(ty)?;
@@ -1882,20 +2134,13 @@ where
     fn visit_local_set(&mut self, local_index: u32) -> Self::Output {
         let ty = self.local(local_index)?;
         self.pop_operand(Some(ty))?;
-        if !self.local_inits[local_index as usize] {
-            self.local_inits[local_index as usize] = true;
-            self.inits.push(local_index);
-        }
+        self.local_inits.set_init(local_index);
         Ok(())
     }
     fn visit_local_tee(&mut self, local_index: u32) -> Self::Output {
         let expected_ty = self.local(local_index)?;
         self.pop_operand(Some(expected_ty))?;
-        if !self.local_inits[local_index as usize] {
-            self.local_inits[local_index as usize] = true;
-            self.inits.push(local_index);
-        }
-
+        self.local_inits.set_init(local_index);
         self.push_operand(expected_ty)?;
         Ok(())
     }
@@ -4680,7 +4925,7 @@ where
         }
         // Start a new frame and push `exnref` value.
         let height = self.operands.len();
-        let init_height = self.inits.len();
+        let init_height = self.local_inits.push_ctrl();
         self.control.push(Frame {
             kind: FrameKind::LegacyCatch,
             block_type: frame.block_type,
@@ -4689,7 +4934,7 @@ where
             init_height,
         });
         // Push exception argument types.
-        let ty = self.tag_at(index)?;
+        let ty = self.exception_tag_at(index)?;
         for ty in ty.params() {
             self.push_operand(*ty)?;
         }
@@ -4729,7 +4974,7 @@ where
             bail!(self.offset, "catch_all found outside of a `try` block");
         }
         let height = self.operands.len();
-        let init_height = self.inits.len();
+        let init_height = self.local_inits.push_ctrl();
         self.control.push(Frame {
             kind: FrameKind::LegacyCatchAll,
             block_type: frame.block_type,
@@ -4738,6 +4983,172 @@ where
             init_height,
         });
         Ok(())
+    }
+    fn visit_cont_new(&mut self, type_index: u32) -> Self::Output {
+        let cont_ty = self.cont_type_at(type_index)?;
+        let rt = RefType::concrete(true, cont_ty.0);
+        self.pop_ref(Some(rt))?;
+        self.push_concrete_ref(false, type_index)?;
+        Ok(())
+    }
+    fn visit_cont_bind(&mut self, argument_index: u32, result_index: u32) -> Self::Output {
+        // [ts1 ts1'] -> [ts2]
+        let arg_cont = self.cont_type_at(argument_index)?;
+        let arg_func = self.func_type_of_cont_type(arg_cont);
+        // [ts1''] -> [ts2']
+        let res_cont = self.cont_type_at(result_index)?;
+        let res_func = self.func_type_of_cont_type(res_cont);
+
+        // Verify that the argument's domain is at least as large as the
+        // result's domain.
+        if arg_func.params().len() < res_func.params().len() {
+            bail!(self.offset, "type mismatch in continuation arguments");
+        }
+
+        let argcnt = arg_func.params().len() - res_func.params().len();
+
+        // Check that [ts1'] -> [ts2] <: [ts1''] -> [ts2']
+        if !self.is_subtype_many(res_func.params(), &arg_func.params()[argcnt..])
+            || arg_func.results().len() != res_func.results().len()
+            || !self.is_subtype_many(arg_func.results(), res_func.results())
+        {
+            bail!(self.offset, "type mismatch in continuation types");
+        }
+
+        // Check that the continuation is available on the stack.
+        self.pop_concrete_ref(true, argument_index)?;
+
+        // Check that the argument prefix is available on the stack.
+        for &ty in arg_func.params().iter().take(argcnt).rev() {
+            self.pop_operand(Some(ty))?;
+        }
+
+        // Construct the result type.
+        self.push_concrete_ref(false, result_index)?;
+
+        Ok(())
+    }
+    fn visit_suspend(&mut self, tag_index: u32) -> Self::Output {
+        let ft = &self.tag_at(tag_index)?;
+        for &ty in ft.params().iter().rev() {
+            self.pop_operand(Some(ty))?;
+        }
+        for &ty in ft.results() {
+            self.push_operand(ty)?;
+        }
+        Ok(())
+    }
+    fn visit_resume(&mut self, type_index: u32, table: ResumeTable) -> Self::Output {
+        // [ts1] -> [ts2]
+        let ft = self.check_resume_table(table, type_index)?;
+        self.pop_concrete_ref(true, type_index)?;
+        // Check that ts1 are available on the stack.
+        for &ty in ft.params().iter().rev() {
+            self.pop_operand(Some(ty))?;
+        }
+
+        // Make ts2 available on the stack.
+        for &ty in ft.results() {
+            self.push_operand(ty)?;
+        }
+        Ok(())
+    }
+    fn visit_resume_throw(
+        &mut self,
+        type_index: u32,
+        tag_index: u32,
+        table: ResumeTable,
+    ) -> Self::Output {
+        // [ts1] -> [ts2]
+        let ft = self.check_resume_table(table, type_index)?;
+        // [ts1'] -> []
+        let tag_ty = self.exception_tag_at(tag_index)?;
+        if tag_ty.results().len() != 0 {
+            bail!(self.offset, "type mismatch: non-empty tag result type")
+        }
+        self.pop_concrete_ref(true, type_index)?;
+        // Check that ts1' are available on the stack.
+        for &ty in tag_ty.params().iter().rev() {
+            self.pop_operand(Some(ty))?;
+        }
+
+        // Make ts2 available on the stack.
+        for &ty in ft.results() {
+            self.push_operand(ty)?;
+        }
+        Ok(())
+    }
+    fn visit_switch(&mut self, type_index: u32, tag_index: u32) -> Self::Output {
+        // [t1* (ref null $ct2)] -> [te1*]
+        let cont_ty = self.cont_type_at(type_index)?;
+        let func_ty = self.func_type_of_cont_type(cont_ty);
+        // [] -> [t*]
+        let tag_ty = self.tag_at(tag_index)?;
+        if tag_ty.params().len() != 0 {
+            bail!(self.offset, "type mismatch: non-empty tag parameter type")
+        }
+        // Extract the other continuation reference
+        match func_ty.params().last() {
+            Some(ValType::Ref(rt)) if rt.is_concrete_type_ref() => {
+                let other_cont_id = rt
+                    .type_index()
+                    .unwrap()
+                    .unpack()
+                    .as_core_type_id()
+                    .expect("expected canonicalized index");
+                let sub_ty = self.resources.sub_type_at_id(other_cont_id);
+                let other_cont_ty =
+                    if let CompositeInnerType::Cont(cont) = &sub_ty.composite_type.inner {
+                        cont
+                    } else {
+                        bail!(self.offset, "non-continuation type");
+                    };
+                let other_func_ty = self.func_type_of_cont_type(&other_cont_ty);
+                if func_ty.results().len() != tag_ty.results().len()
+                    || !self.is_subtype_many(func_ty.results(), tag_ty.results())
+                    || other_func_ty.results().len() != tag_ty.results().len()
+                    || !self.is_subtype_many(tag_ty.results(), other_func_ty.results())
+                {
+                    bail!(self.offset, "type mismatch in continuation types")
+                }
+
+                // Pop the continuation reference.
+                self.pop_concrete_ref(true, type_index)?;
+
+                // Check that the arguments t1* are available on the
+                // stack.
+                for &ty in func_ty.params().iter().rev().skip(1) {
+                    self.pop_operand(Some(ty))?;
+                }
+
+                // Make the results t2* available on the stack.
+                for &ty in other_func_ty.params() {
+                    self.push_operand(ty)?;
+                }
+            }
+            Some(ty) => bail!(
+                self.offset,
+                "type mismatch: expected a continuation reference, found {}",
+                ty_to_str(*ty)
+            ),
+            None => bail!(
+                self.offset,
+                "type mismatch: instruction requires a continuation reference"
+            ),
+        }
+        Ok(())
+    }
+    fn visit_i64_add128(&mut self) -> Result<()> {
+        self.check_binop128()
+    }
+    fn visit_i64_sub128(&mut self) -> Result<()> {
+        self.check_binop128()
+    }
+    fn visit_i64_mul_wide_s(&mut self) -> Result<()> {
+        self.check_i64_mul_wide()
+    }
+    fn visit_i64_mul_wide_u(&mut self) -> Result<()> {
+        self.check_i64_mul_wide()
     }
 }
 
@@ -4841,5 +5252,42 @@ impl Locals {
             // list at index `i`.
             Ok(i) | Err(i) => Some(self.all[i].1),
         }
+    }
+}
+
+impl<R> ModuleArity for WasmProposalValidator<'_, '_, R>
+where
+    R: WasmModuleResources,
+{
+    fn tag_type_arity(&self, at: u32) -> Option<(u32, u32)> {
+        self.0
+            .resources
+            .tag_at(at)
+            .map(|x| (x.params().len() as u32, x.results().len() as u32))
+    }
+
+    fn type_index_of_function(&self, function_idx: u32) -> Option<u32> {
+        self.0.resources.type_index_of_function(function_idx)
+    }
+
+    fn sub_type_at(&self, type_idx: u32) -> Option<&SubType> {
+        Some(self.0.sub_type_at(type_idx).ok()?)
+    }
+
+    fn func_type_of_cont_type(&self, c: &ContType) -> Option<&FuncType> {
+        Some(self.0.func_type_of_cont_type(c))
+    }
+
+    fn sub_type_of_ref_type(&self, rt: &RefType) -> Option<&SubType> {
+        let id = rt.type_index()?.as_core_type_id()?;
+        Some(self.0.resources.sub_type_at_id(id))
+    }
+
+    fn control_stack_height(&self) -> u32 {
+        self.0.control.len() as u32
+    }
+
+    fn label_block(&self, depth: u32) -> Option<(BlockType, FrameKind)> {
+        self.0.jump(depth).ok()
     }
 }

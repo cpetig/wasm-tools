@@ -12,10 +12,15 @@ pub fn run(u: &mut Unstructured<'_>) -> Result<()> {
     let mut seed = 0;
     let mut preserve_semantics = false;
     let (wasm, _config) = crate::generate_valid_module(u, |config, u| {
-        config.exceptions_enabled = false;
-        config.gc_enabled = false;
+        // NB: wasm-mutate is a general-purpose tool so unsupported proposals by
+        // wasm-mutate are not disabled here. Those must be rejected with a
+        // first-class error in wasm-mutate instead of panicking.
         seed = u.arbitrary()?;
         preserve_semantics = u.arbitrary()?;
+
+        // NB: the mutator will change shared to unshared in ways that create
+        // invalid modules so we disable the proposal (TODO: handle shared).
+        config.shared_everything_threads_enabled = false;
         Ok(())
     })?;
     log::debug!("seed = {}", seed);
@@ -41,11 +46,7 @@ pub fn run(u: &mut Unstructured<'_>) -> Result<()> {
     let mut wasm_mutate = wasm_mutate::WasmMutate::default();
     wasm_mutate.seed(seed);
     wasm_mutate.fuel(300);
-    wasm_mutate.preserve_semantics(
-        // If we are going to check that we get the same evaluated results
-        // before and after mutation, then we need to preserve semantics.
-        cfg!(feature = "wasmtime") && preserve_semantics,
-    );
+    wasm_mutate.preserve_semantics(preserve_semantics);
 
     let iterator = match wasm_mutate.run(&wasm) {
         Ok(iterator) => iterator,
@@ -87,6 +88,8 @@ pub fn run(u: &mut Unstructured<'_>) -> Result<()> {
 
         validation_result.expect("`wasm-mutate` should always produce a valid Wasm file");
 
+        // If semantics are preserved then assert so between executions of
+        // Wasmtime if that's also enabled.
         #[cfg(feature = "wasmtime")]
         if preserve_semantics {
             eval::assert_same_evaluation(&wasm, &mutated_wasm);

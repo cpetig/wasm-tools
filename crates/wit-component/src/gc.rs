@@ -19,9 +19,9 @@ const PAGE_SIZE: i32 = 64 * 1024;
 ///
 /// This internally performs a "gc" pass after removing exports to ensure that
 /// the resulting module imports the minimal set of functions necessary.
-pub fn run<T>(
+pub fn run(
     wasm: &[u8],
-    required: &IndexMap<String, T>,
+    required: &IndexSet<String>,
     main_module_realloc: Option<&str>,
 ) -> Result<Vec<u8>> {
     assert!(!required.is_empty());
@@ -31,21 +31,14 @@ pub fn run<T>(
 
     // Make sure that all required names are present in the module, and then
     // remove all names that are not required.
-    for (name, _ty) in required {
+    for name in required {
         if !module.exports.contains_key(name.as_str()) {
             bail!("adapter module does not have export `{name}`")
         }
     }
     let mut not_required = IndexSet::new();
     for name in module.exports.keys().copied() {
-        // If we need `name` then we also need cabi_post_`name`:
-        let name = if let Some(suffix) = name.strip_prefix("cabi_post_") {
-            suffix
-        } else {
-            name
-        };
-
-        if !required.contains_key(name) && !always_keep(name) {
+        if !required.contains(name) {
             not_required.insert(name);
         }
     }
@@ -55,15 +48,6 @@ pub fn run<T>(
     assert!(!module.exports.is_empty());
     module.liveness()?;
     module.encode(main_module_realloc)
-}
-
-fn always_keep(name: &str) -> bool {
-    match name {
-        // Explicitly keep `cabi_realloc` if it's there in case an interface
-        // needs it for a lowering.
-        "cabi_realloc" | "cabi_import_realloc" | "cabi_export_realloc" => true,
-        _ => false,
-    }
 }
 
 /// This function generates a Wasm function body which implements `cabi_realloc` in terms of `memory.grow`.  It
@@ -337,31 +321,12 @@ impl<'a> Module<'a> {
                     _ => {}
                 },
 
-                // sections that shouldn't appear in the specially-crafted core wasm
-                // adapter self we're processing
-                Payload::DataCountSection { .. }
-                | Payload::ElementSection(_)
-                | Payload::DataSection(_)
-                | Payload::StartSection { .. }
-                | Payload::TagSection(_)
-                | Payload::UnknownSection { .. } => {
-                    bail!("unsupported section found in adapter module")
-                }
-
-                // component-model related things that shouldn't show up
-                Payload::ModuleSection { .. }
-                | Payload::ComponentSection { .. }
-                | Payload::InstanceSection(_)
-                | Payload::ComponentInstanceSection(_)
-                | Payload::ComponentAliasSection(_)
-                | Payload::ComponentCanonicalSection(_)
-                | Payload::ComponentStartSection { .. }
-                | Payload::ComponentImportSection(_)
-                | Payload::CoreTypeSection(_)
-                | Payload::ComponentExportSection(_)
-                | Payload::ComponentTypeSection(_) => {
-                    bail!("component section found in adapter module")
-                }
+                // sections that shouldn't appear in the specially-crafted core
+                // wasm adapter self we're processing
+                other => match other.as_section() {
+                    Some((id, _)) => bail!("unsupported section `{}` in adapter", id),
+                    None => bail!("unsupported payload in adapter"),
+                },
             }
         }
 
@@ -966,7 +931,7 @@ impl<'a> Module<'a> {
 // While not exactly the most robust solution this should work well enough for
 // now.
 macro_rules! define_visit {
-    ($(@$p:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident)*) => {
+    ($(@$p:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
         $(
             fn $visit(&mut self $(, $($arg: $argty),*)?)  {
                 $(
@@ -1017,6 +982,10 @@ macro_rules! define_visit {
     (mark_live $self:ident $arg:ident to_type_nullable) => {};
     (mark_live $self:ident $arg:ident ordering) => {};
     (mark_live $self:ident $arg:ident try_table) => {unimplemented!();};
+    (mark_live $self:ident $arg:ident argument_index) => {};
+    (mark_live $self:ident $arg:ident result_index) => {};
+    (mark_live $self:ident $arg:ident cont_type_index) => {};
+    (mark_live $self:ident $arg:ident resume_table) => {unimplemented!();};
 }
 
 impl<'a> VisitOperator<'a> for Module<'a> {

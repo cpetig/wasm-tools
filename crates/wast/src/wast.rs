@@ -1,3 +1,4 @@
+#[cfg(feature = "component-model")]
 use crate::component::WastVal;
 use crate::core::{WastArgCore, WastRetCore};
 use crate::kw;
@@ -136,6 +137,13 @@ pub enum WastDirective<'a> {
     /// The invocation provided should throw an exception.
     AssertException { span: Span, exec: WastExecute<'a> },
 
+    /// The invocation should fail to handle a suspension.
+    AssertSuspension {
+        span: Span,
+        exec: WastExecute<'a>,
+        message: &'a str,
+    },
+
     /// Creates a new system thread which executes the given commands.
     Thread(WastThread<'a>),
 
@@ -162,6 +170,7 @@ impl WastDirective<'_> {
             | WastDirective::AssertUnlinkable { span, .. }
             | WastDirective::AssertInvalid { span, .. }
             | WastDirective::AssertException { span, .. }
+            | WastDirective::AssertSuspension { span, .. }
             | WastDirective::Wait { span, .. } => *span,
             WastDirective::Invoke(i) => i.span,
             WastDirective::Thread(t) => t.span,
@@ -235,6 +244,13 @@ impl<'a> Parse<'a> for WastDirective<'a> {
             Ok(WastDirective::AssertException {
                 span,
                 exec: parser.parens(|p| p.parse())?,
+            })
+        } else if l.peek::<kw::assert_suspension>()? {
+            let span = parser.parse::<kw::assert_suspension>()?.0;
+            Ok(WastDirective::AssertSuspension {
+                span,
+                exec: parser.parens(|p| p.parse())?,
+                message: parser.parse()?,
             })
         } else if l.peek::<kw::thread>()? {
             Ok(WastDirective::Thread(parser.parse()?))
@@ -343,10 +359,13 @@ fn parse_wast_module<'a>(parser: Parser<'a>) -> Result<WastDirective<'a>> {
                 crate::core::Module::parse_without_module_keyword(span, parser)?,
             ))
         }
-        fn parse_component(span: Span, parser: Parser<'_>) -> Result<Wat<'_>> {
-            Ok(Wat::Component(
-                crate::component::Component::parse_without_component_keyword(span, parser)?,
-            ))
+        fn parse_component(_span: Span, parser: Parser<'_>) -> Result<Wat<'_>> {
+            #[cfg(feature = "component-model")]
+            return Ok(Wat::Component(
+                crate::component::Component::parse_without_component_keyword(_span, parser)?,
+            ));
+            #[cfg(not(feature = "component-model"))]
+            return Err(parser.error("component model support disabled at compile time"));
         }
         let (span, ctor) = if parser.peek::<kw::component>()? {
             (
@@ -481,16 +500,25 @@ pub enum QuoteWatTest {
 #[allow(missing_docs)]
 pub enum WastArg<'a> {
     Core(WastArgCore<'a>),
+    // TODO: technically this isn't cargo-compliant since it means that this
+    // isn't and additive feature by defining this conditionally. That being
+    // said this seems unlikely to break many in practice so this isn't a shared
+    // type, so fixing this is left to a future commit.
+    #[cfg(feature = "component-model")]
     Component(WastVal<'a>),
 }
 
 impl<'a> Parse<'a> for WastArg<'a> {
     fn parse(parser: Parser<'a>) -> Result<Self> {
+        #[cfg(feature = "component-model")]
         if parser.peek::<WastArgCore<'_>>()? {
             Ok(WastArg::Core(parser.parse()?))
         } else {
             Ok(WastArg::Component(parser.parse()?))
         }
+
+        #[cfg(not(feature = "component-model"))]
+        Ok(WastArg::Core(parser.parse()?))
     }
 }
 
@@ -498,16 +526,21 @@ impl<'a> Parse<'a> for WastArg<'a> {
 #[allow(missing_docs)]
 pub enum WastRet<'a> {
     Core(WastRetCore<'a>),
+    #[cfg(feature = "component-model")]
     Component(WastVal<'a>),
 }
 
 impl<'a> Parse<'a> for WastRet<'a> {
     fn parse(parser: Parser<'a>) -> Result<Self> {
+        #[cfg(feature = "component-model")]
         if parser.peek::<WastRetCore<'_>>()? {
             Ok(WastRet::Core(parser.parse()?))
         } else {
             Ok(WastRet::Component(parser.parse()?))
         }
+
+        #[cfg(not(feature = "component-model"))]
+        Ok(WastRet::Core(parser.parse()?))
     }
 }
 

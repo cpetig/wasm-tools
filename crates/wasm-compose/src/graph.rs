@@ -11,11 +11,12 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 use wasmparser::{
-    names::ComponentName,
-    types::{
+    component_types::{
         ComponentAnyTypeId, ComponentEntityType, ComponentInstanceTypeId, Remap, Remapping,
-        ResourceId, SubtypeCx, Types, TypesRef,
+        ResourceId, SubtypeCx,
     },
+    names::ComponentName,
+    types::{Types, TypesRef},
     Chunk, ComponentExternalKind, ComponentTypeRef, Encoding, Parser, Payload, ValidPayload,
     Validator,
 };
@@ -258,7 +259,10 @@ impl<'a> Component<'a> {
         index: ExportIndex,
     ) -> Option<(&str, ComponentEntityType)> {
         let (name, _kind, _index) = self.export(index)?;
-        Some((name, self.types.component_entity_type_of_export(name)?))
+        Some((
+            name,
+            self.types.as_ref().component_entity_type_of_export(name)?,
+        ))
     }
 
     pub(crate) fn import_entity_type(
@@ -266,7 +270,10 @@ impl<'a> Component<'a> {
         index: ImportIndex,
     ) -> Option<(&str, ComponentEntityType)> {
         let (name, _ty) = self.import(index)?;
-        Some((name, self.types.component_entity_type_of_import(name)?))
+        Some((
+            name,
+            self.types.as_ref().component_entity_type_of_import(name)?,
+        ))
     }
 
     /// Finds a compatible instance export on the component for the given instance type.
@@ -286,7 +293,9 @@ impl<'a> Component<'a> {
 
                 graph.try_connection(
                     export_component_id,
-                    ComponentEntityType::Instance(self.types.component_instance_at(*index)),
+                    ComponentEntityType::Instance(
+                        self.types.as_ref().component_instance_at(*index),
+                    ),
                     self.types(),
                     ComponentEntityType::Instance(ty),
                     types,
@@ -565,6 +574,7 @@ impl<'a> CompositionGraph<'a> {
             for import_name in component.imports.keys() {
                 let ty = component
                     .types
+                    .as_ref()
                     .component_entity_type_of_import(import_name)
                     .unwrap();
 

@@ -290,7 +290,7 @@ impl PeepholeMutationAnalysis {
             Lang::TableSet(..) => Ok(PrimitiveTypeInfo::Empty),
             Lang::TableGet(idx, _) => {
                 let ty = self.table_types[*idx as usize];
-                Ok(ty.element_type.into())
+                ty.element_type.try_into()
             }
             Lang::I32UseGlobal(_) => Ok(PrimitiveTypeInfo::I32),
             Lang::I64UseGlobal(_) => Ok(PrimitiveTypeInfo::I64),
@@ -347,6 +347,7 @@ impl PeepholeMutationAnalysis {
             Lang::F64x2ReplaceLane(..) => Ok(PrimitiveTypeInfo::V128),
 
             Lang::I8x16Swizzle(_) => Ok(PrimitiveTypeInfo::V128),
+            Lang::I8x16Shuffle(..) => Ok(PrimitiveTypeInfo::V128),
             Lang::I8x16Splat(_) => Ok(PrimitiveTypeInfo::V128),
             Lang::I16x8Splat(_) => Ok(PrimitiveTypeInfo::V128),
             Lang::I32x4Splat(_) => Ok(PrimitiveTypeInfo::V128),
@@ -577,7 +578,7 @@ impl Analysis<Lang> for PeepholeMutationAnalysis {
             tpe: egraph
                 .analysis
                 .get_returning_tpe(l, egraph)
-                .expect("Missing type"),
+                .unwrap_or(PrimitiveTypeInfo::Empty),
         })
     }
 

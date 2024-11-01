@@ -13,7 +13,7 @@
  * limitations under the License.
  */
 
-use crate::limits::MAX_WASM_CATCHES;
+use crate::limits::{MAX_WASM_CATCHES, MAX_WASM_HANDLERS};
 use crate::prelude::*;
 use crate::{BinaryReader, BinaryReaderError, FromReader, Result, ValType};
 
@@ -28,6 +28,43 @@ pub enum BlockType {
     ///
     /// The index is to a function type in the types section.
     FuncType(u32),
+}
+
+/// The kind of a control flow `Frame`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum FrameKind {
+    /// A Wasm `block` control block.
+    Block,
+    /// A Wasm `if` control block.
+    If,
+    /// A Wasm `else` control block.
+    Else,
+    /// A Wasm `loop` control block.
+    Loop,
+    /// A Wasm `try` control block.
+    ///
+    /// # Note
+    ///
+    /// This belongs to the Wasm exception handling proposal.
+    TryTable,
+    /// A Wasm legacy `try` control block.
+    ///
+    /// # Note
+    ///
+    /// See: `WasmFeatures::legacy_exceptions` Note in `crates/wasmparser/src/features.rs`
+    LegacyTry,
+    /// A Wasm legacy `catch` control block.
+    ///
+    /// # Note
+    ///
+    /// See: `WasmFeatures::legacy_exceptions` Note in `crates/wasmparser/src/features.rs`
+    LegacyCatch,
+    /// A Wasm legacy `catch_all` control block.
+    ///
+    /// # Note
+    ///
+    /// See: `WasmFeatures::legacy_exceptions` Note in `crates/wasmparser/src/features.rs`
+    LegacyCatchAll,
 }
 
 /// Represents a memory immediate in a WebAssembly memory instruction.
@@ -177,7 +214,7 @@ pub enum Ordering {
 }
 
 macro_rules! define_operator {
-    ($(@$proposal:ident $op:ident $({ $($payload:tt)* })? => $visit:ident)*) => {
+    ($(@$proposal:ident $op:ident $({ $($payload:tt)* })? => $visit:ident ($($ann:tt)*))*) => {
         /// Instructions as defined [here].
         ///
         /// [here]: https://webassembly.github.io/spec/core/binary/instructions.html
@@ -358,7 +395,7 @@ impl<'a> Iterator for OperatorsIteratorWithOffsets<'a> {
 }
 
 macro_rules! define_visit_operator {
-    ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident)*) => {
+    ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
         $(
             fn $visit(&mut self $($(,$arg: $argty)*)?) -> Self::Output;
         )*
@@ -381,7 +418,7 @@ pub trait VisitOperator<'a> {
     /// implement [`VisitOperator`] on their own.
     fn visit_operator(&mut self, op: &Operator<'a>) -> Self::Output {
         macro_rules! visit_operator {
-            ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident)*) => {
+            ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
                 match op {
                     $(
                         Operator::$op $({ $($arg),* })? => self.$visit($($($arg.clone()),*)?),
@@ -397,7 +434,7 @@ pub trait VisitOperator<'a> {
 }
 
 macro_rules! define_visit_operator_delegate {
-    ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident)*) => {
+    ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
         $(
             fn $visit(&mut self $($(,$arg: $argty)*)?) -> Self::Output {
                 V::$visit(&mut *self, $($($arg),*)?)
@@ -474,6 +511,57 @@ impl<'a> FromReader<'a> for Catch {
             },
 
             x => return reader.invalid_leading_byte(x, "catch"),
+        })
+    }
+}
+
+/// A representation of dispatch tables on `resume` and `resume_throw`
+/// instructions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResumeTable {
+    /// Either the outer blocks which will handle suspensions or
+    /// "switch-to" handlers.
+    pub handlers: Vec<Handle>,
+}
+
+/// Handle clauses that can be specified in [`ResumeTable`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[allow(missing_docs)]
+pub enum Handle {
+    /// Equivalent of `(on $tag $lbl)`.
+    OnLabel { tag: u32, label: u32 },
+    /// Equivalent of `(on $tag switch)`.
+    OnSwitch { tag: u32 },
+}
+
+impl ResumeTable {
+    /// Returns the number of entries in the table.
+    pub fn len(&self) -> usize {
+        self.handlers.len()
+    }
+}
+
+impl<'a> FromReader<'a> for ResumeTable {
+    fn from_reader(reader: &mut BinaryReader<'a>) -> Result<Self> {
+        let handlers = reader
+            .read_iter(MAX_WASM_HANDLERS, "resume table")?
+            .collect::<Result<_>>()?;
+        let table = ResumeTable { handlers };
+        Ok(table)
+    }
+}
+
+impl<'a> FromReader<'a> for Handle {
+    fn from_reader(reader: &mut BinaryReader<'a>) -> Result<Self> {
+        Ok(match reader.read_u8()? {
+            0x00 => Handle::OnLabel {
+                tag: reader.read_var_u32()?,
+                label: reader.read_var_u32()?,
+            },
+            0x01 => Handle::OnSwitch {
+                tag: reader.read_var_u32()?,
+            },
+            x => return reader.invalid_leading_byte(x, "on clause"),
         })
     }
 }
