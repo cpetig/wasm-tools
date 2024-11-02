@@ -1478,7 +1478,6 @@ impl<'a> Type<'a> {
             Type::Result(r) => r.span,
             Type::Future(f) => f.span,
             Type::Stream(s) => s.span,
-            Type::Error(span) => *span,
         }
     }
 }
@@ -2021,7 +2020,7 @@ fn type_string<'a>(ty: &Type<'a>, name: &str) -> Option<String> {
 pub fn pretty_print(path: impl AsRef<Path> + Clone) {
     let contents = std::fs::read_to_string(path.clone());
     match contents {
-        Ok(c) => match lex::Tokenizer::new(&c, 0, Some(true), Some(true)) {
+        Ok(c) => match lex::Tokenizer::new(&c, 0, Some(true)) {
             Ok(mut token) => {
                 let pkgfile = PackageFile::parse(&mut token);
                 match pkgfile {
