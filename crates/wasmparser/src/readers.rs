@@ -42,8 +42,8 @@ impl<'a> FromReader<'a> for bool {
         match reader.read_u8()? {
             0 => Ok(false),
             1 => Ok(true),
-            v => Err(BinaryReaderError::new(
-                format!("invalid boolean value: {v}"),
+            _ => Err(BinaryReaderError::new(
+                "invalid boolean value",
                 reader.original_position() - 1,
             )),
         }
