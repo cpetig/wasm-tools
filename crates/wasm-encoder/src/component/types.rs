@@ -684,8 +684,8 @@ impl ComponentDefinedTypeEncoder<'_> {
         payload.encode(self.0);
     }
 
-    /// Define the `error` type.
-    pub fn error(self) {
+    /// Define the `error-context` type.
+    pub fn error_context(self) {
         self.0.push(0x65);
     }
 }

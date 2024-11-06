@@ -803,7 +803,7 @@ pub mod component_utils {
             wasmparser::ComponentDefinedType::Stream(t) => {
                 defined.stream(reencoder.component_val_type(t));
             }
-            wasmparser::ComponentDefinedType::Error => defined.error(),
+            wasmparser::ComponentDefinedType::ErrorContext => defined.error_context(),
         }
         Ok(())
     }

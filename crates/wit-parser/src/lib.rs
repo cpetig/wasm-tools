@@ -570,7 +570,7 @@ pub enum TypeDefKind {
     List(Type),
     Future(Option<Type>),
     Stream(Type),
-    Error,
+    ErrorContext,
     Type(Type),
 
     /// This represents a type of unknown structure imported from a foreign
@@ -599,7 +599,7 @@ impl TypeDefKind {
             TypeDefKind::List(_) => "list",
             TypeDefKind::Future(_) => "future",
             TypeDefKind::Stream(_) => "stream",
-            TypeDefKind::Error => "error",
+            TypeDefKind::ErrorContext => "error-context",
             TypeDefKind::Type(_) => "type",
             TypeDefKind::Unknown => "unknown",
         }
@@ -1020,7 +1020,7 @@ fn find_futures_and_streams(resolve: &Resolve, ty: Type, results: &mut Vec<TypeI
             | TypeDefKind::Handle(_)
             | TypeDefKind::Flags(_)
             | TypeDefKind::Enum(_)
-            | TypeDefKind::Error => {}
+            | TypeDefKind::ErrorContext => {}
             TypeDefKind::Record(r) => {
                 for Field { ty, .. } in &r.fields {
                     find_futures_and_streams(resolve, *ty, results);

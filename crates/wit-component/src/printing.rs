@@ -540,7 +540,7 @@ impl WitPrinter {
                     TypeDefKind::Stream(_) => {
                         todo!("document has an unnamed stream type")
                     }
-                    TypeDefKind::Error => self.output.push_str("error"),
+                    TypeDefKind::ErrorContext => self.output.push_str("error-context"),
                     TypeDefKind::Unknown => unreachable!(),
                 }
             }
@@ -698,7 +698,7 @@ impl WitPrinter {
                     },
                     TypeDefKind::Future(_) => panic!("no need to declare futures"),
                     TypeDefKind::Stream(_) => panic!("no need to declare streams"),
-                    TypeDefKind::Error => panic!("no need to declare errors"),
+                    TypeDefKind::ErrorContext => panic!("no need to declare error-contexts"),
                     TypeDefKind::Unknown => unreachable!(),
                 }
             }

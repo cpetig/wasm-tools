@@ -722,7 +722,7 @@ impl ComponentState {
             ComponentDefinedType::Primitive(_)
             | ComponentDefinedType::Flags(_)
             | ComponentDefinedType::Enum(_)
-            | ComponentDefinedType::Error => true,
+            | ComponentDefinedType::ErrorContext => true,
 
             // Referenced types of all these aggregates must all be
             // named.
@@ -3446,7 +3446,7 @@ impl ComponentState {
             crate::ComponentDefinedType::Stream(ty) => Ok(ComponentDefinedType::Stream(
                 self.create_component_val_type(ty, offset)?,
             )),
-            crate::ComponentDefinedType::Error => Ok(ComponentDefinedType::Error),
+            crate::ComponentDefinedType::ErrorContext => Ok(ComponentDefinedType::ErrorContext),
         }
     }
 

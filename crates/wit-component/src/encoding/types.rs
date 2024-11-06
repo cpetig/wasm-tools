@@ -155,7 +155,7 @@ pub trait ValtypeEncoder<'a> {
                     TypeDefKind::Type(ty) => self.encode_valtype(resolve, ty)?,
                     TypeDefKind::Future(ty) => self.encode_future(resolve, ty)?,
                     TypeDefKind::Stream(ty) => self.encode_stream(resolve, ty)?,
-                    TypeDefKind::Error => self.encode_error()?,
+                    TypeDefKind::ErrorContext => self.encode_error_context()?,
                     TypeDefKind::Unknown => unreachable!(),
                     TypeDefKind::Resource => {
                         let name = ty.name.as_ref().expect("resources must be named");
@@ -329,9 +329,9 @@ pub trait ValtypeEncoder<'a> {
         Ok(ComponentValType::Type(index))
     }
 
-    fn encode_error(&mut self) -> Result<ComponentValType> {
+    fn encode_error_context(&mut self) -> Result<ComponentValType> {
         let (index, encoder) = self.defined_type();
-        encoder.error();
+        encoder.error_context();
         Ok(ComponentValType::Type(index))
     }
 }

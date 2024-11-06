@@ -29,7 +29,7 @@ pub enum Type {
     Tuple(Tuple),
     Future(Option<Box<Type>>),
     Stream(Box<Type>),
-    Error,
+    ErrorContext,
     Named(Ident),
 }
 
@@ -126,7 +126,7 @@ impl Display for Type {
             Type::Stream(type_) => {
                 write!(f, "stream<{type_}>")
             }
-            Type::Error => write!(f, "error"),
+            Type::ErrorContext => write!(f, "error-context"),
         }
     }
 }

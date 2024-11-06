@@ -1263,7 +1263,7 @@ impl WitPackageDecoder<'_> {
             | TypeDefKind::Handle(_)
             | TypeDefKind::Future(_)
             | TypeDefKind::Stream(_)
-            | TypeDefKind::Error => {}
+            | TypeDefKind::ErrorContext => {}
 
             TypeDefKind::Resource
             | TypeDefKind::Record(_)
@@ -1401,7 +1401,7 @@ impl WitPackageDecoder<'_> {
 
             ComponentDefinedType::Stream(ty) => Ok(TypeDefKind::Stream(self.convert_valtype(ty)?)),
 
-            ComponentDefinedType::Error => Ok(TypeDefKind::Error),
+            ComponentDefinedType::ErrorContext => Ok(TypeDefKind::ErrorContext),
         }
     }
 
@@ -1699,7 +1699,7 @@ impl Registrar<'_> {
             | ComponentDefinedType::Enum(_)
             | ComponentDefinedType::Own(_)
             | ComponentDefinedType::Borrow(_)
-            | ComponentDefinedType::Error => Ok(()),
+            | ComponentDefinedType::ErrorContext => Ok(()),
         }
     }
 

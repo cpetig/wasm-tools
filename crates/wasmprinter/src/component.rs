@@ -276,7 +276,7 @@ impl Printer<'_, '_> {
             }
             ComponentDefinedType::Future(ty) => self.print_future_type(state, *ty)?,
             ComponentDefinedType::Stream(ty) => self.print_stream_type(state, *ty)?,
-            ComponentDefinedType::Error => self.result.write_str("error")?,
+            ComponentDefinedType::ErrorContext => self.result.write_str("error-context")?,
         }
 
         Ok(())
