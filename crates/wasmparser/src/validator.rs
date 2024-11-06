@@ -1370,13 +1370,13 @@ impl Validator {
                     crate::CanonicalFunction::FutureCloseWritable { ty } => {
                         current.future_close_writable(ty, types, offset, features)
                     }
-                    crate::CanonicalFunction::ErrorNew { options } => {
+                    crate::CanonicalFunction::ErrorContextNew { options } => {
                         current.error_new(options.into_vec(), types, offset, features)
                     }
-                    crate::CanonicalFunction::ErrorDebugMessage { options } => {
+                    crate::CanonicalFunction::ErrorContextDebugMessage { options } => {
                         current.error_debug_message(options.into_vec(), types, offset, features)
                     }
-                    crate::CanonicalFunction::ErrorDrop => {
+                    crate::CanonicalFunction::ErrorContextDrop => {
                         current.error_drop(types, offset, features)
                     }
                 }

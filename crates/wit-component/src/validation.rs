@@ -1,5 +1,5 @@
 use crate::encoding::{Instance, Item, LibraryInfo, MainOrAdapter};
-use crate::ComponentEncoder;
+use crate::{ComponentEncoder, StringEncoding};
 use anyhow::{bail, Context, Result};
 use indexmap::{map::Entry, IndexMap, IndexSet};
 use std::hash::{Hash, Hasher};
@@ -257,9 +257,14 @@ pub enum Import {
     },
     FutureCloseReadable(TypeId),
     FutureCloseWritable(TypeId),
-    ErrorNew,
-    ErrorDebugMessage,
-    ErrorDrop,
+    ErrorContextNew {
+        encoding: StringEncoding,
+    },
+    ErrorContextDebugMessage {
+        encoding: StringEncoding,
+        realloc: String,
+    },
+    ErrorContextDrop,
 }
 
 impl ImportMap {
@@ -434,10 +439,10 @@ impl ImportMap {
         };
 
         if module == names.import_root() {
-            if Some(name) == names.error_drop() {
+            if Some(name) == names.error_context_drop() {
                 let expected = FuncType::new([ValType::I32], []);
                 validate_func_sig(name, &expected, ty)?;
-                return Ok(Import::ErrorDrop);
+                return Ok(Import::ErrorContextDrop);
             }
 
             if Some(name) == names.task_backpressure() {
@@ -476,16 +481,19 @@ impl ImportMap {
                 return Ok(Import::SubtaskDrop);
             }
 
-            if Some(name) == names.error_new() {
+            if let Some(encoding) = names.error_context_new(name) {
                 let expected = FuncType::new([ValType::I32; 2], [ValType::I32]);
                 validate_func_sig(name, &expected, ty)?;
-                return Ok(Import::ErrorNew);
+                return Ok(Import::ErrorContextNew { encoding });
             }
 
-            if Some(name) == names.error_debug_message() {
+            if let Some((encoding, realloc)) = names.error_context_debug_message(name) {
                 let expected = FuncType::new([ValType::I32; 2], []);
                 validate_func_sig(name, &expected, ty)?;
-                return Ok(Import::ErrorDebugMessage);
+                return Ok(Import::ErrorContextDebugMessage {
+                    encoding,
+                    realloc: realloc.to_owned(),
+                });
             }
 
             if let Some(import) = async_import(None)? {
@@ -927,9 +935,7 @@ impl ExportMap {
         self.general_purpose_realloc()
     }
 
-    /// Returns the realloc to use when calling built-in functions such as
-    /// `error.new`, `error.debug-string`, etc.
-    pub fn general_purpose_realloc(&self) -> Option<&str> {
+    fn general_purpose_realloc(&self) -> Option<&str> {
         self.find(|m| matches!(m, Export::GeneralPurposeRealloc))
     }
 
@@ -1059,9 +1065,9 @@ trait NameMangling {
     fn subtask_drop(&self) -> Option<&str>;
     fn callback_name<'a>(&self, s: &'a str) -> Option<&'a str>;
     fn async_name<'a>(&self, s: &'a str) -> Option<&'a str>;
-    fn error_new(&self) -> Option<&str>;
-    fn error_debug_message(&self) -> Option<&str>;
-    fn error_drop(&self) -> Option<&str>;
+    fn error_context_new(&self, s: &str) -> Option<StringEncoding>;
+    fn error_context_debug_message<'a>(&self, s: &'a str) -> Option<(StringEncoding, &'a str)>;
+    fn error_context_drop(&self) -> Option<&str>;
     fn payload_import(
         &self,
         module: &str,
@@ -1154,13 +1160,15 @@ impl NameMangling for Standard {
         _ = s;
         None
     }
-    fn error_new(&self) -> Option<&str> {
+    fn error_context_new(&self, s: &str) -> Option<StringEncoding> {
+        _ = s;
         None
     }
-    fn error_debug_message(&self) -> Option<&str> {
+    fn error_context_debug_message<'a>(&self, s: &'a str) -> Option<(StringEncoding, &'a str)> {
+        _ = s;
         None
     }
-    fn error_drop(&self) -> Option<&str> {
+    fn error_context_drop(&self) -> Option<&str> {
         None
     }
     fn payload_import(
@@ -1333,14 +1341,40 @@ impl NameMangling for Legacy {
     fn async_name<'a>(&self, s: &'a str) -> Option<&'a str> {
         s.strip_prefix("[async]")
     }
-    fn error_new(&self) -> Option<&str> {
-        Some("[error-new]")
+    fn error_context_new(&self, s: &str) -> Option<StringEncoding> {
+        parse_encoding(
+            s.strip_prefix("[error-context-new;encoding=")?
+                .strip_suffix("]")?,
+        )
     }
-    fn error_debug_message(&self) -> Option<&str> {
-        Some("[error-debug-message]")
+    fn error_context_debug_message<'a>(&self, s: &'a str) -> Option<(StringEncoding, &'a str)> {
+        let mut suffix = s.strip_prefix("[error-context-debug-message;")?;
+        let mut encoding = None;
+        let mut realloc = None;
+        loop {
+            if let Some(index) = suffix.find(';').or_else(|| suffix.find(']')) {
+                if let Some(suffix) = suffix[..index].strip_prefix("encoding=") {
+                    if encoding.is_some() {
+                        return None;
+                    }
+                    encoding = parse_encoding(suffix)
+                } else if let Some(suffix) = suffix[..index].strip_prefix("realloc=") {
+                    if realloc.is_some() {
+                        return None;
+                    }
+                    realloc = Some(suffix);
+                } else {
+                    return None;
+                }
+                suffix = &suffix[index + 1..];
+            } else {
+                break;
+            }
+        }
+        Some((encoding?, realloc?))
     }
-    fn error_drop(&self) -> Option<&str> {
-        Some("[error-drop]")
+    fn error_context_drop(&self) -> Option<&str> {
+        Some("[error-context-drop]")
     }
     fn payload_import(
         &self,
@@ -1858,4 +1892,13 @@ fn get_function(
         bail!("no export `{name}` export found");
     };
     Ok(function)
+}
+
+fn parse_encoding(s: &str) -> Option<StringEncoding> {
+    match s {
+        "utf8" => Some(StringEncoding::UTF8),
+        "utf16" => Some(StringEncoding::UTF16),
+        "compact-utf16" => Some(StringEncoding::CompactUTF16),
+        _ => None,
+    }
 }

@@ -1380,31 +1380,35 @@ impl<'a> EncodingState<'a> {
                 ShimKind::TaskPoll { async_ } => self
                     .component
                     .task_poll(*async_, self.memory_index.unwrap()),
-                ShimKind::ErrorNew { for_module } | ShimKind::ErrorDebugMessage { for_module } => {
-                    let metadata = self.info.module_metadata_for(*for_module);
-                    let exports = self.info.exports_for(*for_module);
-                    let instance_index = self.instance_for(*for_module);
-                    let encoding = metadata.general_purpose_encoding();
-                    let realloc = exports.general_purpose_realloc();
-                    let realloc_index = realloc
-                        .map(|name| self.core_alias_export(instance_index, name, ExportKind::Func));
+                ShimKind::ErrorContextNew {
+                    for_module,
+                    encoding,
+                }
+                | ShimKind::ErrorContextDebugMessage {
+                    for_module,
+                    encoding,
+                    ..
+                } => match &shim.kind {
+                    ShimKind::ErrorContextNew { .. } => self.component.error_context_new(
+                        (RequiredOptions::MEMORY | RequiredOptions::STRING_ENCODING)
+                            .into_iter(*encoding, self.memory_index, None)?
+                            .collect::<Vec<_>>(),
+                    ),
+                    ShimKind::ErrorContextDebugMessage { realloc, .. } => {
+                        let instance_index = self.instance_for(*for_module);
+                        let realloc_index =
+                            Some(self.core_alias_export(instance_index, realloc, ExportKind::Func));
 
-                    match &shim.kind {
-                        ShimKind::ErrorNew { .. } => self.component.error_new(
-                            (RequiredOptions::MEMORY | RequiredOptions::STRING_ENCODING)
-                                .into_iter(encoding, self.memory_index, realloc_index)?
-                                .collect::<Vec<_>>(),
-                        ),
-                        ShimKind::ErrorDebugMessage { .. } => self.component.error_debug_message(
+                        self.component.error_context_debug_message(
                             (RequiredOptions::MEMORY
                                 | RequiredOptions::STRING_ENCODING
                                 | RequiredOptions::REALLOC)
-                                .into_iter(encoding, self.memory_index, realloc_index)?
+                                .into_iter(*encoding, self.memory_index, realloc_index)?
                                 .collect::<Vec<_>>(),
-                        ),
-                        _ => unreachable!(),
+                        )
                     }
-                }
+                    _ => unreachable!(),
+                },
             };
 
             exports.push((shim.name.as_str(), ExportKind::Func, core_func_index));
@@ -1802,26 +1806,35 @@ impl<'a> EncodingState<'a> {
                 let index = self.component.future_close_writable(type_index);
                 return Ok((ExportKind::Func, index));
             }
-            Import::ErrorNew => {
+            Import::ErrorContextNew { encoding } => {
                 let index = self.component.core_alias_export(
                     self.shim_instance_index
                         .expect("shim should be instantiated"),
-                    &shims.shims[&ShimKind::ErrorNew { for_module }].name,
+                    &shims.shims[&ShimKind::ErrorContextNew {
+                        for_module,
+                        encoding: *encoding,
+                    }]
+                        .name,
                     ExportKind::Func,
                 );
                 return Ok((ExportKind::Func, index));
             }
-            Import::ErrorDebugMessage => {
+            Import::ErrorContextDebugMessage { encoding, realloc } => {
                 let index = self.component.core_alias_export(
                     self.shim_instance_index
                         .expect("shim should be instantiated"),
-                    &shims.shims[&ShimKind::ErrorDebugMessage { for_module }].name,
+                    &shims.shims[&ShimKind::ErrorContextDebugMessage {
+                        for_module,
+                        encoding: *encoding,
+                        realloc,
+                    }]
+                        .name,
                     ExportKind::Func,
                 );
                 return Ok((ExportKind::Func, index));
             }
-            Import::ErrorDrop => {
-                let index = self.component.error_drop();
+            Import::ErrorContextDrop => {
+                let index = self.component.error_context_drop();
                 return Ok((ExportKind::Func, index));
             }
             Import::WorldFunc(key, name, abi) => (key, name, None, *abi),
@@ -2059,11 +2072,14 @@ enum ShimKind<'a> {
     TaskPoll {
         async_: bool,
     },
-    ErrorNew {
+    ErrorContextNew {
         for_module: CustomModule<'a>,
+        encoding: StringEncoding,
     },
-    ErrorDebugMessage {
+    ErrorContextDebugMessage {
         for_module: CustomModule<'a>,
+        encoding: StringEncoding,
+        realloc: &'a str,
     },
 }
 
@@ -2135,7 +2151,7 @@ impl<'a> Shims<'a> {
                 | Import::ExportedResourceDrop(..)
                 | Import::ExportedResourceRep(..)
                 | Import::ExportedResourceNew(..)
-                | Import::ErrorDrop
+                | Import::ErrorContextDrop
                 | Import::TaskBackpressure
                 | Import::TaskYield { .. }
                 | Import::SubtaskDrop
@@ -2234,13 +2250,16 @@ impl<'a> Shims<'a> {
                     continue;
                 }
 
-                Import::ErrorNew => {
+                Import::ErrorContextNew { encoding } => {
                     let name = self.shims.len().to_string();
                     self.push(Shim {
                         name,
                         debug_name: "error-new".to_string(),
                         options: RequiredOptions::empty(),
-                        kind: ShimKind::ErrorNew { for_module },
+                        kind: ShimKind::ErrorContextNew {
+                            for_module,
+                            encoding: *encoding,
+                        },
                         sig: WasmSignature {
                             params: vec![WasmType::I32; 2],
                             results: vec![WasmType::I32],
@@ -2251,13 +2270,17 @@ impl<'a> Shims<'a> {
                     continue;
                 }
 
-                Import::ErrorDebugMessage => {
+                Import::ErrorContextDebugMessage { encoding, realloc } => {
                     let name = self.shims.len().to_string();
                     self.push(Shim {
                         name,
                         debug_name: "error-debug-message".to_string(),
                         options: RequiredOptions::empty(),
-                        kind: ShimKind::ErrorDebugMessage { for_module },
+                        kind: ShimKind::ErrorContextDebugMessage {
+                            for_module,
+                            encoding: *encoding,
+                            realloc,
+                        },
                         sig: WasmSignature {
                             params: vec![WasmType::I32; 2],
                             results: vec![],

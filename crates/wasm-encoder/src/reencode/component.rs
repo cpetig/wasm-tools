@@ -1036,14 +1036,16 @@ pub mod component_utils {
             wasmparser::CanonicalFunction::FutureCloseWritable { ty } => {
                 section.future_close_writable(reencoder.component_type_index(ty));
             }
-            wasmparser::CanonicalFunction::ErrorNew { options } => {
-                section.error_new(options.iter().map(|o| reencoder.canonical_option(*o)));
+            wasmparser::CanonicalFunction::ErrorContextNew { options } => {
+                section.error_context_new(options.iter().map(|o| reencoder.canonical_option(*o)));
             }
-            wasmparser::CanonicalFunction::ErrorDebugMessage { options } => {
-                section.error_debug_message(options.iter().map(|o| reencoder.canonical_option(*o)));
+            wasmparser::CanonicalFunction::ErrorContextDebugMessage { options } => {
+                section.error_context_debug_message(
+                    options.iter().map(|o| reencoder.canonical_option(*o)),
+                );
             }
-            wasmparser::CanonicalFunction::ErrorDrop => {
-                section.error_drop();
+            wasmparser::CanonicalFunction::ErrorContextDrop => {
+                section.error_context_drop();
             }
         }
         Ok(())

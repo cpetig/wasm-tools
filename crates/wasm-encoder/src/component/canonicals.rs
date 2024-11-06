@@ -399,9 +399,9 @@ impl CanonicalFunctionSection {
         self
     }
 
-    /// Defines a function to create a new `error` with a specified debug
-    /// message.
-    pub fn error_new<O>(&mut self, options: O) -> &mut Self
+    /// Defines a function to create a new `error-context` with a specified
+    /// debug message.
+    pub fn error_context_new<O>(&mut self, options: O) -> &mut Self
     where
         O: IntoIterator<Item = CanonicalOption>,
         O::IntoIter: ExactSizeIterator,
@@ -416,11 +416,12 @@ impl CanonicalFunctionSection {
         self
     }
 
-    /// Defines a function to get the debug message for a specified `error`.
+    /// Defines a function to get the debug message for a specified
+    /// `error-context`.
     ///
     /// Note that the debug message might not necessarily match what was passed
-    /// to `error.new`.
-    pub fn error_debug_message<O>(&mut self, options: O) -> &mut Self
+    /// to `error-context.new`.
+    pub fn error_context_debug_message<O>(&mut self, options: O) -> &mut Self
     where
         O: IntoIterator<Item = CanonicalOption>,
         O::IntoIter: ExactSizeIterator,
@@ -435,8 +436,8 @@ impl CanonicalFunctionSection {
         self
     }
 
-    /// Defines a function to drop a specified `error`.
-    pub fn error_drop(&mut self) -> &mut Self {
+    /// Defines a function to drop a specified `error-context`.
+    pub fn error_context_drop(&mut self) -> &mut Self {
         self.bytes.push(0x1e);
         self.num_added += 1;
         self

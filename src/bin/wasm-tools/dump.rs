@@ -442,9 +442,11 @@ impl<'a> Dump<'a> {
                             | CanonicalFunction::FutureCancelWrite { .. }
                             | CanonicalFunction::FutureCloseReadable { .. }
                             | CanonicalFunction::FutureCloseWritable { .. }
-                            | CanonicalFunction::ErrorNew { .. }
-                            | CanonicalFunction::ErrorDebugMessage { .. }
-                            | CanonicalFunction::ErrorDrop => ("core func", &mut i.core_funcs),
+                            | CanonicalFunction::ErrorContextNew { .. }
+                            | CanonicalFunction::ErrorContextDebugMessage { .. }
+                            | CanonicalFunction::ErrorContextDrop => {
+                                ("core func", &mut i.core_funcs)
+                            }
                         };
 
                         write!(me.state, "[{} {}] {:?}", name, inc(col), f)?;

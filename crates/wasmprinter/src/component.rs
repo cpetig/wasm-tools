@@ -1142,31 +1142,31 @@ impl Printer<'_, '_> {
                     self.end_group()?;
                     state.core.funcs += 1;
                 }
-                CanonicalFunction::ErrorNew { options } => {
+                CanonicalFunction::ErrorContextNew { options } => {
                     self.start_group("core func ")?;
                     self.print_name(&state.core.func_names, state.core.funcs)?;
                     self.result.write_str(" ")?;
-                    self.start_group("canon error.new ")?;
+                    self.start_group("canon error-context.new ")?;
                     self.print_canonical_options(state, &options)?;
                     self.end_group()?;
                     self.end_group()?;
                     state.core.funcs += 1;
                 }
-                CanonicalFunction::ErrorDebugMessage { options } => {
+                CanonicalFunction::ErrorContextDebugMessage { options } => {
                     self.start_group("core func ")?;
                     self.print_name(&state.core.func_names, state.core.funcs)?;
                     self.result.write_str(" ")?;
-                    self.start_group("canon error.debug-message ")?;
+                    self.start_group("canon error-context.debug-message ")?;
                     self.print_canonical_options(state, &options)?;
                     self.end_group()?;
                     self.end_group()?;
                     state.core.funcs += 1;
                 }
-                CanonicalFunction::ErrorDrop => {
+                CanonicalFunction::ErrorContextDrop => {
                     self.start_group("core func ")?;
                     self.print_name(&state.core.func_names, state.core.funcs)?;
                     self.result.write_str(" ")?;
-                    self.start_group("canon error.drop")?;
+                    self.start_group("canon error-context.drop")?;
                     self.end_group()?;
                     self.end_group()?;
                     state.core.funcs += 1;

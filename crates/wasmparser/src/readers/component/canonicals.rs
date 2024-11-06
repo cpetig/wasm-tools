@@ -212,22 +212,22 @@ pub enum CanonicalFunction {
         /// The `future` type to expect.
         ty: u32,
     },
-    /// A function to create a new `error` with a specified debug
+    /// A function to create a new `error-context` with a specified debug
     /// message.
-    ErrorNew {
+    ErrorContextNew {
         /// String encoding, memory, etc. to use when loading debug message.
         options: Box<[CanonicalOption]>,
     },
-    /// A function to get the debug message for a specified `error`.
+    /// A function to get the debug message for a specified `error-context`.
     ///
     /// Note that the debug message might not necessarily match what was passed
     /// to `error.new`.
-    ErrorDebugMessage {
+    ErrorContextDebugMessage {
         /// String encoding, memory, etc. to use when storing debug message.
         options: Box<[CanonicalOption]>,
     },
-    /// A function to drop a specified `error`.
-    ErrorDrop,
+    /// A function to drop a specified `error-context`.
+    ErrorContextDrop,
 }
 
 /// A reader for the canonical section of a WebAssembly component.
@@ -335,17 +335,17 @@ impl<'a> FromReader<'a> for CanonicalFunction {
             },
             0x1a => CanonicalFunction::FutureCloseReadable { ty: reader.read()? },
             0x1b => CanonicalFunction::FutureCloseWritable { ty: reader.read()? },
-            0x1c => CanonicalFunction::ErrorNew {
+            0x1c => CanonicalFunction::ErrorContextNew {
                 options: reader
                     .read_iter(MAX_WASM_CANONICAL_OPTIONS, "canonical options")?
                     .collect::<Result<_>>()?,
             },
-            0x1d => CanonicalFunction::ErrorDebugMessage {
+            0x1d => CanonicalFunction::ErrorContextDebugMessage {
                 options: reader
                     .read_iter(MAX_WASM_CANONICAL_OPTIONS, "canonical options")?
                     .collect::<Result<_>>()?,
             },
-            0x1e => CanonicalFunction::ErrorDrop,
+            0x1e => CanonicalFunction::ErrorContextDrop,
             x => return reader.invalid_leading_byte(x, "canonical function"),
         })
     }

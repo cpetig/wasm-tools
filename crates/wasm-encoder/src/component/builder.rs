@@ -520,29 +520,30 @@ impl ComponentBuilder {
         inc(&mut self.core_funcs)
     }
 
-    /// Declares a new `error.new` intrinsic.
-    pub fn error_new<O>(&mut self, options: O) -> u32
+    /// Declares a new `error-context.new` intrinsic.
+    pub fn error_context_new<O>(&mut self, options: O) -> u32
     where
         O: IntoIterator<Item = CanonicalOption>,
         O::IntoIter: ExactSizeIterator,
     {
-        self.canonical_functions().error_new(options);
+        self.canonical_functions().error_context_new(options);
         inc(&mut self.core_funcs)
     }
 
-    /// Declares a new `error.debug-message` intrinsic.
-    pub fn error_debug_message<O>(&mut self, options: O) -> u32
+    /// Declares a new `error-context.debug-message` intrinsic.
+    pub fn error_context_debug_message<O>(&mut self, options: O) -> u32
     where
         O: IntoIterator<Item = CanonicalOption>,
         O::IntoIter: ExactSizeIterator,
     {
-        self.canonical_functions().error_debug_message(options);
+        self.canonical_functions()
+            .error_context_debug_message(options);
         inc(&mut self.core_funcs)
     }
 
-    /// Declares a new `error.drop` intrinsic.
-    pub fn error_drop(&mut self) -> u32 {
-        self.canonical_functions().error_drop();
+    /// Declares a new `error-context.drop` intrinsic.
+    pub fn error_context_drop(&mut self) -> u32 {
+        self.canonical_functions().error_context_drop();
         inc(&mut self.core_funcs)
     }
 
