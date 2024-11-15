@@ -475,6 +475,10 @@ pub enum CanonOpt<'a> {
     Realloc(CoreItemRef<'a, kw::func>),
     /// Call the specified function after the lifted function has returned.
     PostReturn(CoreItemRef<'a, kw::func>),
+    /// Use the async ABI for lifting or lowering.
+    Async,
+    /// Use the specified function to deliver async events to stackless coroutines.
+    Callback(CoreItemRef<'a, kw::func>),
 }
 
 impl<'a> Parse<'a> for CanonOpt<'a> {
@@ -489,6 +493,9 @@ impl<'a> Parse<'a> for CanonOpt<'a> {
         } else if l.peek::<kw::string_latin1_utf16>()? {
             parser.parse::<kw::string_latin1_utf16>()?;
             Ok(Self::StringLatin1Utf16)
+        } else if l.peek::<kw::r#async>()? {
+            parser.parse::<kw::r#async>()?;
+            Ok(Self::Async)
         } else if l.peek::<LParen>()? {
             parser.parens(|parser| {
                 let mut l = parser.lookahead1();
@@ -506,6 +513,11 @@ impl<'a> Parse<'a> for CanonOpt<'a> {
                 } else if l.peek::<kw::post_return>()? {
                     parser.parse::<kw::post_return>()?;
                     Ok(CanonOpt::PostReturn(
+                        parser.parse::<IndexOrCoreRef<'_, _>>()?.0,
+                    ))
+                } else if l.peek::<kw::callback>()? {
+                    parser.parse::<kw::callback>()?;
+                    Ok(CanonOpt::Callback(
                         parser.parse::<IndexOrCoreRef<'_, _>>()?.0,
                     ))
                 } else {

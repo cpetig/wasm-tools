@@ -395,9 +395,14 @@ impl<'a> Resolver<'a> {
     fn canon_opts(&mut self, opts: &mut [CanonOpt<'a>]) -> Result<(), Error> {
         for opt in opts {
             match opt {
-                CanonOpt::StringUtf8 | CanonOpt::StringUtf16 | CanonOpt::StringLatin1Utf16 => {}
+                CanonOpt::StringUtf8
+                | CanonOpt::StringUtf16
+                | CanonOpt::StringLatin1Utf16
+                | CanonOpt::Async => {}
                 CanonOpt::Memory(r) => self.core_item_ref(r)?,
-                CanonOpt::Realloc(r) | CanonOpt::PostReturn(r) => self.core_item_ref(r)?,
+                CanonOpt::Realloc(r) | CanonOpt::PostReturn(r) | CanonOpt::Callback(r) => {
+                    self.core_item_ref(r)?
+                }
             }
         }
 

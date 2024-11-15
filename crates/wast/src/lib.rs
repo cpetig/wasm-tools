@@ -558,6 +558,8 @@ pub mod kw {
     custom_keyword!(thread_hw_concurrency = "thread.hw_concurrency");
     custom_keyword!(wait);
     custom_keyword!(definition);
+    custom_keyword!(r#async = "async");
+    custom_keyword!(callback);
 }
 
 /// Common annotations used to parse WebAssembly text files.

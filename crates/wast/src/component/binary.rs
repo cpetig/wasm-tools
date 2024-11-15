@@ -822,6 +822,8 @@ impl From<&CanonOpt<'_>> for wasm_encoder::CanonicalOption {
             CanonOpt::Memory(m) => Self::Memory(m.idx.into()),
             CanonOpt::Realloc(f) => Self::Realloc(f.idx.into()),
             CanonOpt::PostReturn(f) => Self::PostReturn(f.idx.into()),
+            CanonOpt::Async => Self::Async,
+            CanonOpt::Callback(f) => Self::Callback(f.idx.into()),
         }
     }
 }
