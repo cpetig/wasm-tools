@@ -933,7 +933,9 @@ impl Printer<'_, '_> {
                     self.print_idx(&state.component.type_names, type_index)?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::TaskWait { async_, memory } => {
                     self.start_group("core func ")?;
@@ -946,7 +948,9 @@ impl Printer<'_, '_> {
                     self.print_idx(&state.component.type_names, memory)?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::TaskPoll { async_, memory } => {
                     self.start_group("core func ")?;
@@ -959,7 +963,9 @@ impl Printer<'_, '_> {
                     self.print_idx(&state.component.type_names, memory)?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::TaskYield { async_ } => {
                     self.start_group("core func ")?;
@@ -971,7 +977,9 @@ impl Printer<'_, '_> {
                     }
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::SubtaskDrop => {
                     self.start_group("core func ")?;
@@ -980,7 +988,9 @@ impl Printer<'_, '_> {
                     self.start_group("canon subtask.drop")?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::StreamNew { ty } => {
                     self.start_group("core func ")?;
@@ -990,7 +1000,9 @@ impl Printer<'_, '_> {
                     self.print_idx(&state.component.type_names, ty)?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::StreamRead { ty, options } => {
                     self.start_group("core func ")?;
@@ -1002,7 +1014,9 @@ impl Printer<'_, '_> {
                     self.print_canonical_options(state, &options)?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::StreamWrite { ty, options } => {
                     self.start_group("core func ")?;
@@ -1014,7 +1028,9 @@ impl Printer<'_, '_> {
                     self.print_canonical_options(state, &options)?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::StreamCancelRead { ty, async_ } => {
                     self.start_group("core func ")?;
@@ -1027,7 +1043,9 @@ impl Printer<'_, '_> {
                     }
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::StreamCancelWrite { ty, async_ } => {
                     self.start_group("core func ")?;
@@ -1040,7 +1058,9 @@ impl Printer<'_, '_> {
                     }
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::StreamCloseReadable { ty } => {
                     self.start_group("core func ")?;
@@ -1050,7 +1070,9 @@ impl Printer<'_, '_> {
                     self.print_idx(&state.component.type_names, ty)?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::StreamCloseWritable { ty } => {
                     self.start_group("core func ")?;
@@ -1060,7 +1082,9 @@ impl Printer<'_, '_> {
                     self.print_idx(&state.component.type_names, ty)?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::FutureNew { ty } => {
                     self.start_group("core func ")?;
@@ -1070,7 +1094,9 @@ impl Printer<'_, '_> {
                     self.print_idx(&state.component.type_names, ty)?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::FutureWrite { ty, options } => {
                     self.start_group("core func ")?;
@@ -1082,7 +1108,9 @@ impl Printer<'_, '_> {
                     self.print_canonical_options(state, &options)?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::FutureRead { ty, options } => {
                     self.start_group("core func ")?;
@@ -1094,7 +1122,9 @@ impl Printer<'_, '_> {
                     self.print_canonical_options(state, &options)?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::FutureCancelRead { ty, async_ } => {
                     self.start_group("core func ")?;
@@ -1107,7 +1137,9 @@ impl Printer<'_, '_> {
                     }
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::FutureCancelWrite { ty, async_ } => {
                     self.start_group("core func ")?;
@@ -1120,7 +1152,9 @@ impl Printer<'_, '_> {
                     }
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::FutureCloseReadable { ty } => {
                     self.start_group("core func ")?;
@@ -1130,7 +1164,9 @@ impl Printer<'_, '_> {
                     self.print_idx(&state.component.type_names, ty)?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::FutureCloseWritable { ty } => {
                     self.start_group("core func ")?;
@@ -1140,7 +1176,9 @@ impl Printer<'_, '_> {
                     self.print_idx(&state.component.type_names, ty)?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::ErrorContextNew { options } => {
                     self.start_group("core func ")?;
@@ -1150,7 +1188,9 @@ impl Printer<'_, '_> {
                     self.print_canonical_options(state, &options)?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::ErrorContextDebugMessage { options } => {
                     self.start_group("core func ")?;
@@ -1160,7 +1200,9 @@ impl Printer<'_, '_> {
                     self.print_canonical_options(state, &options)?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::ErrorContextDrop => {
                     self.start_group("core func ")?;
@@ -1169,7 +1211,9 @@ impl Printer<'_, '_> {
                     self.start_group("canon error-context.drop")?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
             }
         }
@@ -1365,7 +1409,7 @@ impl Printer<'_, '_> {
                         self.start_group("core func ")?;
                         self.print_name(&state.core.func_names, state.core.funcs)?;
                         self.end_group()?;
-                        debug_assert!(state.core.func_to_type.len() == state.core.funcs as usize);
+                        debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                         state.core.funcs += 1;
                         state.core.func_to_type.push(None)
                     }
@@ -1391,7 +1435,7 @@ impl Printer<'_, '_> {
                         self.start_group("core tag ")?;
                         self.print_name(&state.core.tag_names, state.core.tags as u32)?;
                         self.end_group()?;
-                        debug_assert!(state.core.tag_to_type.len() == state.core.tags as usize);
+                        debug_assert_eq!(state.core.tag_to_type.len(), state.core.tags as usize);
                         state.core.tags += 1;
                         state.core.tag_to_type.push(None)
                     }

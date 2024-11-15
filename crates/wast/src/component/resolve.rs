@@ -387,6 +387,9 @@ impl<'a> Resolver<'a> {
                 self.resolve_ns(&mut info.ty, Ns::CoreType)?;
             }
             CanonicalFuncKind::ThreadHwConcurrency(_) => {}
+            CanonicalFuncKind::TaskReturn(info) => {
+                self.resolve_ns(&mut info.ty, Ns::CoreType)?;
+            }
         }
 
         Ok(())
@@ -887,7 +890,8 @@ impl<'a> ComponentState<'a> {
                 | CanonicalFuncKind::ResourceRep(_)
                 | CanonicalFuncKind::ResourceDrop(_)
                 | CanonicalFuncKind::ThreadSpawn(_)
-                | CanonicalFuncKind::ThreadHwConcurrency(_) => {
+                | CanonicalFuncKind::ThreadHwConcurrency(_)
+                | CanonicalFuncKind::TaskReturn(_) => {
                     self.core_funcs.register(f.id, "core func")?
                 }
             },

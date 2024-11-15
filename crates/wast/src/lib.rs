@@ -556,6 +556,7 @@ pub mod kw {
     custom_keyword!(thread);
     custom_keyword!(thread_spawn = "thread.spawn");
     custom_keyword!(thread_hw_concurrency = "thread.hw_concurrency");
+    custom_keyword!(task_return = "task.return");
     custom_keyword!(wait);
     custom_keyword!(definition);
     custom_keyword!(r#async = "async");

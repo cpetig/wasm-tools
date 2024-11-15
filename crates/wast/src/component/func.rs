@@ -53,6 +53,7 @@ pub enum CoreFuncKind<'a> {
     ResourceRep(CanonResourceRep<'a>),
     ThreadSpawn(CanonThreadSpawn<'a>),
     ThreadHwConcurrency(CanonThreadHwConcurrency),
+    TaskReturn(CanonTaskReturn<'a>),
 }
 
 impl<'a> Parse<'a> for CoreFuncKind<'a> {
@@ -79,6 +80,8 @@ impl<'a> Parse<'a> for CoreFuncKind<'a> {
                 Ok(CoreFuncKind::ThreadSpawn(parser.parse()?))
             } else if l.peek::<kw::thread_hw_concurrency>()? {
                 Ok(CoreFuncKind::ThreadHwConcurrency(parser.parse()?))
+            } else if l.peek::<kw::task_return>()? {
+                Ok(CoreFuncKind::TaskReturn(parser.parse()?))
             } else {
                 Err(l.error())
             }
@@ -270,6 +273,8 @@ pub enum CanonicalFuncKind<'a> {
 
     ThreadSpawn(CanonThreadSpawn<'a>),
     ThreadHwConcurrency(CanonThreadHwConcurrency),
+
+    TaskReturn(CanonTaskReturn<'a>),
 }
 
 /// Information relating to lifting a core function.
@@ -457,6 +462,31 @@ impl<'a> Parse<'a> for CanonThreadHwConcurrency {
 impl Default for CanonThreadHwConcurrency {
     fn default() -> Self {
         Self
+    }
+}
+
+/// Information relating to the `task.return` intrinsic.
+#[derive(Debug)]
+pub struct CanonTaskReturn<'a> {
+    /// The core function type representing the signature of this intrinsic.
+    pub ty: Index<'a>,
+}
+
+impl<'a> Parse<'a> for CanonTaskReturn<'a> {
+    fn parse(parser: Parser<'a>) -> Result<Self> {
+        parser.parse::<kw::task_return>()?;
+
+        Ok(Self {
+            ty: parser.parse()?,
+        })
+    }
+}
+
+impl Default for CanonTaskReturn<'_> {
+    fn default() -> Self {
+        Self {
+            ty: Index::Num(0, Span::from_offset(0)),
+        }
     }
 }
 

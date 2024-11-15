@@ -14,23 +14,36 @@
       "module_type": "binary"
     },
     {
-      "type": "assert_invalid",
-      "line": 28,
+      "type": "module",
+      "line": 27,
       "filename": "lift.2.wasm",
+      "module_type": "binary"
+    },
+    {
+      "type": "assert_invalid",
+      "line": 47,
+      "filename": "lift.3.wasm",
       "module_type": "binary",
       "text": "canonical option `callback` uses a core function with an incorrect signature"
     },
     {
       "type": "assert_invalid",
-      "line": 44,
-      "filename": "lift.3.wasm",
+      "line": 63,
+      "filename": "lift.4.wasm",
+      "module_type": "binary",
+      "text": "lowered parameter types `[I32]` do not match parameter types `[I32, I32]` of core function 0"
+    },
+    {
+      "type": "assert_invalid",
+      "line": 79,
+      "filename": "lift.5.wasm",
       "module_type": "binary",
       "text": "core instance 0 has no export named `callback`"
     },
     {
       "type": "assert_invalid",
-      "line": 59,
-      "filename": "lift.4.wasm",
+      "line": 94,
+      "filename": "lift.6.wasm",
       "module_type": "binary",
       "text": "cannot specify callback without lifting async"
     }

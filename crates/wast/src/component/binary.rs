@@ -355,6 +355,10 @@ impl<'a> Encoder<'a> {
                 self.core_func_names.push(name);
                 self.funcs.thread_hw_concurrency();
             }
+            CanonicalFuncKind::TaskReturn(info) => {
+                self.core_func_names.push(name);
+                self.funcs.task_return(info.ty.into());
+            }
         }
 
         self.flush(Some(self.funcs.id()));

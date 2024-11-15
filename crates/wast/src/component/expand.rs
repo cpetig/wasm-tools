@@ -266,7 +266,8 @@ impl<'a> Expander<'a> {
             | CanonicalFuncKind::ResourceRep(_)
             | CanonicalFuncKind::ResourceDrop(_)
             | CanonicalFuncKind::ThreadSpawn(_)
-            | CanonicalFuncKind::ThreadHwConcurrency(_) => {}
+            | CanonicalFuncKind::ThreadHwConcurrency(_)
+            | CanonicalFuncKind::TaskReturn(_) => {}
         }
     }
 
@@ -322,6 +323,12 @@ impl<'a> Expander<'a> {
                     kind: CanonicalFuncKind::ThreadHwConcurrency(mem::take(info)),
                 }))
             }
+            CoreFuncKind::TaskReturn(info) => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                span: func.span,
+                id: func.id,
+                name: func.name,
+                kind: CanonicalFuncKind::TaskReturn(mem::take(info)),
+            })),
         }
     }
 
