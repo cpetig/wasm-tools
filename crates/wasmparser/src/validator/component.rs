@@ -1251,7 +1251,10 @@ impl ComponentState {
             )
         }
 
-        self.defined_type_at(ty, offset)?;
+        let ty = self.defined_type_at(ty, offset)?;
+        let ComponentDefinedType::Stream(_) = &types[ty] else {
+            bail!(offset, "`stream.new` requires a stream type")
+        };
 
         let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
             offset,
@@ -1285,10 +1288,13 @@ impl ComponentState {
         }
 
         let ty = self.defined_type_at(ty, offset)?;
+        let ComponentDefinedType::Stream(payload_type) = &types[ty] else {
+            bail!(offset, "`stream.read` requires a stream type")
+        };
 
         let mut info = LoweringInfo::default();
         info.requires_memory = true;
-        info.requires_realloc = ComponentValType::Type(ty).contains_ptr(types);
+        info.requires_realloc = payload_type.contains_ptr(types);
         self.check_options(None, &info, &options, types, offset, features, true)?;
 
         let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
@@ -1325,7 +1331,10 @@ impl ComponentState {
             )
         }
 
-        self.defined_type_at(ty, offset)?;
+        let ty = self.defined_type_at(ty, offset)?;
+        let ComponentDefinedType::Stream(_) = &types[ty] else {
+            bail!(offset, "`stream.write` requires a stream type")
+        };
 
         let mut info = LoweringInfo::default();
         info.requires_memory = true;
@@ -1366,7 +1375,10 @@ impl ComponentState {
             )
         }
 
-        self.defined_type_at(ty, offset)?;
+        let ty = self.defined_type_at(ty, offset)?;
+        let ComponentDefinedType::Stream(_) = &types[ty] else {
+            bail!(offset, "`stream.cancel-read` requires a stream type")
+        };
 
         let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
             offset,
@@ -1399,7 +1411,10 @@ impl ComponentState {
             )
         }
 
-        self.defined_type_at(ty, offset)?;
+        let ty = self.defined_type_at(ty, offset)?;
+        let ComponentDefinedType::Stream(_) = &types[ty] else {
+            bail!(offset, "`stream.cancel-write` requires a stream type")
+        };
 
         let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
             offset,
@@ -1431,7 +1446,10 @@ impl ComponentState {
             )
         }
 
-        self.defined_type_at(ty, offset)?;
+        let ty = self.defined_type_at(ty, offset)?;
+        let ComponentDefinedType::Stream(_) = &types[ty] else {
+            bail!(offset, "`stream.close-readable` requires a stream type")
+        };
 
         let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
             offset,
@@ -1463,7 +1481,10 @@ impl ComponentState {
             )
         }
 
-        self.defined_type_at(ty, offset)?;
+        let ty = self.defined_type_at(ty, offset)?;
+        let ComponentDefinedType::Stream(_) = &types[ty] else {
+            bail!(offset, "`stream.close-writable` requires a stream type")
+        };
 
         let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
             offset,
@@ -1495,7 +1516,10 @@ impl ComponentState {
             )
         }
 
-        self.defined_type_at(ty, offset)?;
+        let ty = self.defined_type_at(ty, offset)?;
+        let ComponentDefinedType::Future(_) = &types[ty] else {
+            bail!(offset, "`future.new` requires a future type")
+        };
 
         let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
             offset,
@@ -1529,10 +1553,15 @@ impl ComponentState {
         }
 
         let ty = self.defined_type_at(ty, offset)?;
+        let ComponentDefinedType::Future(payload_type) = &types[ty] else {
+            bail!(offset, "`future.read` requires a future type")
+        };
 
         let mut info = LoweringInfo::default();
         info.requires_memory = true;
-        info.requires_realloc = ComponentValType::Type(ty).contains_ptr(types);
+        info.requires_realloc = payload_type
+            .map(|ty| ty.contains_ptr(types))
+            .unwrap_or(false);
         self.check_options(None, &info, &options, types, offset, features, true)?;
 
         let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
@@ -1569,7 +1598,10 @@ impl ComponentState {
             )
         }
 
-        self.defined_type_at(ty, offset)?;
+        let ty = self.defined_type_at(ty, offset)?;
+        let ComponentDefinedType::Future(_) = &types[ty] else {
+            bail!(offset, "`future.write` requires a future type")
+        };
 
         let mut info = LoweringInfo::default();
         info.requires_memory = true;
@@ -1610,7 +1642,10 @@ impl ComponentState {
             )
         }
 
-        self.defined_type_at(ty, offset)?;
+        let ty = self.defined_type_at(ty, offset)?;
+        let ComponentDefinedType::Future(_) = &types[ty] else {
+            bail!(offset, "`future.cancel-read` requires a future type")
+        };
 
         let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
             offset,
@@ -1643,7 +1678,10 @@ impl ComponentState {
             )
         }
 
-        self.defined_type_at(ty, offset)?;
+        let ty = self.defined_type_at(ty, offset)?;
+        let ComponentDefinedType::Future(_) = &types[ty] else {
+            bail!(offset, "`future.cancel-write` requires a future type")
+        };
 
         let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
             offset,
@@ -1675,7 +1713,10 @@ impl ComponentState {
             )
         }
 
-        self.defined_type_at(ty, offset)?;
+        let ty = self.defined_type_at(ty, offset)?;
+        let ComponentDefinedType::Future(_) = &types[ty] else {
+            bail!(offset, "`future.close-readable` requires a future type")
+        };
 
         let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
             offset,
@@ -1707,7 +1748,10 @@ impl ComponentState {
             )
         }
 
-        self.defined_type_at(ty, offset)?;
+        let ty = self.defined_type_at(ty, offset)?;
+        let ComponentDefinedType::Future(_) = &types[ty] else {
+            bail!(offset, "`future.close-writable` requires a future type")
+        };
 
         let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
             offset,
@@ -1725,7 +1769,7 @@ impl ComponentState {
         Ok(())
     }
 
-    pub fn error_new(
+    pub fn error_context_new(
         &mut self,
         options: Vec<CanonicalOption>,
         types: &mut TypeAlloc,
@@ -1735,7 +1779,7 @@ impl ComponentState {
         if !features.component_model_async() {
             bail!(
                 offset,
-                "`error.new` requires the component model async feature"
+                "`error-context.new` requires the component model async feature"
             )
         }
 
@@ -1763,7 +1807,7 @@ impl ComponentState {
         Ok(())
     }
 
-    pub fn error_debug_message(
+    pub fn error_context_debug_message(
         &mut self,
         options: Vec<CanonicalOption>,
         types: &mut TypeAlloc,
@@ -1773,7 +1817,7 @@ impl ComponentState {
         if !features.component_model_async() {
             bail!(
                 offset,
-                "`error.debug-message` requires the component model async feature"
+                "`error-context.debug-message` requires the component model async feature"
             )
         }
 
@@ -1789,10 +1833,7 @@ impl ComponentState {
                 supertype_idx: None,
                 composite_type: CompositeType {
                     shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new(
-                        [ValType::I32; 2],
-                        [ValType::I32],
-                    )),
+                    inner: CompositeInnerType::Func(FuncType::new([ValType::I32; 2], [])),
                 },
             },
         ));
@@ -1801,7 +1842,7 @@ impl ComponentState {
         Ok(())
     }
 
-    pub fn error_drop(
+    pub fn error_context_drop(
         &mut self,
         types: &mut TypeAlloc,
         offset: usize,
@@ -1810,7 +1851,7 @@ impl ComponentState {
         if !features.component_model_async() {
             bail!(
                 offset,
-                "`error.drop` requires the component model async feature"
+                "`error-context.drop` requires the component model async feature"
             )
         }
 

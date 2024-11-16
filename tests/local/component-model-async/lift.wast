@@ -23,25 +23,6 @@
   )
 )
 
-;; async lift; with callback and task.return
-(component
-  (core module $m
-    (import "" "task.return" (func $task-return (param i32)))
-    (func (export "callback") (param i32 i32 i32 i32) (result i32) unreachable)
-    (func (export "foo") (param i32) (result i32)
-      (call $task-return (i32.const 0))
-      (i32.const 0)
-    )
-  )
-  (core type $task-return-type (func (param i32)))
-  (core func $task-return (canon task.return $task-return-type))
-  (core instance $i (instantiate $m (with "" (instance (export "task.return" (func $task-return))))))
-
-  (func (export "foo") (param "p1" u32) (result u32)
-    (canon lift (core func $i "foo") async (callback (func $i "callback")))
-  )
-)
-
 ;; async lift; with incorrectly-typed callback
 (assert_invalid
   (component

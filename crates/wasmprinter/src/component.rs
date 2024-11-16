@@ -923,7 +923,9 @@ impl Printer<'_, '_> {
                     self.start_group("canon task.backpressure")?;
                     self.end_group()?;
                     self.end_group()?;
+                    debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
                     state.core.funcs += 1;
+                    state.core.func_to_type.push(None);
                 }
                 CanonicalFunction::TaskReturn { type_index } => {
                     self.start_group("core func ")?;
@@ -945,7 +947,9 @@ impl Printer<'_, '_> {
                     if async_ {
                         self.result.write_str("async ")?;
                     }
-                    self.print_idx(&state.component.type_names, memory)?;
+                    self.start_group("memory ")?;
+                    self.print_idx(&state.core.memory_names, memory)?;
+                    self.end_group()?;
                     self.end_group()?;
                     self.end_group()?;
                     debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
@@ -960,7 +964,9 @@ impl Printer<'_, '_> {
                     if async_ {
                         self.result.write_str("async ")?;
                     }
-                    self.print_idx(&state.component.type_names, memory)?;
+                    self.start_group("memory ")?;
+                    self.print_idx(&state.core.memory_names, memory)?;
+                    self.end_group()?;
                     self.end_group()?;
                     self.end_group()?;
                     debug_assert_eq!(state.core.func_to_type.len(), state.core.funcs as usize);
@@ -1010,7 +1016,6 @@ impl Printer<'_, '_> {
                     self.result.write_str(" ")?;
                     self.start_group("canon stream.read ")?;
                     self.print_idx(&state.component.type_names, ty)?;
-                    self.result.write_str(" ")?;
                     self.print_canonical_options(state, &options)?;
                     self.end_group()?;
                     self.end_group()?;
@@ -1024,7 +1029,6 @@ impl Printer<'_, '_> {
                     self.result.write_str(" ")?;
                     self.start_group("canon stream.write ")?;
                     self.print_idx(&state.component.type_names, ty)?;
-                    self.result.write_str(" ")?;
                     self.print_canonical_options(state, &options)?;
                     self.end_group()?;
                     self.end_group()?;
@@ -1104,7 +1108,6 @@ impl Printer<'_, '_> {
                     self.result.write_str(" ")?;
                     self.start_group("canon future.write ")?;
                     self.print_idx(&state.component.type_names, ty)?;
-                    self.result.write_str(" ")?;
                     self.print_canonical_options(state, &options)?;
                     self.end_group()?;
                     self.end_group()?;
@@ -1118,7 +1121,6 @@ impl Printer<'_, '_> {
                     self.result.write_str(" ")?;
                     self.start_group("canon future.read ")?;
                     self.print_idx(&state.component.type_names, ty)?;
-                    self.result.write_str(" ")?;
                     self.print_canonical_options(state, &options)?;
                     self.end_group()?;
                     self.end_group()?;
@@ -1184,7 +1186,7 @@ impl Printer<'_, '_> {
                     self.start_group("core func ")?;
                     self.print_name(&state.core.func_names, state.core.funcs)?;
                     self.result.write_str(" ")?;
-                    self.start_group("canon error-context.new ")?;
+                    self.start_group("canon error-context.new")?;
                     self.print_canonical_options(state, &options)?;
                     self.end_group()?;
                     self.end_group()?;
@@ -1196,7 +1198,7 @@ impl Printer<'_, '_> {
                     self.start_group("core func ")?;
                     self.print_name(&state.core.func_names, state.core.funcs)?;
                     self.result.write_str(" ")?;
-                    self.start_group("canon error-context.debug-message ")?;
+                    self.start_group("canon error-context.debug-message")?;
                     self.print_canonical_options(state, &options)?;
                     self.end_group()?;
                     self.end_group()?;

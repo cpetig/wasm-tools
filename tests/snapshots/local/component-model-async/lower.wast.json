@@ -13,6 +13,13 @@
       "filename": "lower.1.wasm",
       "module_type": "binary",
       "text": "type mismatch for export `foo` of module instantiation argument ``"
+    },
+    {
+      "type": "assert_invalid",
+      "line": 30,
+      "filename": "lower.2.wasm",
+      "module_type": "binary",
+      "text": "canonical option `memory` is required"
     }
   ]
 }
