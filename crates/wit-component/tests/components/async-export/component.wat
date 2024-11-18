@@ -1,0 +1,30 @@
+(component
+  (core module (;0;)
+    (type (;0;) (func (param i32 i32) (result i32)))
+    (type (;1;) (func (param i32 i32 i32 i32) (result i32)))
+    (memory (;0;) 1)
+    (export "[async]foo" (func 0))
+    (export "memory" (memory 0))
+    (export "cabi_realloc" (func 1))
+    (func (;0;) (type 0) (param i32 i32) (result i32)
+      unreachable
+    )
+    (func (;1;) (type 1) (param i32 i32 i32 i32) (result i32)
+      unreachable
+    )
+    (@producers
+      (processed-by "wit-component" "$CARGO_PKG_VERSION")
+      (processed-by "my-fake-bindgen" "123.45")
+    )
+  )
+  (core instance (;0;) (instantiate 0))
+  (alias core export 0 "memory" (core memory (;0;)))
+  (type (;0;) (func (param "s" string) (result string)))
+  (alias core export 0 "[async]foo" (core func (;0;)))
+  (alias core export 0 "cabi_realloc" (core func (;1;)))
+  (func (;0;) (type 0) (canon lift (core func 0) (memory 0) (realloc 1) string-encoding=utf8 async))
+  (export (;1;) "foo" (func 0))
+  (@producers
+    (processed-by "wit-component" "$CARGO_PKG_VERSION")
+  )
+)
