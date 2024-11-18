@@ -99,3 +99,24 @@
   )
   "type mismatch for export `task.yield` of module instantiation argument ``"
 )
+
+;; subtask.drop
+(component
+  (core module $m
+    (import "" "subtask.drop" (func $subtask-drop (param i32)))
+  )
+  (core func $subtask-drop (canon subtask.drop))
+  (core instance $i (instantiate $m (with "" (instance (export "subtask.drop" (func $subtask-drop))))))
+)
+
+;; subtask.drop; incorrect type
+(assert_invalid
+  (component
+    (core module $m
+      (import "" "subtask.drop" (func $subtask-drop (param i32) (result i32)))
+    )
+    (core func $subtask-drop (canon subtask.drop))
+    (core instance $i (instantiate $m (with "" (instance (export "subtask.drop" (func $subtask-drop))))))
+  )
+  "type mismatch for export `subtask.drop` of module instantiation argument ``"
+)

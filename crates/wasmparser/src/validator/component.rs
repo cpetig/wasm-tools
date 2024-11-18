@@ -1744,7 +1744,7 @@ impl ComponentState {
         if !features.component_model_async() {
             bail!(
                 offset,
-                "`future.drop-writeable` requires the component model async feature"
+                "`future.close-writable` requires the component model async feature"
             )
         }
 
