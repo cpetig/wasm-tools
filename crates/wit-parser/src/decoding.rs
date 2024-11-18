@@ -410,6 +410,7 @@ pub fn decode_reader_with_features(
         Ok(DecodedWasm::Component(resolve, world))
     }
 }
+
 /// Decodes an in-memory WebAssembly binary into a WIT [`Resolve`] and
 /// associated metadata.
 ///

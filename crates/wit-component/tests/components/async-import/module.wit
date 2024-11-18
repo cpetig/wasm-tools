@@ -5,6 +5,6 @@ interface bar {
 }
 
 world module {
-  export bar;
-  export foo: func(s: string) -> string;
+  import bar;
+  import foo: func(s: string) -> string;
 }
