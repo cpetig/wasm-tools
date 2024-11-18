@@ -417,10 +417,10 @@ impl ImportMap {
             return Ok(import);
         }
 
-        let async_import = |interface: Option<(WorldKey, InterfaceId)>| {
+        let async_import_for_export = |interface: Option<(WorldKey, InterfaceId)>| {
             Ok::<_, anyhow::Error>(if let Some(function_name) = names.task_return_name(name) {
                 let interface_id = interface.as_ref().map(|(_, id)| *id);
-                let func = get_function(resolve, world, function_name, interface_id, true)?;
+                let func = get_function(resolve, world, function_name, interface_id, false)?;
                 // Note that we can't statically validate the type signature of
                 // a `task.return` built-in since we can't know which export
                 // it's associated with in general.  Instead, the host will
@@ -496,7 +496,7 @@ impl ImportMap {
                 });
             }
 
-            if let Some(import) = async_import(None)? {
+            if let Some(import) = async_import_for_export(None)? {
                 return Ok(import);
             }
 
@@ -527,7 +527,7 @@ impl ImportMap {
         };
 
         if let Some(interface) = interface.strip_prefix(names.import_exported_intrinsic_prefix()) {
-            if let Some(import) = async_import(Some(names.module_to_interface(
+            if let Some(import) = async_import_for_export(Some(names.module_to_interface(
                 interface,
                 resolve,
                 &world.exports,
@@ -1889,7 +1889,7 @@ fn get_function(
             .cloned()
     };
     let Some(WorldItem::Function(function)) = function else {
-        bail!("no export `{name}` export found");
+        bail!("no export `{name}` found");
     };
     Ok(function)
 }
