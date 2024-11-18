@@ -1388,7 +1388,7 @@ impl NameMangling for Legacy {
             if let Some((suffix, imported)) = module
                 .strip_prefix("[import-payload]")
                 .map(|v| (v, true))
-                .or_else(|| name.strip_prefix("[export-payload]").map(|v| (v, false)))
+                .or_else(|| module.strip_prefix("[export-payload]").map(|v| (v, false)))
             {
                 let (key, interface) = if suffix == self.import_root() {
                     (WorldKey::Name(name.to_string()), None)
@@ -1469,7 +1469,11 @@ impl NameMangling for Legacy {
                             ty: info(key)?.ty,
                         }
                     } else if let Some(key) = match_payload_prefix(name, "[future-cancel-read-") {
-                        validate_func_sig(name, &FuncType::new([ValType::I32], []), ty)?;
+                        validate_func_sig(
+                            name,
+                            &FuncType::new([ValType::I32], [ValType::I32]),
+                            ty,
+                        )?;
                         Import::FutureCancelRead {
                             async_,
                             ty: info(key)?.ty,
@@ -1525,7 +1529,11 @@ impl NameMangling for Legacy {
                             ty: info(key)?.ty,
                         }
                     } else if let Some(key) = match_payload_prefix(name, "[stream-cancel-read-") {
-                        validate_func_sig(name, &FuncType::new([ValType::I32], []), ty)?;
+                        validate_func_sig(
+                            name,
+                            &FuncType::new([ValType::I32], [ValType::I32]),
+                            ty,
+                        )?;
                         Import::StreamCancelRead {
                             async_,
                             ty: info(key)?.ty,
