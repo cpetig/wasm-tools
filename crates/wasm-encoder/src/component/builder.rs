@@ -384,97 +384,49 @@ impl ComponentBuilder {
         inc(&mut self.core_funcs)
     }
 
-    /// TODO: docs
+    /// Declares a new `task.backpressure` intrinsic.
     pub fn task_backpressure(&mut self) -> u32 {
         self.canonical_functions().task_backpressure();
         inc(&mut self.core_funcs)
     }
 
-    /// TODO: docs
+    /// Declares a new `task.return` intrinsic.
     pub fn task_return(&mut self, ty: u32) -> u32 {
         self.canonical_functions().task_return(ty);
         inc(&mut self.core_funcs)
     }
 
-    /// TODO: docs
-    pub fn task_wait(&mut self, memory: u32) -> u32 {
-        self.canonical_functions().task_wait(memory);
+    /// Declares a new `task.wait` intrinsic.
+    pub fn task_wait(&mut self, async_: bool, memory: u32) -> u32 {
+        self.canonical_functions().task_wait(async_, memory);
         inc(&mut self.core_funcs)
     }
 
-    /// TODO: docs
-    pub fn task_poll(&mut self, memory: u32) -> u32 {
-        self.canonical_functions().task_poll(memory);
+    /// Declares a new `task.poll` intrinsic.
+    pub fn task_poll(&mut self, async_: bool, memory: u32) -> u32 {
+        self.canonical_functions().task_poll(async_, memory);
         inc(&mut self.core_funcs)
     }
 
-    /// TODO: docs
-    pub fn task_yield(&mut self) -> u32 {
-        self.canonical_functions().task_yield();
+    /// Declares a new `task.yield` intrinsic.
+    pub fn task_yield(&mut self, async_: bool) -> u32 {
+        self.canonical_functions().task_yield(async_);
         inc(&mut self.core_funcs)
     }
 
-    /// TODO: docs
+    /// Declares a new `subtask.drop` intrinsic.
     pub fn subtask_drop(&mut self) -> u32 {
         self.canonical_functions().subtask_drop();
         inc(&mut self.core_funcs)
     }
 
-    /// TODO: docs
-    pub fn future_new(&mut self, ty: u32) -> u32 {
-        self.canonical_functions().future_new(ty);
-        inc(&mut self.core_funcs)
-    }
-
-    /// TODO: docs
-    pub fn future_write<O>(&mut self, ty: u32, options: O) -> u32
-    where
-        O: IntoIterator<Item = CanonicalOption>,
-        O::IntoIter: ExactSizeIterator,
-    {
-        self.canonical_functions().future_write(ty, options);
-        inc(&mut self.core_funcs)
-    }
-
-    /// TODO: docs
-    pub fn future_read<O>(&mut self, ty: u32, options: O) -> u32
-    where
-        O: IntoIterator<Item = CanonicalOption>,
-        O::IntoIter: ExactSizeIterator,
-    {
-        self.canonical_functions().future_read(ty, options);
-        inc(&mut self.core_funcs)
-    }
-
-    /// TODO: docs
-    pub fn future_drop_writer(&mut self, ty: u32) -> u32 {
-        self.canonical_functions().future_drop_writer(ty);
-        inc(&mut self.core_funcs)
-    }
-
-    /// TODO: docs
-    pub fn future_drop_reader(&mut self, ty: u32) -> u32 {
-        self.canonical_functions().future_drop_reader(ty);
-        inc(&mut self.core_funcs)
-    }
-
-    /// TODO: docs
+    /// Declares a new `stream.new` intrinsic.
     pub fn stream_new(&mut self, ty: u32) -> u32 {
         self.canonical_functions().stream_new(ty);
         inc(&mut self.core_funcs)
     }
 
-    /// TODO: docs
-    pub fn stream_write<O>(&mut self, ty: u32, options: O) -> u32
-    where
-        O: IntoIterator<Item = CanonicalOption>,
-        O::IntoIter: ExactSizeIterator,
-    {
-        self.canonical_functions().stream_write(ty, options);
-        inc(&mut self.core_funcs)
-    }
-
-    /// TODO: docs
+    /// Declares a new `stream.read` intrinsic.
     pub fn stream_read<O>(&mut self, ty: u32, options: O) -> u32
     where
         O: IntoIterator<Item = CanonicalOption>,
@@ -484,21 +436,114 @@ impl ComponentBuilder {
         inc(&mut self.core_funcs)
     }
 
-    /// TODO: docs
-    pub fn stream_drop_writer(&mut self, ty: u32) -> u32 {
-        self.canonical_functions().stream_drop_writer(ty);
+    /// Declares a new `stream.write` intrinsic.
+    pub fn stream_write<O>(&mut self, ty: u32, options: O) -> u32
+    where
+        O: IntoIterator<Item = CanonicalOption>,
+        O::IntoIter: ExactSizeIterator,
+    {
+        self.canonical_functions().stream_write(ty, options);
         inc(&mut self.core_funcs)
     }
 
-    /// TODO: docs
-    pub fn stream_drop_reader(&mut self, ty: u32) -> u32 {
-        self.canonical_functions().stream_drop_reader(ty);
+    /// Declares a new `stream.cancel-read` intrinsic.
+    pub fn stream_cancel_read(&mut self, ty: u32, async_: bool) -> u32 {
+        self.canonical_functions().stream_cancel_read(ty, async_);
         inc(&mut self.core_funcs)
     }
 
-    /// TODO: docs
-    pub fn error_drop(&mut self) -> u32 {
-        self.canonical_functions().error_drop();
+    /// Declares a new `stream.cancel-write` intrinsic.
+    pub fn stream_cancel_write(&mut self, ty: u32, async_: bool) -> u32 {
+        self.canonical_functions().stream_cancel_read(ty, async_);
+        inc(&mut self.core_funcs)
+    }
+
+    /// Declares a new `stream.close-readable` intrinsic.
+    pub fn stream_close_readable(&mut self, ty: u32) -> u32 {
+        self.canonical_functions().stream_close_readable(ty);
+        inc(&mut self.core_funcs)
+    }
+
+    /// Declares a new `stream.close-writable` intrinsic.
+    pub fn stream_close_writable(&mut self, ty: u32) -> u32 {
+        self.canonical_functions().stream_close_writable(ty);
+        inc(&mut self.core_funcs)
+    }
+
+    /// Declares a new `future.new` intrinsic.
+    pub fn future_new(&mut self, ty: u32) -> u32 {
+        self.canonical_functions().future_new(ty);
+        inc(&mut self.core_funcs)
+    }
+
+    /// Declares a new `future.read` intrinsic.
+    pub fn future_read<O>(&mut self, ty: u32, options: O) -> u32
+    where
+        O: IntoIterator<Item = CanonicalOption>,
+        O::IntoIter: ExactSizeIterator,
+    {
+        self.canonical_functions().future_read(ty, options);
+        inc(&mut self.core_funcs)
+    }
+
+    /// Declares a new `future.write` intrinsic.
+    pub fn future_write<O>(&mut self, ty: u32, options: O) -> u32
+    where
+        O: IntoIterator<Item = CanonicalOption>,
+        O::IntoIter: ExactSizeIterator,
+    {
+        self.canonical_functions().future_write(ty, options);
+        inc(&mut self.core_funcs)
+    }
+
+    /// Declares a new `future.cancel-read` intrinsic.
+    pub fn future_cancel_read(&mut self, ty: u32, async_: bool) -> u32 {
+        self.canonical_functions().future_cancel_read(ty, async_);
+        inc(&mut self.core_funcs)
+    }
+
+    /// Declares a new `future.cancel-write` intrinsic.
+    pub fn future_cancel_write(&mut self, ty: u32, async_: bool) -> u32 {
+        self.canonical_functions().future_cancel_read(ty, async_);
+        inc(&mut self.core_funcs)
+    }
+
+    /// Declares a new `future.close-readable` intrinsic.
+    pub fn future_close_readable(&mut self, ty: u32) -> u32 {
+        self.canonical_functions().future_close_readable(ty);
+        inc(&mut self.core_funcs)
+    }
+
+    /// Declares a new `future.close-writable` intrinsic.
+    pub fn future_close_writable(&mut self, ty: u32) -> u32 {
+        self.canonical_functions().future_close_writable(ty);
+        inc(&mut self.core_funcs)
+    }
+
+    /// Declares a new `error-context.new` intrinsic.
+    pub fn error_context_new<O>(&mut self, options: O) -> u32
+    where
+        O: IntoIterator<Item = CanonicalOption>,
+        O::IntoIter: ExactSizeIterator,
+    {
+        self.canonical_functions().error_context_new(options);
+        inc(&mut self.core_funcs)
+    }
+
+    /// Declares a new `error-context.debug-message` intrinsic.
+    pub fn error_context_debug_message<O>(&mut self, options: O) -> u32
+    where
+        O: IntoIterator<Item = CanonicalOption>,
+        O::IntoIter: ExactSizeIterator,
+    {
+        self.canonical_functions()
+            .error_context_debug_message(options);
+        inc(&mut self.core_funcs)
+    }
+
+    /// Declares a new `error-context.drop` intrinsic.
+    pub fn error_context_drop(&mut self) -> u32 {
+        self.canonical_functions().error_context_drop();
         inc(&mut self.core_funcs)
     }
 

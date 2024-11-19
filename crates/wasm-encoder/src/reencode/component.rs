@@ -803,7 +803,7 @@ pub mod component_utils {
             wasmparser::ComponentDefinedType::Stream(t) => {
                 defined.stream(reencoder.component_val_type(t));
             }
-            wasmparser::ComponentDefinedType::Error => defined.error(),
+            wasmparser::ComponentDefinedType::ErrorContext => defined.error_context(),
         }
         Ok(())
     }
@@ -970,47 +970,20 @@ pub mod component_utils {
             wasmparser::CanonicalFunction::TaskReturn { type_index } => {
                 section.task_return(reencoder.type_index(type_index));
             }
-            wasmparser::CanonicalFunction::TaskWait { memory } => {
-                section.task_wait(reencoder.memory_index(memory));
+            wasmparser::CanonicalFunction::TaskWait { async_, memory } => {
+                section.task_wait(async_, reencoder.memory_index(memory));
             }
-            wasmparser::CanonicalFunction::TaskPoll { memory } => {
-                section.task_poll(reencoder.memory_index(memory));
+            wasmparser::CanonicalFunction::TaskPoll { async_, memory } => {
+                section.task_poll(async_, reencoder.memory_index(memory));
             }
-            wasmparser::CanonicalFunction::TaskYield => {
-                section.task_yield();
+            wasmparser::CanonicalFunction::TaskYield { async_ } => {
+                section.task_yield(async_);
             }
             wasmparser::CanonicalFunction::SubtaskDrop => {
                 section.subtask_drop();
             }
-            wasmparser::CanonicalFunction::FutureNew { ty } => {
-                section.future_new(reencoder.component_type_index(ty));
-            }
-            wasmparser::CanonicalFunction::FutureWrite { ty, options } => {
-                section.future_write(
-                    reencoder.component_type_index(ty),
-                    options.iter().map(|o| reencoder.canonical_option(*o)),
-                );
-            }
-            wasmparser::CanonicalFunction::FutureRead { ty, options } => {
-                section.future_read(
-                    reencoder.component_type_index(ty),
-                    options.iter().map(|o| reencoder.canonical_option(*o)),
-                );
-            }
-            wasmparser::CanonicalFunction::FutureDropWriter { ty } => {
-                section.future_drop_writer(reencoder.component_type_index(ty));
-            }
-            wasmparser::CanonicalFunction::FutureDropReader { ty } => {
-                section.future_drop_reader(reencoder.component_type_index(ty));
-            }
             wasmparser::CanonicalFunction::StreamNew { ty } => {
                 section.stream_new(reencoder.component_type_index(ty));
-            }
-            wasmparser::CanonicalFunction::StreamWrite { ty, options } => {
-                section.stream_write(
-                    reencoder.component_type_index(ty),
-                    options.iter().map(|o| reencoder.canonical_option(*o)),
-                );
             }
             wasmparser::CanonicalFunction::StreamRead { ty, options } => {
                 section.stream_read(
@@ -1018,14 +991,61 @@ pub mod component_utils {
                     options.iter().map(|o| reencoder.canonical_option(*o)),
                 );
             }
-            wasmparser::CanonicalFunction::StreamDropWriter { ty } => {
-                section.stream_drop_writer(reencoder.component_type_index(ty));
+            wasmparser::CanonicalFunction::StreamWrite { ty, options } => {
+                section.stream_write(
+                    reencoder.component_type_index(ty),
+                    options.iter().map(|o| reencoder.canonical_option(*o)),
+                );
             }
-            wasmparser::CanonicalFunction::StreamDropReader { ty } => {
-                section.stream_drop_reader(reencoder.component_type_index(ty));
+            wasmparser::CanonicalFunction::StreamCancelRead { ty, async_ } => {
+                section.stream_cancel_read(ty, async_);
             }
-            wasmparser::CanonicalFunction::ErrorDrop => {
-                section.error_drop();
+            wasmparser::CanonicalFunction::StreamCancelWrite { ty, async_ } => {
+                section.stream_cancel_write(ty, async_);
+            }
+            wasmparser::CanonicalFunction::StreamCloseReadable { ty } => {
+                section.stream_close_readable(reencoder.component_type_index(ty));
+            }
+            wasmparser::CanonicalFunction::StreamCloseWritable { ty } => {
+                section.stream_close_writable(reencoder.component_type_index(ty));
+            }
+            wasmparser::CanonicalFunction::FutureNew { ty } => {
+                section.future_new(reencoder.component_type_index(ty));
+            }
+            wasmparser::CanonicalFunction::FutureRead { ty, options } => {
+                section.future_read(
+                    reencoder.component_type_index(ty),
+                    options.iter().map(|o| reencoder.canonical_option(*o)),
+                );
+            }
+            wasmparser::CanonicalFunction::FutureWrite { ty, options } => {
+                section.future_write(
+                    reencoder.component_type_index(ty),
+                    options.iter().map(|o| reencoder.canonical_option(*o)),
+                );
+            }
+            wasmparser::CanonicalFunction::FutureCancelRead { ty, async_ } => {
+                section.future_cancel_read(ty, async_);
+            }
+            wasmparser::CanonicalFunction::FutureCancelWrite { ty, async_ } => {
+                section.future_cancel_write(ty, async_);
+            }
+            wasmparser::CanonicalFunction::FutureCloseReadable { ty } => {
+                section.future_close_readable(reencoder.component_type_index(ty));
+            }
+            wasmparser::CanonicalFunction::FutureCloseWritable { ty } => {
+                section.future_close_writable(reencoder.component_type_index(ty));
+            }
+            wasmparser::CanonicalFunction::ErrorContextNew { options } => {
+                section.error_context_new(options.iter().map(|o| reencoder.canonical_option(*o)));
+            }
+            wasmparser::CanonicalFunction::ErrorContextDebugMessage { options } => {
+                section.error_context_debug_message(
+                    options.iter().map(|o| reencoder.canonical_option(*o)),
+                );
+            }
+            wasmparser::CanonicalFunction::ErrorContextDrop => {
+                section.error_context_drop();
             }
         }
         Ok(())

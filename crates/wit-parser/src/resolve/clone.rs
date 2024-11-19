@@ -106,7 +106,7 @@ impl<'a> Cloner<'a> {
             | TypeDefKind::Resource
             | TypeDefKind::Flags(_)
             | TypeDefKind::Enum(_)
-            | TypeDefKind::Error => {}
+            | TypeDefKind::ErrorContext => {}
             TypeDefKind::Handle(Handle::Own(ty) | Handle::Borrow(ty)) => {
                 self.type_id(ty);
             }

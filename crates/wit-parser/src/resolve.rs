@@ -573,7 +573,7 @@ package {name} is defined in two different locations:\n\
                 | TypeDefKind::Result(_)
                 | TypeDefKind::Future(_)
                 | TypeDefKind::Stream(_)
-                | TypeDefKind::Error => false,
+                | TypeDefKind::ErrorContext => false,
                 TypeDefKind::Type(t) => self.all_bits_valid(t),
 
                 TypeDefKind::Handle(h) => match h {
@@ -3007,7 +3007,7 @@ impl Remap {
                 }
             }
             Future(Some(t)) => self.update_ty(resolve, t, span)?,
-            Error => {}
+            ErrorContext => {}
 
             // Note that `update_ty` is specifically not used here as typedefs
             // because for the `type a = b` form that doesn't force `a` to be a
@@ -3406,7 +3406,7 @@ impl Remap {
                 .iter()
                 .filter_map(|t| t.as_ref())
                 .any(|t| self.type_has_borrow(resolve, t)),
-            TypeDefKind::Future(None) | TypeDefKind::Error => false,
+            TypeDefKind::Future(None) | TypeDefKind::ErrorContext => false,
             TypeDefKind::Unknown => unreachable!(),
         }
     }

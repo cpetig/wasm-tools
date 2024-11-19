@@ -298,7 +298,7 @@ impl Resolve {
                     result.push(WasmType::I32);
                 }
 
-                TypeDefKind::Error => {
+                TypeDefKind::ErrorContext => {
                     result.push(WasmType::I32);
                 }
 

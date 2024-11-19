@@ -283,7 +283,7 @@ impl SizeAlign {
             TypeDefKind::Handle(_)
             | TypeDefKind::Future(_)
             | TypeDefKind::Stream(_)
-            | TypeDefKind::Error => {
+            | TypeDefKind::ErrorContext => {
                 if self.symmetric {
                     ElementInfo::new(ArchitectureSize::new(0, 1), Alignment::Pointer)
                 } else {

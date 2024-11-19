@@ -1,5 +1,5 @@
 use crate::encoding::{Instance, Item, LibraryInfo, MainOrAdapter};
-use crate::ComponentEncoder;
+use crate::{ComponentEncoder, StringEncoding};
 use anyhow::{bail, Context, Result};
 use indexmap::{map::Entry, IndexMap, IndexSet};
 use std::hash::{Hash, Hasher};
@@ -207,23 +207,64 @@ pub enum Import {
     /// one day.
     Item(Item),
 
-    ErrorDrop,
-    TaskBackpressure,
-    TaskWait,
-    TaskPoll,
-    TaskYield,
-    SubtaskDrop,
-    FutureNew(PayloadInfo),
-    FutureWrite(PayloadInfo),
-    FutureRead(PayloadInfo),
-    FutureDropWriter(TypeId),
-    FutureDropReader(TypeId),
-    StreamNew(PayloadInfo),
-    StreamWrite(PayloadInfo),
-    StreamRead(PayloadInfo),
-    StreamDropWriter(TypeId),
-    StreamDropReader(TypeId),
     ExportedTaskReturn(Function),
+    TaskBackpressure,
+    TaskWait {
+        async_: bool,
+    },
+    TaskPoll {
+        async_: bool,
+    },
+    TaskYield {
+        async_: bool,
+    },
+    SubtaskDrop,
+    StreamNew(PayloadInfo),
+    StreamRead {
+        async_: bool,
+        info: PayloadInfo,
+    },
+    StreamWrite {
+        async_: bool,
+        info: PayloadInfo,
+    },
+    StreamCancelRead {
+        ty: TypeId,
+        async_: bool,
+    },
+    StreamCancelWrite {
+        ty: TypeId,
+        async_: bool,
+    },
+    StreamCloseReadable(TypeId),
+    StreamCloseWritable(TypeId),
+    FutureNew(PayloadInfo),
+    FutureRead {
+        async_: bool,
+        info: PayloadInfo,
+    },
+    FutureWrite {
+        async_: bool,
+        info: PayloadInfo,
+    },
+    FutureCancelRead {
+        ty: TypeId,
+        async_: bool,
+    },
+    FutureCancelWrite {
+        ty: TypeId,
+        async_: bool,
+    },
+    FutureCloseReadable(TypeId),
+    FutureCloseWritable(TypeId),
+    ErrorContextNew {
+        encoding: StringEncoding,
+    },
+    ErrorContextDebugMessage {
+        encoding: StringEncoding,
+        realloc: String,
+    },
+    ErrorContextDrop,
 }
 
 impl ImportMap {
@@ -376,11 +417,15 @@ impl ImportMap {
             return Ok(import);
         }
 
-        let async_import = |interface: Option<(WorldKey, InterfaceId)>| {
+        let async_import_for_export = |interface: Option<(WorldKey, InterfaceId)>| {
             Ok::<_, anyhow::Error>(if let Some(function_name) = names.task_return_name(name) {
                 let interface_id = interface.as_ref().map(|(_, id)| *id);
-                let func = get_function(resolve, world, function_name, interface_id, true)?;
-                validate_task_return(resolve, ty, &func)?;
+                let func = get_function(resolve, world, function_name, interface_id, false)?;
+                // Note that we can't statically validate the type signature of
+                // a `task.return` built-in since we can't know which export
+                // it's associated with in general.  Instead, the host will
+                // compare it with the expected type at runtime and trap if
+                // necessary.
                 Some(Import::ExportedTaskReturn(func))
             } else {
                 None
@@ -394,10 +439,10 @@ impl ImportMap {
         };
 
         if module == names.import_root() {
-            if Some(name) == names.error_drop() {
+            if Some(name) == names.error_context_drop() {
                 let expected = FuncType::new([ValType::I32], []);
                 validate_func_sig(name, &expected, ty)?;
-                return Ok(Import::ErrorDrop);
+                return Ok(Import::ErrorContextDrop);
             }
 
             if Some(name) == names.task_backpressure() {
@@ -409,19 +454,25 @@ impl ImportMap {
             if Some(name) == names.task_wait() {
                 let expected = FuncType::new([ValType::I32], [ValType::I32]);
                 validate_func_sig(name, &expected, ty)?;
-                return Ok(Import::TaskWait);
+                return Ok(Import::TaskWait {
+                    async_: abi == AbiVariant::GuestImportAsync,
+                });
             }
 
             if Some(name) == names.task_poll() {
                 let expected = FuncType::new([ValType::I32], [ValType::I32]);
                 validate_func_sig(name, &expected, ty)?;
-                return Ok(Import::TaskPoll);
+                return Ok(Import::TaskPoll {
+                    async_: abi == AbiVariant::GuestImportAsync,
+                });
             }
 
             if Some(name) == names.task_yield() {
                 let expected = FuncType::new([], []);
                 validate_func_sig(name, &expected, ty)?;
-                return Ok(Import::TaskYield);
+                return Ok(Import::TaskYield {
+                    async_: abi == AbiVariant::GuestImportAsync,
+                });
             }
 
             if Some(name) == names.subtask_drop() {
@@ -430,7 +481,22 @@ impl ImportMap {
                 return Ok(Import::SubtaskDrop);
             }
 
-            if let Some(import) = async_import(None)? {
+            if let Some(encoding) = names.error_context_new(name) {
+                let expected = FuncType::new([ValType::I32; 2], [ValType::I32]);
+                validate_func_sig(name, &expected, ty)?;
+                return Ok(Import::ErrorContextNew { encoding });
+            }
+
+            if let Some((encoding, realloc)) = names.error_context_debug_message(name) {
+                let expected = FuncType::new([ValType::I32; 2], []);
+                validate_func_sig(name, &expected, ty)?;
+                return Ok(Import::ErrorContextDebugMessage {
+                    encoding,
+                    realloc: realloc.to_owned(),
+                });
+            }
+
+            if let Some(import) = async_import_for_export(None)? {
                 return Ok(import);
             }
 
@@ -461,7 +527,7 @@ impl ImportMap {
         };
 
         if let Some(interface) = interface.strip_prefix(names.import_exported_intrinsic_prefix()) {
-            if let Some(import) = async_import(Some(names.module_to_interface(
+            if let Some(import) = async_import_for_export(Some(names.module_to_interface(
                 interface,
                 resolve,
                 &world.exports,
@@ -686,6 +752,7 @@ impl ExportMap {
             None if encoder.reject_legacy_names => return Ok(None),
             None => (export.name, LEGACY),
         };
+
         if let Some(export) = self
             .classify_component_export(names, name, &export, encoder, exports, types)
             .with_context(|| format!("failed to classify export `{}`", export.name))?
@@ -730,10 +797,11 @@ impl ExportMap {
             return Ok(Some(Export::Initialize));
         }
 
-        let (abi, name) = if let Some(name) = names.async_name(export.name) {
+        let full_name = name;
+        let (abi, name) = if let Some(name) = names.async_name(name) {
             (AbiVariant::GuestExportAsync, name)
         } else {
-            (AbiVariant::GuestExport, export.name)
+            (AbiVariant::GuestExport, name)
         };
 
         // Try to match this to a known WIT export that `exports` allows.
@@ -778,10 +846,10 @@ impl ExportMap {
             }
         }
 
-        if let Some(suffix) = names.callback_name(export.name) {
+        if let Some(suffix) = names.callback_name(full_name) {
             if let Some((key, id, f)) = names.match_wit_export(suffix, resolve, world, exports) {
                 validate_func_sig(
-                    export.name,
+                    full_name,
                     &FuncType::new([ValType::I32; 4], [ValType::I32]),
                     ty,
                 )?;
@@ -796,7 +864,7 @@ impl ExportMap {
         // And, finally, see if it matches a known destructor.
         if let Some(dtor) = names.match_wit_resource_dtor(name, resolve, world, exports) {
             let expected = FuncType::new([ValType::I32], []);
-            validate_func_sig(export.name, &expected, ty)?;
+            validate_func_sig(full_name, &expected, ty)?;
             return Ok(Some(Export::ResourceDtor(dtor)));
         }
 
@@ -997,7 +1065,9 @@ trait NameMangling {
     fn subtask_drop(&self) -> Option<&str>;
     fn callback_name<'a>(&self, s: &'a str) -> Option<&'a str>;
     fn async_name<'a>(&self, s: &'a str) -> Option<&'a str>;
-    fn error_drop(&self) -> Option<&str>;
+    fn error_context_new(&self, s: &str) -> Option<StringEncoding>;
+    fn error_context_debug_message<'a>(&self, s: &'a str) -> Option<(StringEncoding, &'a str)>;
+    fn error_context_drop(&self) -> Option<&str>;
     fn payload_import(
         &self,
         module: &str,
@@ -1090,7 +1160,15 @@ impl NameMangling for Standard {
         _ = s;
         None
     }
-    fn error_drop(&self) -> Option<&str> {
+    fn error_context_new(&self, s: &str) -> Option<StringEncoding> {
+        _ = s;
+        None
+    }
+    fn error_context_debug_message<'a>(&self, s: &'a str) -> Option<(StringEncoding, &'a str)> {
+        _ = s;
+        None
+    }
+    fn error_context_drop(&self) -> Option<&str> {
         None
     }
     fn payload_import(
@@ -1263,8 +1341,40 @@ impl NameMangling for Legacy {
     fn async_name<'a>(&self, s: &'a str) -> Option<&'a str> {
         s.strip_prefix("[async]")
     }
-    fn error_drop(&self) -> Option<&str> {
-        Some("[error-drop]")
+    fn error_context_new(&self, s: &str) -> Option<StringEncoding> {
+        parse_encoding(
+            s.strip_prefix("[error-context-new;encoding=")?
+                .strip_suffix("]")?,
+        )
+    }
+    fn error_context_debug_message<'a>(&self, s: &'a str) -> Option<(StringEncoding, &'a str)> {
+        let mut suffix = s.strip_prefix("[error-context-debug-message;")?;
+        let mut encoding = None;
+        let mut realloc = None;
+        loop {
+            if let Some(index) = suffix.find(';').or_else(|| suffix.find(']')) {
+                if let Some(suffix) = suffix[..index].strip_prefix("encoding=") {
+                    if encoding.is_some() {
+                        return None;
+                    }
+                    encoding = parse_encoding(suffix)
+                } else if let Some(suffix) = suffix[..index].strip_prefix("realloc=") {
+                    if realloc.is_some() {
+                        return None;
+                    }
+                    realloc = Some(suffix);
+                } else {
+                    return None;
+                }
+                suffix = &suffix[index + 1..];
+            } else {
+                break;
+            }
+        }
+        Some((encoding?, realloc?))
+    }
+    fn error_context_drop(&self) -> Option<&str> {
+        Some("[error-context-drop]")
     }
     fn payload_import(
         &self,
@@ -1278,7 +1388,7 @@ impl NameMangling for Legacy {
             if let Some((suffix, imported)) = module
                 .strip_prefix("[import-payload]")
                 .map(|v| (v, true))
-                .or_else(|| name.strip_prefix("[export-payload]").map(|v| (v, false)))
+                .or_else(|| module.strip_prefix("[export-payload]").map(|v| (v, false)))
             {
                 let (key, interface) = if suffix == self.import_root() {
                     (WorldKey::Name(name.to_string()), None)
@@ -1303,10 +1413,14 @@ impl NameMangling for Legacy {
                     (name, false)
                 };
 
-                let info = |payload_key, validate: &dyn Fn() -> Result<()>| {
-                    let (function, ty) =
-                        get_payload_type(resolve, world, &payload_key, interface, imported)?;
-                    validate()?;
+                let info = |payload_key| {
+                    let (function, ty) = get_future_or_stream_type(
+                        resolve,
+                        world,
+                        &payload_key,
+                        interface,
+                        imported,
+                    )?;
                     Ok::<_, anyhow::Error>(PayloadInfo {
                         name: orig_name.to_string(),
                         ty,
@@ -1317,94 +1431,127 @@ impl NameMangling for Legacy {
                     })
                 };
 
-                // TODO: move
                 Some(
                     if let Some(key) = match_payload_prefix(name, "[future-new-") {
                         if async_ {
                             bail!("async `future.new` calls not supported");
                         }
-                        Import::FutureNew(info(key, &|| {
-                            validate_func_sig(name, &FuncType::new([], [ValType::I32]), ty)
-                        })?)
+                        validate_func_sig(name, &FuncType::new([], [ValType::I32]), ty)?;
+                        Import::FutureNew(info(key)?)
                     } else if let Some(key) = match_payload_prefix(name, "[future-write-") {
-                        if !async_ {
-                            bail!("TODO: sync `future.write` calls not yet supported");
+                        validate_func_sig(
+                            name,
+                            &FuncType::new([ValType::I32; 2], [ValType::I32]),
+                            ty,
+                        )?;
+                        Import::FutureWrite {
+                            async_,
+                            info: info(key)?,
                         }
-                        Import::FutureWrite(info(key, &|| {
-                            validate_func_sig(
-                                name,
-                                &FuncType::new([ValType::I32; 2], [ValType::I32]),
-                                ty,
-                            )
-                        })?)
                     } else if let Some(key) = match_payload_prefix(name, "[future-read-") {
-                        if !async_ {
-                            bail!("TODO: sync `future.read` calls not yet supported");
+                        validate_func_sig(
+                            name,
+                            &FuncType::new([ValType::I32; 2], [ValType::I32]),
+                            ty,
+                        )?;
+                        Import::FutureRead {
+                            async_,
+                            info: info(key)?,
                         }
-                        Import::FutureRead(info(key, &|| {
-                            validate_func_sig(
-                                name,
-                                &FuncType::new([ValType::I32; 2], [ValType::I32]),
-                                ty,
-                            )
-                        })?)
-                    } else if let Some(key) = match_payload_prefix(name, "[future-drop-writer-") {
-                        Import::FutureDropWriter(
-                            info(key, &|| {
-                                validate_func_sig(name, &FuncType::new([ValType::I32], []), ty)
-                            })?
-                            .ty,
-                        )
-                    } else if let Some(key) = match_payload_prefix(name, "[future-drop-reader-") {
-                        Import::FutureDropReader(
-                            info(key, &|| {
-                                validate_func_sig(name, &FuncType::new([ValType::I32], []), ty)
-                            })?
-                            .ty,
-                        )
+                    } else if let Some(key) = match_payload_prefix(name, "[future-cancel-write-") {
+                        validate_func_sig(
+                            name,
+                            &FuncType::new([ValType::I32], [ValType::I32]),
+                            ty,
+                        )?;
+                        Import::FutureCancelWrite {
+                            async_,
+                            ty: info(key)?.ty,
+                        }
+                    } else if let Some(key) = match_payload_prefix(name, "[future-cancel-read-") {
+                        validate_func_sig(
+                            name,
+                            &FuncType::new([ValType::I32], [ValType::I32]),
+                            ty,
+                        )?;
+                        Import::FutureCancelRead {
+                            async_,
+                            ty: info(key)?.ty,
+                        }
+                    } else if let Some(key) = match_payload_prefix(name, "[future-close-writable-")
+                    {
+                        if async_ {
+                            bail!("async `future.close-writable` calls not supported");
+                        }
+                        validate_func_sig(name, &FuncType::new([ValType::I32; 2], []), ty)?;
+                        Import::FutureCloseWritable(info(key)?.ty)
+                    } else if let Some(key) = match_payload_prefix(name, "[future-close-readable-")
+                    {
+                        if async_ {
+                            bail!("async `future.close-readable` calls not supported");
+                        }
+                        validate_func_sig(name, &FuncType::new([ValType::I32], []), ty)?;
+                        Import::FutureCloseReadable(info(key)?.ty)
                     } else if let Some(key) = match_payload_prefix(name, "[stream-new-") {
                         if async_ {
                             bail!("async `stream.new` calls not supported");
                         }
-                        Import::StreamNew(info(key, &|| {
-                            validate_func_sig(name, &FuncType::new([], [ValType::I32]), ty)
-                        })?)
+                        validate_func_sig(name, &FuncType::new([], [ValType::I32]), ty)?;
+                        Import::StreamNew(info(key)?)
                     } else if let Some(key) = match_payload_prefix(name, "[stream-write-") {
-                        if !async_ {
-                            bail!("TODO: sync `stream.write` calls not yet supported");
+                        validate_func_sig(
+                            name,
+                            &FuncType::new([ValType::I32; 3], [ValType::I32]),
+                            ty,
+                        )?;
+                        Import::StreamWrite {
+                            async_,
+                            info: info(key)?,
                         }
-                        Import::StreamWrite(info(key, &|| {
-                            validate_func_sig(
-                                name,
-                                &FuncType::new([ValType::I32; 3], [ValType::I32]),
-                                ty,
-                            )
-                        })?)
                     } else if let Some(key) = match_payload_prefix(name, "[stream-read-") {
-                        if !async_ {
-                            bail!("TODO: sync `stream.read` calls not yet supported");
+                        validate_func_sig(
+                            name,
+                            &FuncType::new([ValType::I32; 3], [ValType::I32]),
+                            ty,
+                        )?;
+                        Import::StreamRead {
+                            async_,
+                            info: info(key)?,
                         }
-                        Import::StreamRead(info(key, &|| {
-                            validate_func_sig(
-                                name,
-                                &FuncType::new([ValType::I32; 3], [ValType::I32]),
-                                ty,
-                            )
-                        })?)
-                    } else if let Some(key) = match_payload_prefix(name, "[stream-drop-writer-") {
-                        Import::StreamDropWriter(
-                            info(key, &|| {
-                                validate_func_sig(name, &FuncType::new([ValType::I32], []), ty)
-                            })?
-                            .ty,
-                        )
-                    } else if let Some(key) = match_payload_prefix(name, "[stream-drop-reader-") {
-                        Import::StreamDropReader(
-                            info(key, &|| {
-                                validate_func_sig(name, &FuncType::new([ValType::I32], []), ty)
-                            })?
-                            .ty,
-                        )
+                    } else if let Some(key) = match_payload_prefix(name, "[stream-cancel-write-") {
+                        validate_func_sig(
+                            name,
+                            &FuncType::new([ValType::I32], [ValType::I32]),
+                            ty,
+                        )?;
+                        Import::StreamCancelWrite {
+                            async_,
+                            ty: info(key)?.ty,
+                        }
+                    } else if let Some(key) = match_payload_prefix(name, "[stream-cancel-read-") {
+                        validate_func_sig(
+                            name,
+                            &FuncType::new([ValType::I32], [ValType::I32]),
+                            ty,
+                        )?;
+                        Import::StreamCancelRead {
+                            async_,
+                            ty: info(key)?.ty,
+                        }
+                    } else if let Some(key) = match_payload_prefix(name, "[stream-close-writable-")
+                    {
+                        if async_ {
+                            bail!("async `stream.close-writable` calls not supported");
+                        }
+                        validate_func_sig(name, &FuncType::new([ValType::I32; 2], []), ty)?;
+                        Import::StreamCloseWritable(info(key)?.ty)
+                    } else if let Some(key) = match_payload_prefix(name, "[stream-close-readable-")
+                    {
+                        if async_ {
+                            bail!("async `stream.close-readable` calls not supported");
+                        }
+                        validate_func_sig(name, &FuncType::new([ValType::I32], []), ty)?;
+                        Import::StreamCloseReadable(info(key)?.ty)
                     } else {
                         bail!("unrecognized payload import: {name}");
                     },
@@ -1708,7 +1855,12 @@ fn match_payload_prefix(name: &str, prefix: &str) -> Option<(String, usize)> {
     ))
 }
 
-fn get_payload_type(
+/// Retrieve the specified function from the specified world or interface, along
+/// with the future or stream type at the specified index.
+///
+/// The index refers to the entry in the list returned by
+/// `Function::find_futures_and_streams`.
+fn get_future_or_stream_type(
     resolve: &Resolve,
     world: &World,
     (name, index): &(String, usize),
@@ -1745,13 +1897,16 @@ fn get_function(
             .cloned()
     };
     let Some(WorldItem::Function(function)) = function else {
-        bail!("no export `{name}` export found");
+        bail!("no export `{name}` found");
     };
     Ok(function)
 }
 
-fn validate_task_return(resolve: &Resolve, ty: &FuncType, function: &Function) -> Result<()> {
-    // TODO
-    _ = (resolve, ty, function);
-    Ok(())
+fn parse_encoding(s: &str) -> Option<StringEncoding> {
+    match s {
+        "utf8" => Some(StringEncoding::UTF8),
+        "utf16" => Some(StringEncoding::UTF16),
+        "compact-utf16" => Some(StringEncoding::CompactUTF16),
+        _ => None,
+    }
 }

@@ -426,19 +426,27 @@ impl<'a> Dump<'a> {
                             | CanonicalFunction::TaskReturn { .. }
                             | CanonicalFunction::TaskWait { .. }
                             | CanonicalFunction::TaskPoll { .. }
-                            | CanonicalFunction::TaskYield
+                            | CanonicalFunction::TaskYield { .. }
                             | CanonicalFunction::SubtaskDrop
-                            | CanonicalFunction::FutureNew { .. }
-                            | CanonicalFunction::FutureWrite { .. }
-                            | CanonicalFunction::FutureRead { .. }
-                            | CanonicalFunction::FutureDropWriter { .. }
-                            | CanonicalFunction::FutureDropReader { .. }
                             | CanonicalFunction::StreamNew { .. }
-                            | CanonicalFunction::StreamWrite { .. }
                             | CanonicalFunction::StreamRead { .. }
-                            | CanonicalFunction::StreamDropWriter { .. }
-                            | CanonicalFunction::StreamDropReader { .. }
-                            | CanonicalFunction::ErrorDrop => ("core func", &mut i.core_funcs),
+                            | CanonicalFunction::StreamWrite { .. }
+                            | CanonicalFunction::StreamCancelRead { .. }
+                            | CanonicalFunction::StreamCancelWrite { .. }
+                            | CanonicalFunction::StreamCloseReadable { .. }
+                            | CanonicalFunction::StreamCloseWritable { .. }
+                            | CanonicalFunction::FutureNew { .. }
+                            | CanonicalFunction::FutureRead { .. }
+                            | CanonicalFunction::FutureWrite { .. }
+                            | CanonicalFunction::FutureCancelRead { .. }
+                            | CanonicalFunction::FutureCancelWrite { .. }
+                            | CanonicalFunction::FutureCloseReadable { .. }
+                            | CanonicalFunction::FutureCloseWritable { .. }
+                            | CanonicalFunction::ErrorContextNew { .. }
+                            | CanonicalFunction::ErrorContextDebugMessage { .. }
+                            | CanonicalFunction::ErrorContextDrop => {
+                                ("core func", &mut i.core_funcs)
+                            }
                         };
 
                         write!(me.state, "[{} {}] {:?}", name, inc(col), f)?;
