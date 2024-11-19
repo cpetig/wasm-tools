@@ -24,7 +24,6 @@ bitflags = "2.4.1"
 indexmap = { workspace = true, optional = true }
 semver = { workspace = true, optional = true }
 hashbrown = { workspace = true, optional = true }
-ahash = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -48,16 +47,15 @@ default = ['std', 'validate', 'serde', 'features', 'component-model', 'hash-coll
 # A feature which enables implementations of `std::error::Error` as appropriate
 # along with other convenience APIs. This additionally uses the standard
 # library's source of randomness for seeding hash maps.
-std = ['indexmap/std']
+std = ['indexmap?/std']
 
 # Tells the `wasmparser` crate to provide (and use) hash-based collections internally.
 #
-# Disabling this crate feature allows to drop `hashbrown`, `indexmap` and `ahash` dependencies
+# Disabling this crate feature allows to drop `hashbrown`, `indexmap` dependencies
 # entirely, reducing compilation times and shrink binary sizes.
 hash-collections = [
   'dep:hashbrown',
   'dep:indexmap',
-  'dep:ahash',
 ]
 # Tells the `wasmparser` crate to prefer using its built-in btree-based collections 
 # even if `hash-collections` is enabled.
@@ -66,11 +64,11 @@ prefer-btree-collections = []
 # A feature that enables validating WebAssembly files. This is enabled by
 # default but not required if you're only parsing a file, for example, as
 # opposed to validating all of its contents.
-validate = ['dep:semver']
+validate = []
 
 # Enable Serialize/Deserialize implementations for types in
 # `wasmparser::collections`
-serde = ['dep:serde', 'indexmap/serde', 'hashbrown/serde']
+serde = ['dep:serde', 'indexmap?/serde', 'hashbrown?/serde']
 
 # A feature that enables the guts of the `WasmFeatures` type in this crate.
 #
@@ -83,4 +81,4 @@ features = []
 # A feature that enables parsing and validating the component-model proposal for
 # WebAssembly. This is enabled by default but if your use case is only
 # interested in working with core modules then this feature can be disabled.
-component-model = []
+component-model = ['dep:semver']

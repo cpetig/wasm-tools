@@ -54,7 +54,7 @@ pub struct Opts {
     ///
     /// This is defaulted to `true` to enable parsing all upstream spec tests
     /// but can be disabled if desired too.
-    #[clap(long)]
+    #[clap(long, value_name = "true|false")]
     allow_confusing_unicode: Option<bool>,
 }
 
@@ -362,7 +362,7 @@ impl<'a> JsonBuilder<'a> {
         for arg in args {
             let arg = match arg {
                 WastArg::Core(core) => core,
-                WastArg::Component(_) => bail!("component support not implemented yet"),
+                _ => bail!("encountered unsupported Wast argument: {arg:?}"),
             };
             let val = match arg {
                 I32(i) => json::Const::I32 {
@@ -419,7 +419,7 @@ impl<'a> JsonBuilder<'a> {
         for r in rets {
             let r = match r {
                 WastRet::Core(core) => self.core_ret(core)?,
-                WastRet::Component(_) => bail!("component support not implemented yet"),
+                _ => bail!("encountered unsupported Wast result: {r:?}"),
             };
             ret.push(r);
         }
