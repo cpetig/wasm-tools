@@ -2013,7 +2013,7 @@ fn type_string<'a>(ty: &Type<'a>, name: &str) -> Option<String> {
         ),
         Type::Future(_) => todo!(),
         Type::Stream(_) => todo!(),
-        Type::Error(_) => todo!(),
+        Type::ErrorContext(_) => todo!(),
     }
 }
 
