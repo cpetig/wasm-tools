@@ -1078,7 +1078,7 @@ impl ComponentState {
             )
         }
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1129,7 +1129,7 @@ impl ComponentState {
 
         self.memory_at(memory, offset)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1162,7 +1162,7 @@ impl ComponentState {
 
         self.memory_at(memory, offset)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1192,7 +1192,7 @@ impl ComponentState {
             )
         }
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1221,7 +1221,7 @@ impl ComponentState {
             )
         }
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1256,7 +1256,7 @@ impl ComponentState {
             bail!(offset, "`stream.new` requires a stream type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1297,7 +1297,7 @@ impl ComponentState {
         info.requires_realloc = payload_type.contains_ptr(types);
         self.check_options(None, &info, &options, types, offset, features, true)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1341,7 +1341,7 @@ impl ComponentState {
         info.requires_realloc = false;
         self.check_options(None, &info, &options, types, offset, features, true)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1380,7 +1380,7 @@ impl ComponentState {
             bail!(offset, "`stream.cancel-read` requires a stream type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1416,7 +1416,7 @@ impl ComponentState {
             bail!(offset, "`stream.cancel-write` requires a stream type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1451,7 +1451,7 @@ impl ComponentState {
             bail!(offset, "`stream.close-readable` requires a stream type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1486,7 +1486,7 @@ impl ComponentState {
             bail!(offset, "`stream.close-writable` requires a stream type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1521,7 +1521,7 @@ impl ComponentState {
             bail!(offset, "`future.new` requires a future type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1564,7 +1564,7 @@ impl ComponentState {
             .unwrap_or(false);
         self.check_options(None, &info, &options, types, offset, features, true)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1608,7 +1608,7 @@ impl ComponentState {
         info.requires_realloc = false;
         self.check_options(None, &info, &options, types, offset, features, true)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1647,7 +1647,7 @@ impl ComponentState {
             bail!(offset, "`future.cancel-read` requires a future type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1683,7 +1683,7 @@ impl ComponentState {
             bail!(offset, "`future.cancel-write` requires a future type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1718,7 +1718,7 @@ impl ComponentState {
             bail!(offset, "`future.close-readable` requires a future type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1753,7 +1753,7 @@ impl ComponentState {
             bail!(offset, "`future.close-writable` requires a future type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1788,7 +1788,7 @@ impl ComponentState {
         info.requires_realloc = false;
         self.check_options(None, &info, &options, types, offset, features, false)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1826,7 +1826,7 @@ impl ComponentState {
         info.requires_realloc = true;
         self.check_options(None, &info, &options, types, offset, features, false)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
@@ -1855,7 +1855,7 @@ impl ComponentState {
             )
         }
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(RecGroup::implicit(
+        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
             offset,
             SubType {
                 is_final: true,
