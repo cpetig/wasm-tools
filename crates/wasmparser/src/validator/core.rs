@@ -10,6 +10,8 @@ use super::{
     operators::{ty_to_str, OperatorValidator, OperatorValidatorAllocations},
     types::{CoreTypeId, EntityType, RecGroupId, TypeAlloc, TypeList},
 };
+#[cfg(feature = "simd")]
+use crate::VisitSimdOperator;
 use crate::{
     limits::*, BinaryReaderError, ConstExpr, Data, DataKind, Element, ElementKind, ExternalKind,
     FuncType, Global, GlobalType, HeapType, MemoryType, RecGroup, RefType, Result, SubType, Table,
@@ -405,6 +407,13 @@ impl ModuleState {
                         .insert(index);
                 }
             }
+
+            fn not_const(&self, instr: &str) -> BinaryReaderError {
+                BinaryReaderError::new(
+                    format!("constant expression required: non-constant operator: {instr}"),
+                    self.offset,
+                )
+            }
         }
 
         macro_rules! define_visit_operator {
@@ -431,7 +440,7 @@ impl ModuleState {
                 $self.validator().visit_f64_const($val)
             }};
             (@visit $self:ident visit_v128_const $val:ident) => {{
-                $self.validator().visit_v128_const($val)
+                $self.validator().simd_visitor().unwrap().visit_v128_const($val)
             }};
             (@visit $self:ident visit_ref_null $val:ident) => {{
                 $self.validator().visit_ref_null($val)
@@ -512,17 +521,26 @@ impl ModuleState {
             }};
 
             (@visit $self:ident $op:ident $($args:tt)*) => {{
-                Err(BinaryReaderError::new(
-                    format!("constant expression required: non-constant operator: {}", stringify!($op)),
-                    $self.offset,
-                ))
+                Err($self.not_const(stringify!($op)))
             }}
         }
 
         impl<'a> VisitOperator<'a> for VisitConstOperator<'a> {
             type Output = Result<()>;
 
-            for_each_operator!(define_visit_operator);
+            #[cfg(feature = "simd")]
+            fn simd_visitor(
+                &mut self,
+            ) -> Option<&mut dyn crate::VisitSimdOperator<'a, Output = Self::Output>> {
+                Some(self)
+            }
+
+            crate::for_each_visit_operator!(define_visit_operator);
+        }
+
+        #[cfg(feature = "simd")]
+        impl<'a> VisitSimdOperator<'a> for VisitConstOperator<'a> {
+            crate::for_each_visit_simd_operator!(define_visit_operator);
         }
     }
 }
@@ -569,67 +587,7 @@ impl Module {
                 offset,
             )?;
         }
-        if self.try_fast_validation(&rec_group, features, types, offset)? {
-            return Ok(());
-        }
         self.canonicalize_and_intern_rec_group(features, types, rec_group, offset)
-    }
-
-    #[cfg(not(feature = "features"))]
-    fn try_fast_validation(
-        &mut self,
-        _rec_group: &RecGroup,
-        _features: &WasmFeatures,
-        _types: &mut TypeAlloc,
-        _offset: usize,
-    ) -> Result<bool> {
-        Ok(false)
-    }
-
-    /// Performs fast type section validation if possible.
-    ///
-    /// - Returns `Ok(true)` if fast validation was performed, else returns `Ok(false)`.
-    /// - Returns `Err(_)` if a type section validation error was encountered.
-    ///
-    /// # Note
-    ///
-    /// Fast type section validation can only be performed on a
-    /// statically known subset of `WasmFeatures`.
-    #[cfg(feature = "features")]
-    fn try_fast_validation(
-        &mut self,
-        rec_group: &RecGroup,
-        features: &WasmFeatures,
-        types: &mut TypeAlloc,
-        offset: usize,
-    ) -> Result<bool> {
-        /// The subset of `WasmFeatures` for which we know that the
-        /// fast type section validation can be safely applied.
-        ///
-        /// Fast type section validation does not have to canonicalize
-        /// (deduplicate) types and does not have to perform sub-typing
-        /// checks.
-        const FAST_VALIDATION_FEATURES: WasmFeatures = WasmFeatures::WASM2
-            .union(WasmFeatures::CUSTOM_PAGE_SIZES)
-            .union(WasmFeatures::EXTENDED_CONST)
-            .union(WasmFeatures::MEMORY64)
-            .union(WasmFeatures::MULTI_MEMORY)
-            .union(WasmFeatures::RELAXED_SIMD)
-            .union(WasmFeatures::TAIL_CALL)
-            .union(WasmFeatures::THREADS)
-            .union(WasmFeatures::WIDE_ARITHMETIC);
-        if !FAST_VALIDATION_FEATURES.contains(*features) {
-            return Ok(false);
-        }
-        if rec_group.is_explicit_rec_group() {
-            bail!(offset, "requires `gc` proposal to be enabled")
-        }
-        for ty in rec_group.types() {
-            let id = types.push(ty.clone());
-            self.add_type_id(id);
-            self.check_composite_type(&ty.composite_type, features, &types, offset)?;
-        }
-        Ok(true)
     }
 
     pub fn add_import(
