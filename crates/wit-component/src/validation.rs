@@ -226,10 +226,7 @@ pub enum Import {
     MainModuleMemory,
 
     /// An adapter is importing an arbitrary item from the main module.
-    MainModuleExport {
-        name: String,
-        kind: ExportKind,
-    },
+    MainModuleExport { name: String, kind: ExportKind },
 
     /// An arbitrary item from either the main module or an adapter is being
     /// imported.

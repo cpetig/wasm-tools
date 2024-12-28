@@ -132,7 +132,7 @@ pub trait ValtypeEncoder<'a> {
                 // it as it was bound here with an alias.
                 let ty = &resolve.types[id];
                 log::trace!("encode type name={:?} {:?}", ty.name, &ty.kind);
-                if let Some(index) = self.maybe_import_type(resolve, dealias(resolve, id)) {
+                if let Some(index) = self.maybe_import_type(resolve, id) {
                     self.type_map().insert(id, index);
                     return Ok(ComponentValType::Type(index));
                 }
@@ -450,14 +450,5 @@ impl<'a> ValtypeEncoder<'a> for InstanceTypeEncoder<'_, 'a> {
     }
     fn func_type_map(&mut self) -> &mut HashMap<FunctionKey<'a>, u32> {
         &mut self.func_type_map
-    }
-}
-
-pub fn dealias(resolve: &Resolve, mut id: TypeId) -> TypeId {
-    loop {
-        match &resolve.types[id].kind {
-            TypeDefKind::Type(Type::Id(that_id)) => id = *that_id,
-            _ => break id,
-        }
     }
 }

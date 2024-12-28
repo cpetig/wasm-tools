@@ -511,10 +511,6 @@ impl<'a> EncodingState<'a> {
         let ty = encoder.ty;
         // Don't encode empty instance types since they're not
         // meaningful to the runtime of the component anyway.
-        //
-        // TODO: Is this correct? What if another imported interface needs to
-        // alias a type exported by this interface but can't because we skipped
-        // encoding the import?
         if ty.is_empty() {
             return Ok(());
         }
@@ -1539,7 +1535,6 @@ impl<'a> EncodingState<'a> {
         }
 
         self.instance_index = Some(instance_index);
-
         Ok(())
     }
 
@@ -2076,14 +2071,6 @@ struct Shim<'a> {
 
 /// Which variation of `{stream|future}.{read|write}` we're emitting for a
 /// `ShimKind::PayloadFunc`.
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-enum PayloadFuncKind {
-    FutureWrite,
-    FutureRead,
-    StreamWrite,
-    StreamRead,
-}
-
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 enum PayloadFuncKind {
     FutureWrite,
@@ -2681,7 +2668,6 @@ impl ComponentEncoder {
         library_info: Option<LibraryInfo>,
     ) -> Result<Self> {
         let (wasm, mut metadata) = self.decode(bytes)?;
-
         // Merge the adapter's document into our own document to have one large
         // document, and then afterwards merge worlds as well.
         //
@@ -2766,7 +2752,6 @@ impl ComponentEncoder {
         }
 
         let world = ComponentWorld::new(self).context("failed to decode world from module")?;
-
         let mut state = EncodingState {
             component: ComponentBuilder::default(),
             module_index: None,
@@ -2797,9 +2782,6 @@ impl ComponentEncoder {
             .component
             .raw_custom_section(&crate::base_producers().raw_custom_section());
         let bytes = state.component.finish();
-
-        // TODO dicej: remove this:
-        std::fs::write("/tmp/foo.wasm", &bytes).unwrap();
 
         if self.validate {
             Validator::new()

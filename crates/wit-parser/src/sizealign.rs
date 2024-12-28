@@ -280,6 +280,7 @@ impl SizeAlign {
             // A resource is represented as an index.
             // A future is represented as an index.
             // A stream is represented as an index.
+            // An error is represented as an index.
             TypeDefKind::Handle(_)
             | TypeDefKind::Future(_)
             | TypeDefKind::Stream(_)

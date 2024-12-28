@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::{Path, PathBuf};
 use wasm_compose::{composer::ComponentComposer, config::Config};
-use wasmparser::{Validator, WasmFeatures};
+use wasmparser::Validator;
 
 /// WebAssembly component composer.
 ///
@@ -59,8 +59,7 @@ impl Opts {
         let config = self.create_config()?;
         log::debug!("configuration:\n{:#?}", config);
 
-        let bytes =
-            ComponentComposer::new(&self.component, &config, WasmFeatures::default()).compose()?;
+        let bytes = ComponentComposer::new(&self.component, &config).compose()?;
 
         self.output.output_wasm(&self.general, &bytes, self.wat)?;
 

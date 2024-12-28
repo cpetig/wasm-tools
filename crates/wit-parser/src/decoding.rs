@@ -380,16 +380,7 @@ impl DecodedWasm {
 
 /// Decode for incremental reading
 pub fn decode_reader(reader: impl Read) -> Result<DecodedWasm> {
-    decode_reader_with_features(reader, WasmFeatures::default())
-}
-
-/// Like [`decode_reader`], but using caller-specified `WasmFeatures` when
-/// validating input.
-pub fn decode_reader_with_features(
-    reader: impl Read,
-    features: WasmFeatures,
-) -> Result<DecodedWasm> {
-    let info = ComponentInfo::from_reader(reader, features)?;
+    let info = ComponentInfo::from_reader(reader)?;
 
     if let Some(version) = info.is_wit_package() {
         match version {
