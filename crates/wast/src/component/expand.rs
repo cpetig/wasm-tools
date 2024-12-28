@@ -116,7 +116,10 @@ impl<'a> Expander<'a> {
                 self.expand_canonical_func(f);
                 None
             }
-            ComponentField::CoreFunc(f) => self.expand_core_func(f),
+            ComponentField::CoreFunc(f) => Some(self.expand_core_func(CoreFunc {
+                kind: mem::replace(&mut f.kind, CoreFuncKind::ErrorContextDrop),
+                ..*f
+            })),
             ComponentField::Func(f) => self.expand_func(f),
             ComponentField::Import(i) => {
                 self.expand_item_sig(&mut i.item);
@@ -293,9 +296,9 @@ impl<'a> Expander<'a> {
         }
     }
 
-    fn expand_core_func(&mut self, func: &mut CoreFunc<'a>) -> Option<ComponentField<'a>> {
-        match &mut func.kind {
-            CoreFuncKind::Alias(a) => Some(ComponentField::Alias(Alias {
+    fn expand_core_func(&mut self, func: CoreFunc<'a>) -> ComponentField<'a> {
+        match func.kind {
+            CoreFuncKind::Alias(a) => ComponentField::Alias(Alias {
                 span: func.span,
                 id: func.id,
                 name: func.name,
@@ -304,205 +307,193 @@ impl<'a> Expander<'a> {
                     name: a.name,
                     kind: core::ExportKind::Func,
                 },
-            })),
-            CoreFuncKind::Lower(info) => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+            }),
+            CoreFuncKind::Lower(info) => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
-                kind: CanonicalFuncKind::Lower(mem::take(info)),
-            })),
-            CoreFuncKind::ResourceNew(info) => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                kind: CanonicalFuncKind::Lower(info),
+            }),
+            CoreFuncKind::ResourceNew(info) => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
-                kind: CanonicalFuncKind::ResourceNew(mem::take(info)),
-            })),
-            CoreFuncKind::ResourceDrop(info) => {
-                Some(ComponentField::CanonicalFunc(CanonicalFunc {
-                    span: func.span,
-                    id: func.id,
-                    name: func.name,
-                    kind: CanonicalFuncKind::ResourceDrop(mem::take(info)),
-                }))
-            }
-            CoreFuncKind::ResourceRep(info) => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                kind: CanonicalFuncKind::ResourceNew(info),
+            }),
+            CoreFuncKind::ResourceDrop(info) => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
-                kind: CanonicalFuncKind::ResourceRep(mem::take(info)),
-            })),
-            CoreFuncKind::ThreadSpawn(info) => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                kind: CanonicalFuncKind::ResourceDrop(info),
+            }),
+            CoreFuncKind::ResourceRep(info) => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
-                kind: CanonicalFuncKind::ThreadSpawn(mem::take(info)),
-            })),
+                kind: CanonicalFuncKind::ResourceRep(info),
+            }),
+            CoreFuncKind::ThreadSpawn(info) => ComponentField::CanonicalFunc(CanonicalFunc {
+                span: func.span,
+                id: func.id,
+                name: func.name,
+                kind: CanonicalFuncKind::ThreadSpawn(info),
+            }),
             CoreFuncKind::ThreadHwConcurrency(info) => {
-                Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                ComponentField::CanonicalFunc(CanonicalFunc {
                     span: func.span,
                     id: func.id,
                     name: func.name,
-                    kind: CanonicalFuncKind::ThreadHwConcurrency(mem::take(info)),
-                }))
+                    kind: CanonicalFuncKind::ThreadHwConcurrency(info),
+                })
             }
-            CoreFuncKind::TaskBackpressure => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+            CoreFuncKind::TaskBackpressure => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
                 kind: CanonicalFuncKind::TaskBackpressure,
-            })),
-            CoreFuncKind::TaskReturn(info) => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+            }),
+            CoreFuncKind::TaskReturn(info) => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
-                kind: CanonicalFuncKind::TaskReturn(mem::take(info)),
-            })),
-            CoreFuncKind::TaskWait(info) => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                kind: CanonicalFuncKind::TaskReturn(info),
+            }),
+            CoreFuncKind::TaskWait(info) => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
-                kind: CanonicalFuncKind::TaskWait(mem::take(info)),
-            })),
-            CoreFuncKind::TaskPoll(info) => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                kind: CanonicalFuncKind::TaskWait(info),
+            }),
+            CoreFuncKind::TaskPoll(info) => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
-                kind: CanonicalFuncKind::TaskPoll(mem::take(info)),
-            })),
-            CoreFuncKind::TaskYield(info) => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                kind: CanonicalFuncKind::TaskPoll(info),
+            }),
+            CoreFuncKind::TaskYield(info) => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
-                kind: CanonicalFuncKind::TaskYield(mem::take(info)),
-            })),
-            CoreFuncKind::SubtaskDrop => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                kind: CanonicalFuncKind::TaskYield(info),
+            }),
+            CoreFuncKind::SubtaskDrop => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
                 kind: CanonicalFuncKind::SubtaskDrop,
-            })),
-            CoreFuncKind::StreamNew(info) => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+            }),
+            CoreFuncKind::StreamNew(info) => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
-                kind: CanonicalFuncKind::StreamNew(mem::take(info)),
-            })),
-            CoreFuncKind::StreamRead(info) => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                kind: CanonicalFuncKind::StreamNew(info),
+            }),
+            CoreFuncKind::StreamRead(info) => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
-                kind: CanonicalFuncKind::StreamRead(mem::take(info)),
-            })),
-            CoreFuncKind::StreamWrite(info) => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                kind: CanonicalFuncKind::StreamRead(info),
+            }),
+            CoreFuncKind::StreamWrite(info) => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
-                kind: CanonicalFuncKind::StreamWrite(mem::take(info)),
-            })),
-            CoreFuncKind::StreamCancelRead(info) => {
-                Some(ComponentField::CanonicalFunc(CanonicalFunc {
-                    span: func.span,
-                    id: func.id,
-                    name: func.name,
-                    kind: CanonicalFuncKind::StreamCancelRead(mem::take(info)),
-                }))
-            }
-            CoreFuncKind::StreamCancelWrite(info) => {
-                Some(ComponentField::CanonicalFunc(CanonicalFunc {
-                    span: func.span,
-                    id: func.id,
-                    name: func.name,
-                    kind: CanonicalFuncKind::StreamCancelWrite(mem::take(info)),
-                }))
-            }
+                kind: CanonicalFuncKind::StreamWrite(info),
+            }),
+            CoreFuncKind::StreamCancelRead(info) => ComponentField::CanonicalFunc(CanonicalFunc {
+                span: func.span,
+                id: func.id,
+                name: func.name,
+                kind: CanonicalFuncKind::StreamCancelRead(info),
+            }),
+            CoreFuncKind::StreamCancelWrite(info) => ComponentField::CanonicalFunc(CanonicalFunc {
+                span: func.span,
+                id: func.id,
+                name: func.name,
+                kind: CanonicalFuncKind::StreamCancelWrite(info),
+            }),
             CoreFuncKind::StreamCloseReadable(info) => {
-                Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                ComponentField::CanonicalFunc(CanonicalFunc {
                     span: func.span,
                     id: func.id,
                     name: func.name,
-                    kind: CanonicalFuncKind::StreamCloseReadable(mem::take(info)),
-                }))
+                    kind: CanonicalFuncKind::StreamCloseReadable(info),
+                })
             }
             CoreFuncKind::StreamCloseWritable(info) => {
-                Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                ComponentField::CanonicalFunc(CanonicalFunc {
                     span: func.span,
                     id: func.id,
                     name: func.name,
-                    kind: CanonicalFuncKind::StreamCloseWritable(mem::take(info)),
-                }))
+                    kind: CanonicalFuncKind::StreamCloseWritable(info),
+                })
             }
-            CoreFuncKind::FutureNew(info) => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+            CoreFuncKind::FutureNew(info) => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
-                kind: CanonicalFuncKind::FutureNew(mem::take(info)),
-            })),
-            CoreFuncKind::FutureRead(info) => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                kind: CanonicalFuncKind::FutureNew(info),
+            }),
+            CoreFuncKind::FutureRead(info) => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
-                kind: CanonicalFuncKind::FutureRead(mem::take(info)),
-            })),
-            CoreFuncKind::FutureWrite(info) => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                kind: CanonicalFuncKind::FutureRead(info),
+            }),
+            CoreFuncKind::FutureWrite(info) => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
-                kind: CanonicalFuncKind::FutureWrite(mem::take(info)),
-            })),
-            CoreFuncKind::FutureCancelRead(info) => {
-                Some(ComponentField::CanonicalFunc(CanonicalFunc {
-                    span: func.span,
-                    id: func.id,
-                    name: func.name,
-                    kind: CanonicalFuncKind::FutureCancelRead(mem::take(info)),
-                }))
-            }
-            CoreFuncKind::FutureCancelWrite(info) => {
-                Some(ComponentField::CanonicalFunc(CanonicalFunc {
-                    span: func.span,
-                    id: func.id,
-                    name: func.name,
-                    kind: CanonicalFuncKind::FutureCancelWrite(mem::take(info)),
-                }))
-            }
+                kind: CanonicalFuncKind::FutureWrite(info),
+            }),
+            CoreFuncKind::FutureCancelRead(info) => ComponentField::CanonicalFunc(CanonicalFunc {
+                span: func.span,
+                id: func.id,
+                name: func.name,
+                kind: CanonicalFuncKind::FutureCancelRead(info),
+            }),
+            CoreFuncKind::FutureCancelWrite(info) => ComponentField::CanonicalFunc(CanonicalFunc {
+                span: func.span,
+                id: func.id,
+                name: func.name,
+                kind: CanonicalFuncKind::FutureCancelWrite(info),
+            }),
             CoreFuncKind::FutureCloseReadable(info) => {
-                Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                ComponentField::CanonicalFunc(CanonicalFunc {
                     span: func.span,
                     id: func.id,
                     name: func.name,
-                    kind: CanonicalFuncKind::FutureCloseReadable(mem::take(info)),
-                }))
+                    kind: CanonicalFuncKind::FutureCloseReadable(info),
+                })
             }
             CoreFuncKind::FutureCloseWritable(info) => {
-                Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                ComponentField::CanonicalFunc(CanonicalFunc {
                     span: func.span,
                     id: func.id,
                     name: func.name,
-                    kind: CanonicalFuncKind::FutureCloseWritable(mem::take(info)),
-                }))
+                    kind: CanonicalFuncKind::FutureCloseWritable(info),
+                })
             }
-            CoreFuncKind::ErrorContextNew(info) => {
-                Some(ComponentField::CanonicalFunc(CanonicalFunc {
-                    span: func.span,
-                    id: func.id,
-                    name: func.name,
-                    kind: CanonicalFuncKind::ErrorContextNew(mem::take(info)),
-                }))
-            }
+            CoreFuncKind::ErrorContextNew(info) => ComponentField::CanonicalFunc(CanonicalFunc {
+                span: func.span,
+                id: func.id,
+                name: func.name,
+                kind: CanonicalFuncKind::ErrorContextNew(info),
+            }),
             CoreFuncKind::ErrorContextDebugMessage(info) => {
-                Some(ComponentField::CanonicalFunc(CanonicalFunc {
+                ComponentField::CanonicalFunc(CanonicalFunc {
                     span: func.span,
                     id: func.id,
                     name: func.name,
-                    kind: CanonicalFuncKind::ErrorContextDebugMessage(mem::take(info)),
-                }))
+                    kind: CanonicalFuncKind::ErrorContextDebugMessage(info),
+                })
             }
-            CoreFuncKind::ErrorContextDrop => Some(ComponentField::CanonicalFunc(CanonicalFunc {
+            CoreFuncKind::ErrorContextDrop => ComponentField::CanonicalFunc(CanonicalFunc {
                 span: func.span,
                 id: func.id,
                 name: func.name,
                 kind: CanonicalFuncKind::ErrorContextDrop,
-            })),
+            }),
         }
     }
 
@@ -671,7 +662,7 @@ impl<'a> Expander<'a> {
                         t.index = Some(*idx);
                         return;
                     }
-                    let id = gensym::gen(item.span);
+                    let id = gensym::generate(item.span);
                     to_prepend.push(ModuleTypeDecl::Type(core::Type {
                         span: item.span,
                         id: Some(id),
@@ -801,7 +792,7 @@ impl<'a> Expander<'a> {
         // And if this type isn't already defined we append it to the index
         // space with a fresh and unique name.
         let span = Span::from_offset(0); // FIXME(#613): don't manufacture
-        let id = gensym::gen(span);
+        let id = gensym::generate(span);
 
         self.types_to_prepend.push(inline.into_any_type(span, id));
 
@@ -847,7 +838,7 @@ impl<'a> Expander<'a> {
 
         // And if this type isn't already defined we append it to the index
         // space with a fresh and unique name.
-        let id = gensym::gen(span);
+        let id = gensym::generate(span);
 
         self.types_to_prepend.push(inline.into_any_type(span, id));
 
@@ -900,7 +891,7 @@ impl<'a> Expander<'a> {
 
         // And if this type isn't already defined we append it to the index
         // space with a fresh and unique name.
-        let id = gensym::gen(span);
+        let id = gensym::generate(span);
 
         self.types_to_prepend.push(inline.into_any_type(span, id));
 
@@ -920,7 +911,7 @@ impl<'a> Expander<'a> {
             CoreInstantiationArgKind::Instance(_) => return,
             CoreInstantiationArgKind::BundleOfExports(span, exports) => (*span, mem::take(exports)),
         };
-        let id = gensym::gen(span);
+        let id = gensym::generate(span);
         self.component_fields_to_prepend
             .push(ComponentField::CoreInstance(CoreInstance {
                 span,
@@ -940,7 +931,7 @@ impl<'a> Expander<'a> {
             InstantiationArgKind::Item(_) => return,
             InstantiationArgKind::BundleOfExports(span, exports) => (*span, mem::take(exports)),
         };
-        let id = gensym::gen(span);
+        let id = gensym::generate(span);
         self.component_fields_to_prepend
             .push(ComponentField::Instance(Instance {
                 span,

@@ -47,8 +47,8 @@ enum WitEncodingVersion {
 impl ComponentInfo {
     /// Creates a new component info by parsing the given WebAssembly component bytes.
 
-    fn from_reader(mut reader: impl Read, features: WasmFeatures) -> Result<Self> {
-        let mut validator = Validator::new_with_features(features);
+    fn from_reader(mut reader: impl Read) -> Result<Self> {
+        let mut validator = Validator::new_with_features(WasmFeatures::all());
         let mut externs = Vec::new();
         let mut depth = 1;
         let mut types = None;

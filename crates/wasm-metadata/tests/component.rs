@@ -11,39 +11,34 @@ fn add_to_empty_component() {
         language: vec![("bar".to_owned(), "1.0".to_owned())],
         processed_by: vec![("baz".to_owned(), "1.0".to_owned())],
         sdk: vec![],
-        registry_metadata: Some(RegistryMetadata {
-            authors: Some(vec!["foo".to_owned()]),
-            description: Some("foo bar baz".to_owned()),
-            license: Some("MIT OR LicenseRef-FOO".to_owned()),
-            custom_licenses: Some(vec![CustomLicense {
-                id: "FOO".to_owned(),
-                name: "Foo".to_owned(),
-                text: "Foo License".to_owned(),
-                reference: Some("https://exaple.com/license/foo".to_owned()),
-            }]),
-            links: Some(vec![
-                Link {
-                    ty: LinkType::Custom("CustomFoo".to_owned()),
-                    value: "https://example.com/custom".to_owned(),
-                },
-                Link {
-                    ty: LinkType::Homepage,
-                    value: "https://example.com".to_owned(),
-                },
-            ]),
-            categories: Some(vec!["Tools".to_owned()]),
-        }),
+        author: Some(Author::new("Chashu Cat")),
+        description: Some(Description::new("Chashu likes tuna")),
+        licenses: Some(
+            Licenses::new("Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT").unwrap(),
+        ),
+        source: Some(Source::new("https://github.com/bytecodealliance/wasm-tools").unwrap()),
+        homepage: Some(Homepage::new("https://github.com/bytecodealliance/wasm-tools").unwrap()),
+        revision: Some(Revision::new("de978e17a80c1118f606fce919ba9b7d5a04a5ad")),
+        version: Some(Version::new("1.0.0")),
     };
     let component = add.to_wasm(&component).unwrap();
 
-    let metadata = Metadata::from_binary(&component).unwrap();
-    match metadata {
-        Metadata::Component {
-            name,
-            producers,
-            registry_metadata,
+    match Payload::from_binary(&component).unwrap() {
+        Payload::Component {
             children,
-            range,
+            metadata:
+                Metadata {
+                    name,
+                    producers,
+                    author,
+                    description,
+                    licenses,
+                    source,
+                    range,
+                    homepage,
+                    revision,
+                    version,
+                },
         } => {
             assert!(children.is_empty());
             assert_eq!(name, Some("foo".to_owned()));
@@ -57,49 +52,28 @@ fn add_to_empty_component() {
                 "1.0"
             );
 
-            let registry_metadata = registry_metadata.unwrap();
-
-            assert!(registry_metadata.validate().is_ok());
-
-            assert_eq!(registry_metadata.authors.unwrap(), vec!["foo".to_owned()]);
+            assert_eq!(author.unwrap(), Author::new("Chashu Cat"));
+            assert_eq!(description.unwrap(), Description::new("Chashu likes tuna"));
             assert_eq!(
-                registry_metadata.description.unwrap(),
-                "foo bar baz".to_owned()
-            );
-
-            assert_eq!(
-                registry_metadata.license.unwrap(),
-                "MIT OR LicenseRef-FOO".to_owned()
+                licenses.unwrap(),
+                Licenses::new("Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT").unwrap()
             );
             assert_eq!(
-                registry_metadata.custom_licenses.unwrap(),
-                vec![CustomLicense {
-                    id: "FOO".to_owned(),
-                    name: "Foo".to_owned(),
-                    text: "Foo License".to_owned(),
-                    reference: Some("https://exaple.com/license/foo".to_owned()),
-                }]
+                source.unwrap(),
+                Source::new("https://github.com/bytecodealliance/wasm-tools").unwrap(),
             );
             assert_eq!(
-                registry_metadata.links.unwrap(),
-                vec![
-                    Link {
-                        ty: LinkType::Custom("CustomFoo".to_owned()),
-                        value: "https://example.com/custom".to_owned(),
-                    },
-                    Link {
-                        ty: LinkType::Homepage,
-                        value: "https://example.com".to_owned(),
-                    },
-                ]
+                homepage.unwrap(),
+                Homepage::new("https://github.com/bytecodealliance/wasm-tools").unwrap(),
             );
             assert_eq!(
-                registry_metadata.categories.unwrap(),
-                vec!["Tools".to_owned()]
+                revision.unwrap(),
+                Revision::new("de978e17a80c1118f606fce919ba9b7d5a04a5ad")
             );
+            assert_eq!(version.unwrap(), Version::new("1.0.0"));
 
             assert_eq!(range.start, 0);
-            assert_eq!(range.end, 435);
+            assert_eq!(range.end, 374);
         }
         _ => panic!("metadata should be component"),
     }
@@ -114,10 +88,15 @@ fn add_to_nested_component() {
         language: vec![("bar".to_owned(), "1.0".to_owned())],
         processed_by: vec![("baz".to_owned(), "1.0".to_owned())],
         sdk: vec![],
-        registry_metadata: Some(RegistryMetadata {
-            authors: Some(vec!["Foo".to_owned()]),
-            ..Default::default()
-        }),
+        author: Some(Author::new("Chashu Cat")),
+        description: Some(Description::new("Chashu likes tuna")),
+        licenses: Some(
+            Licenses::new("Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT").unwrap(),
+        ),
+        source: Some(Source::new("https://github.com/bytecodealliance/wasm-tools").unwrap()),
+        homepage: Some(Homepage::new("https://github.com/bytecodealliance/wasm-tools").unwrap()),
+        revision: Some(Revision::new("de978e17a80c1118f606fce919ba9b7d5a04a5ad")),
+        version: Some(Version::new("1.0.0")),
     };
     let module = add.to_wasm(&module).unwrap();
 
@@ -137,13 +116,12 @@ fn add_to_nested_component() {
     };
     let component = add.to_wasm(&component).unwrap();
 
-    let metadata = Metadata::from_binary(&component).unwrap();
-    match metadata {
-        Metadata::Component {
-            name,
-            producers,
+    match Payload::from_binary(&component).unwrap() {
+        Payload::Component {
             children,
-            ..
+            metadata: Metadata {
+                name, producers, ..
+            },
         } => {
             // Check that the component metadata is in the component
             assert_eq!(name, Some("gussie".to_owned()));
@@ -154,14 +132,20 @@ fn add_to_nested_component() {
             );
             // Check that there is a single child with the metadata set for the module
             assert_eq!(children.len(), 1);
-            let child = children.get(0).unwrap();
-            match &**child {
-                Metadata::Module {
+
+            match children.get(0).unwrap() {
+                Payload::Module(Metadata {
                     name,
                     producers,
-                    registry_metadata,
+                    author,
+                    licenses,
+                    source,
                     range,
-                } => {
+                    description,
+                    homepage,
+                    revision,
+                    version,
+                }) => {
                     assert_eq!(name, &Some("foo".to_owned()));
                     let producers = producers.as_ref().expect("some producers");
                     assert_eq!(
@@ -173,14 +157,36 @@ fn add_to_nested_component() {
                         "1.0"
                     );
 
-                    let registry_metadata = registry_metadata.as_ref().unwrap();
+                    assert_eq!(author, &Some(Author::new("Chashu Cat")));
+                    assert_eq!(description, &Some(Description::new("Chashu likes tuna")));
                     assert_eq!(
-                        registry_metadata.authors.as_ref().unwrap(),
-                        &["Foo".to_owned()]
+                        licenses,
+                        &Some(
+                            Licenses::new("Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT")
+                                .unwrap()
+                        )
                     );
+                    assert_eq!(
+                        source,
+                        &Some(
+                            Source::new("https://github.com/bytecodealliance/wasm-tools").unwrap()
+                        ),
+                    );
+                    assert_eq!(
+                        homepage,
+                        &Some(
+                            Homepage::new("https://github.com/bytecodealliance/wasm-tools")
+                                .unwrap()
+                        ),
+                    );
+                    assert_eq!(
+                        revision,
+                        &Some(Revision::new("de978e17a80c1118f606fce919ba9b7d5a04a5ad"))
+                    );
+                    assert_eq!(version, &Some(Version::new("1.0.0")));
 
-                    assert_eq!(range.start, 10);
-                    assert_eq!(range.end, 123);
+                    assert_eq!(range.start, 11);
+                    assert_eq!(range.end, 375);
                 }
                 _ => panic!("child is a module"),
             }

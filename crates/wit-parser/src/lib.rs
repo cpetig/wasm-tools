@@ -1,3 +1,4 @@
+use crate::abi::AbiVariant;
 use anyhow::{bail, Context, Result};
 use id_arena::{Arena, Id};
 use indexmap::IndexMap;
@@ -939,6 +940,86 @@ impl std::str::FromStr for Mangling {
     }
 }
 
+/// Possible lift/lower ABI choices supported when mangling names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LiftLowerAbi {
+    /// Both imports and exports will use the synchronous ABI.
+    Sync,
+
+    /// Both imports and exports will use the async ABI (with a callback for
+    /// each export).
+    AsyncCallback,
+
+    /// Both imports and exports will use the async ABI (with no callbacks for
+    /// exports).
+    AsyncStackful,
+}
+
+impl LiftLowerAbi {
+    fn import_prefix(self) -> &'static str {
+        match self {
+            Self::Sync => "",
+            Self::AsyncCallback | Self::AsyncStackful => "[async]",
+        }
+    }
+
+    /// Get the import [`AbiVariant`] corresponding to this [`LiftLowerAbi`]
+    pub fn import_variant(self) -> AbiVariant {
+        match self {
+            Self::Sync => AbiVariant::GuestImport,
+            Self::AsyncCallback | Self::AsyncStackful => AbiVariant::GuestImportAsync,
+        }
+    }
+
+    fn export_prefix(self) -> &'static str {
+        match self {
+            Self::Sync => "",
+            Self::AsyncCallback => "[async]",
+            Self::AsyncStackful => "[async-stackful]",
+        }
+    }
+
+    /// Get the export [`AbiVariant`] corresponding to this [`LiftLowerAbi`]
+    pub fn export_variant(self) -> AbiVariant {
+        match self {
+            Self::Sync => AbiVariant::GuestExport,
+            Self::AsyncCallback => AbiVariant::GuestExportAsync,
+            Self::AsyncStackful => AbiVariant::GuestExportAsyncStackful,
+        }
+    }
+}
+
+/// Combination of [`Mangling`] and [`LiftLowerAbi`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ManglingAndAbi {
+    /// See [`Mangling::Standard32`].
+    ///
+    /// As of this writing, the standard name mangling only supports the
+    /// synchronous ABI.
+    Standard32,
+
+    /// See [`Mangling::Legacy`] and [`LiftLowerAbi`].
+    Legacy(LiftLowerAbi),
+}
+
+impl ManglingAndAbi {
+    /// Get the import [`AbiVariant`] corresponding to this [`ManglingAndAbi`]
+    pub fn import_variant(self) -> AbiVariant {
+        match self {
+            Self::Standard32 => AbiVariant::GuestImport,
+            Self::Legacy(abi) => abi.import_variant(),
+        }
+    }
+
+    /// Get the export [`AbiVariant`] corresponding to this [`ManglingAndAbi`]
+    pub fn export_variant(self) -> AbiVariant {
+        match self {
+            Self::Standard32 => AbiVariant::GuestExport,
+            Self::Legacy(abi) => abi.export_variant(),
+        }
+    }
+}
+
 impl Function {
     pub fn item_name(&self) -> &str {
         match &self.kind {
@@ -1014,53 +1095,55 @@ impl Function {
 }
 
 fn find_futures_and_streams(resolve: &Resolve, ty: Type, results: &mut Vec<TypeId>) {
-    if let Type::Id(id) = ty {
-        match &resolve.types[id].kind {
-            TypeDefKind::Resource
-            | TypeDefKind::Handle(_)
-            | TypeDefKind::Flags(_)
-            | TypeDefKind::Enum(_)
-            | TypeDefKind::ErrorContext => {}
-            TypeDefKind::Record(r) => {
-                for Field { ty, .. } in &r.fields {
-                    find_futures_and_streams(resolve, *ty, results);
-                }
-            }
-            TypeDefKind::Tuple(t) => {
-                for ty in &t.types {
-                    find_futures_and_streams(resolve, *ty, results);
-                }
-            }
-            TypeDefKind::Variant(v) => {
-                for Case { ty, .. } in &v.cases {
-                    if let Some(ty) = ty {
-                        find_futures_and_streams(resolve, *ty, results);
-                    }
-                }
-            }
-            TypeDefKind::Option(ty) | TypeDefKind::List(ty) | TypeDefKind::Type(ty) => {
+    let Type::Id(id) = ty else {
+        return;
+    };
+
+    match &resolve.types[id].kind {
+        TypeDefKind::Resource
+        | TypeDefKind::Handle(_)
+        | TypeDefKind::Flags(_)
+        | TypeDefKind::Enum(_)
+        | TypeDefKind::ErrorContext => {}
+        TypeDefKind::Record(r) => {
+            for Field { ty, .. } in &r.fields {
                 find_futures_and_streams(resolve, *ty, results);
             }
-            TypeDefKind::Result(r) => {
-                if let Some(ty) = r.ok {
-                    find_futures_and_streams(resolve, ty, results);
-                }
-                if let Some(ty) = r.err {
-                    find_futures_and_streams(resolve, ty, results);
-                }
+        }
+        TypeDefKind::Tuple(t) => {
+            for ty in &t.types {
+                find_futures_and_streams(resolve, *ty, results);
             }
-            TypeDefKind::Future(ty) => {
+        }
+        TypeDefKind::Variant(v) => {
+            for Case { ty, .. } in &v.cases {
                 if let Some(ty) = ty {
                     find_futures_and_streams(resolve, *ty, results);
                 }
-                results.push(id);
             }
-            TypeDefKind::Stream(ty) => {
-                find_futures_and_streams(resolve, *ty, results);
-                results.push(id);
-            }
-            TypeDefKind::Unknown => unreachable!(),
         }
+        TypeDefKind::Option(ty) | TypeDefKind::List(ty) | TypeDefKind::Type(ty) => {
+            find_futures_and_streams(resolve, *ty, results);
+        }
+        TypeDefKind::Result(r) => {
+            if let Some(ty) = r.ok {
+                find_futures_and_streams(resolve, ty, results);
+            }
+            if let Some(ty) = r.err {
+                find_futures_and_streams(resolve, ty, results);
+            }
+        }
+        TypeDefKind::Future(ty) => {
+            if let Some(ty) = ty {
+                find_futures_and_streams(resolve, *ty, results);
+            }
+            results.push(id);
+        }
+        TypeDefKind::Stream(ty) => {
+            find_futures_and_streams(resolve, *ty, results);
+            results.push(id);
+        }
+        TypeDefKind::Unknown => unreachable!(),
     }
 }
 

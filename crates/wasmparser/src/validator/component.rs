@@ -3,7 +3,7 @@
 use super::{
     check_max,
     component_types::{
-        AliasableResourceId, ComponentAnyTypeId, ComponentCoreInstanceTypeId,
+        Abi, AliasableResourceId, ComponentAnyTypeId, ComponentCoreInstanceTypeId,
         ComponentCoreModuleTypeId, ComponentCoreTypeId, ComponentDefinedType,
         ComponentDefinedTypeId, ComponentEntityType, ComponentFuncType, ComponentFuncTypeId,
         ComponentInstanceType, ComponentInstanceTypeId, ComponentType, ComponentTypeId,
@@ -20,8 +20,8 @@ use crate::validator::names::{ComponentName, ComponentNameKind, KebabStr, KebabS
 use crate::{
     BinaryReaderError, CanonicalOption, ComponentExportName, ComponentExternalKind,
     ComponentOuterAliasKind, ComponentTypeRef, CompositeInnerType, CompositeType, ExternalKind,
-    FuncType, GlobalType, InstantiationArgKind, MemoryType, PackedIndex, RecGroup, RefType, Result,
-    SubType, TableType, TypeBounds, ValType, WasmFeatures,
+    FuncType, GlobalType, InstantiationArgKind, MemoryType, PackedIndex, RefType, Result, SubType,
+    TableType, TypeBounds, ValType, WasmFeatures,
 };
 use core::mem;
 
@@ -963,7 +963,21 @@ impl ComponentState {
 
         // Lifting a function is for an export, so match the expected canonical ABI
         // export signature
-        let info = ty.lower(types, false, options.contains(&CanonicalOption::Async));
+        let info = ty.lower(
+            types,
+            if options.contains(&CanonicalOption::Async) {
+                if options
+                    .iter()
+                    .any(|v| matches!(v, CanonicalOption::Callback(_)))
+                {
+                    Abi::LiftAsync
+                } else {
+                    Abi::LiftAsyncStackful
+                }
+            } else {
+                Abi::LiftSync
+            },
+        );
         self.check_options(
             Some(core_ty),
             &info,
@@ -1012,12 +1026,18 @@ impl ComponentState {
 
         // Lowering a function is for an import, so use a function type that matches
         // the expected canonical ABI import signature.
-        let info = ty.lower(types, true, options.contains(&CanonicalOption::Async));
+        let info = ty.lower(
+            types,
+            if options.contains(&CanonicalOption::Async) {
+                Abi::LowerAsync
+            } else {
+                Abi::LowerSync
+            },
+        );
 
         self.check_options(None, &info, &options, types, offset, features, true)?;
 
-        let lowered_ty = SubType::func(info.into_func_type(), false);
-        let id = types.intern_sub_type(lowered_ty, offset);
+        let id = types.intern_func_type(info.into_func_type(), offset);
         self.core_funcs.push(id);
 
         Ok(())
@@ -1030,9 +1050,7 @@ impl ComponentState {
         offset: usize,
     ) -> Result<()> {
         let rep = self.check_local_resource(resource, types, offset)?;
-        let func_ty = FuncType::new([rep], [ValType::I32]);
-        let core_ty = SubType::func(func_ty, false);
-        let id = types.intern_sub_type(core_ty, offset);
+        let id = types.intern_func_type(FuncType::new([rep], [ValType::I32]), offset);
         self.core_funcs.push(id);
         Ok(())
     }
@@ -1044,9 +1062,7 @@ impl ComponentState {
         offset: usize,
     ) -> Result<()> {
         self.resource_at(resource, types, offset)?;
-        let func_ty = FuncType::new([ValType::I32], []);
-        let core_ty = SubType::func(func_ty, false);
-        let id = types.intern_sub_type(core_ty, offset);
+        let id = types.intern_func_type(FuncType::new([ValType::I32], []), offset);
         self.core_funcs.push(id);
         Ok(())
     }
@@ -1058,9 +1074,7 @@ impl ComponentState {
         offset: usize,
     ) -> Result<()> {
         let rep = self.check_local_resource(resource, types, offset)?;
-        let func_ty = FuncType::new([ValType::I32], [rep]);
-        let core_ty = SubType::func(func_ty, false);
-        let id = types.intern_sub_type(core_ty, offset);
+        let id = types.intern_func_type(FuncType::new([ValType::I32], [rep]), offset);
         self.core_funcs.push(id);
         Ok(())
     }
@@ -1078,25 +1092,15 @@ impl ComponentState {
             )
         }
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([ValType::I32], [])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32], []), offset));
         Ok(())
     }
 
     pub fn task_return(
         &mut self,
         type_index: u32,
+        types: &mut TypeAlloc,
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
@@ -1108,6 +1112,18 @@ impl ComponentState {
         }
 
         let id = self.type_id_at(type_index, offset)?;
+        let Some(SubType {
+            composite_type:
+                CompositeType {
+                    inner: CompositeInnerType::Func(_),
+                    ..
+                },
+            ..
+        }) = types.get(id)
+        else {
+            bail!(offset, "invalid `task.return` type index");
+        };
+
         self.core_funcs.push(id);
         Ok(())
     }
@@ -1129,19 +1145,8 @@ impl ComponentState {
 
         self.memory_at(memory, offset)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([ValType::I32], [ValType::I32])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32], [ValType::I32]), offset));
         Ok(())
     }
 
@@ -1162,19 +1167,8 @@ impl ComponentState {
 
         self.memory_at(memory, offset)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([ValType::I32], [ValType::I32])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32], [ValType::I32]), offset));
         Ok(())
     }
 
@@ -1192,19 +1186,8 @@ impl ComponentState {
             )
         }
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([], [])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([], []), offset));
         Ok(())
     }
 
@@ -1221,19 +1204,8 @@ impl ComponentState {
             )
         }
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([ValType::I32], [])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32], []), offset));
         Ok(())
     }
 
@@ -1256,19 +1228,8 @@ impl ComponentState {
             bail!(offset, "`stream.new` requires a stream type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([], [ValType::I32])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([], [ValType::I32]), offset));
         Ok(())
     }
 
@@ -1297,22 +1258,8 @@ impl ComponentState {
         info.requires_realloc = payload_type.contains_ptr(types);
         self.check_options(None, &info, &options, types, offset, features, true)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new(
-                        [ValType::I32; 3],
-                        [ValType::I32],
-                    )),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32; 3], [ValType::I32]), offset));
         Ok(())
     }
 
@@ -1341,22 +1288,8 @@ impl ComponentState {
         info.requires_realloc = false;
         self.check_options(None, &info, &options, types, offset, features, true)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new(
-                        [ValType::I32; 3],
-                        [ValType::I32],
-                    )),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32; 3], [ValType::I32]), offset));
         Ok(())
     }
 
@@ -1380,19 +1313,8 @@ impl ComponentState {
             bail!(offset, "`stream.cancel-read` requires a stream type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([ValType::I32], [ValType::I32])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32], [ValType::I32]), offset));
         Ok(())
     }
 
@@ -1416,19 +1338,8 @@ impl ComponentState {
             bail!(offset, "`stream.cancel-write` requires a stream type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([ValType::I32], [ValType::I32])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32], [ValType::I32]), offset));
         Ok(())
     }
 
@@ -1451,19 +1362,8 @@ impl ComponentState {
             bail!(offset, "`stream.close-readable` requires a stream type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([ValType::I32], [])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32], []), offset));
         Ok(())
     }
 
@@ -1486,19 +1386,8 @@ impl ComponentState {
             bail!(offset, "`stream.close-writable` requires a stream type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([ValType::I32; 2], [])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32; 2], []), offset));
         Ok(())
     }
 
@@ -1521,19 +1410,8 @@ impl ComponentState {
             bail!(offset, "`future.new` requires a future type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([], [ValType::I32])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([], [ValType::I32]), offset));
         Ok(())
     }
 
@@ -1564,22 +1442,8 @@ impl ComponentState {
             .unwrap_or(false);
         self.check_options(None, &info, &options, types, offset, features, true)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new(
-                        [ValType::I32; 2],
-                        [ValType::I32],
-                    )),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32; 2], [ValType::I32]), offset));
         Ok(())
     }
 
@@ -1608,22 +1472,8 @@ impl ComponentState {
         info.requires_realloc = false;
         self.check_options(None, &info, &options, types, offset, features, true)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new(
-                        [ValType::I32; 2],
-                        [ValType::I32],
-                    )),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32; 2], [ValType::I32]), offset));
         Ok(())
     }
 
@@ -1647,19 +1497,8 @@ impl ComponentState {
             bail!(offset, "`future.cancel-read` requires a future type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([ValType::I32], [ValType::I32])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32], [ValType::I32]), offset));
         Ok(())
     }
 
@@ -1683,19 +1522,8 @@ impl ComponentState {
             bail!(offset, "`future.cancel-write` requires a future type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([ValType::I32], [ValType::I32])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32], [ValType::I32]), offset));
         Ok(())
     }
 
@@ -1718,19 +1546,8 @@ impl ComponentState {
             bail!(offset, "`future.close-readable` requires a future type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([ValType::I32], [])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32], []), offset));
         Ok(())
     }
 
@@ -1753,19 +1570,8 @@ impl ComponentState {
             bail!(offset, "`future.close-writable` requires a future type")
         };
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([ValType::I32; 2], [])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32; 2], []), offset));
         Ok(())
     }
 
@@ -1788,22 +1594,8 @@ impl ComponentState {
         info.requires_realloc = false;
         self.check_options(None, &info, &options, types, offset, features, false)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new(
-                        [ValType::I32; 2],
-                        [ValType::I32],
-                    )),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32; 2], [ValType::I32]), offset));
         Ok(())
     }
 
@@ -1826,19 +1618,8 @@ impl ComponentState {
         info.requires_realloc = true;
         self.check_options(None, &info, &options, types, offset, features, false)?;
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([ValType::I32; 2], [])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32; 2], []), offset));
         Ok(())
     }
 
@@ -1855,19 +1636,8 @@ impl ComponentState {
             )
         }
 
-        let (_is_new, group_id) = types.intern_canonical_rec_group(false, RecGroup::implicit(
-            offset,
-            SubType {
-                is_final: true,
-                supertype_idx: None,
-                composite_type: CompositeType {
-                    shared: false,
-                    inner: CompositeInnerType::Func(FuncType::new([ValType::I32], [])),
-                },
-            },
-        ));
-        let id = types[group_id].start;
-        self.core_funcs.push(id);
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32], []), offset));
         Ok(())
     }
 

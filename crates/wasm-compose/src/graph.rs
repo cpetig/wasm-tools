@@ -110,7 +110,7 @@ impl<'a> Component<'a> {
     ) -> Result<Self> {
         let mut parser = Parser::new(0);
         let mut parsers = Vec::new();
-        let mut validator = Validator::new_with_features(features);
+        let mut validator = Validator::new_with_features(WasmFeatures::all());
         let mut imports = IndexMap::new();
         let mut exports = IndexMap::new();
 

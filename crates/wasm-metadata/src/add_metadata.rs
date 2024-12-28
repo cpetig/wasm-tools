@@ -1,4 +1,6 @@
-use crate::{rewrite_wasm, Producers, RegistryMetadata};
+use crate::{
+    rewrite_wasm, Author, Description, Homepage, Licenses, Producers, Revision, Source, Version,
+};
 
 use anyhow::Result;
 
@@ -25,9 +27,34 @@ pub struct AddMetadata {
     #[cfg_attr(feature="clap", clap(long, value_parser = parse_key_value, value_name="NAME=VERSION"))]
     pub sdk: Vec<(String, String)>,
 
-    /// Add an registry metadata to the registry-metadata section
-    #[cfg_attr(feature="clap", clap(long, value_parser = parse_registry_metadata_value, value_name="PATH"))]
-    pub registry_metadata: Option<RegistryMetadata>,
+    /// Contact details of the people or organization responsible,
+    /// encoded as a freeform string.
+    #[cfg_attr(feature = "clap", clap(long, value_name = "NAME"))]
+    pub author: Option<Author>,
+
+    /// A human-readable description of the binary
+    #[cfg_attr(feature = "clap", clap(long, value_name = "NAME"))]
+    pub description: Option<Description>,
+
+    /// License(s) under which contained software is distributed as an SPDX License Expression.
+    #[cfg_attr(feature = "clap", clap(long, value_name = "NAME"))]
+    pub licenses: Option<Licenses>,
+
+    /// URL to get source code for building the image
+    #[cfg_attr(feature = "clap", clap(long, value_name = "NAME"))]
+    pub source: Option<Source>,
+
+    /// URL to find more information on the binary
+    #[cfg_attr(feature = "clap", clap(long, value_name = "NAME"))]
+    pub homepage: Option<Homepage>,
+
+    /// Source control revision identifier for the packaged software.
+    #[cfg_attr(feature = "clap", clap(long, value_name = "NAME"))]
+    pub revision: Option<Revision>,
+
+    /// Version of the packaged software
+    #[cfg_attr(feature = "clap", clap(long, value_name = "NAME"))]
+    pub version: Option<Version>,
 }
 
 #[cfg(feature = "clap")]
@@ -35,15 +62,6 @@ pub(crate) fn parse_key_value(s: &str) -> Result<(String, String)> {
     s.split_once('=')
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
         .ok_or_else(|| anyhow::anyhow!("expected KEY=VALUE"))
-}
-
-#[cfg(feature = "clap")]
-pub(crate) fn parse_registry_metadata_value(s: &str) -> Result<RegistryMetadata> {
-    let contents = std::fs::read(s)?;
-
-    let registry_metadata = RegistryMetadata::from_bytes(&contents, 0)?;
-
-    Ok(registry_metadata)
 }
 
 impl AddMetadata {
@@ -54,7 +72,13 @@ impl AddMetadata {
         rewrite_wasm(
             &self.name,
             &Producers::from_meta(self),
-            self.registry_metadata.as_ref(),
+            &self.author,
+            &self.description,
+            &self.licenses,
+            &self.source,
+            &self.homepage,
+            &self.revision,
+            &self.version,
             input,
         )
     }

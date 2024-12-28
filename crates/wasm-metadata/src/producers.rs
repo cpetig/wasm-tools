@@ -1,7 +1,6 @@
 use anyhow::Result;
 use indexmap::{map::Entry, IndexMap};
 use serde_derive::Serialize;
-use std::fmt;
 use wasm_encoder::Encode;
 use wasmparser::{BinaryReader, KnownCustom, Parser, ProducersSectionReader};
 
@@ -148,28 +147,9 @@ impl Producers {
     /// Merge into an existing wasm module. Rewrites the module with this producers section
     /// merged into its existing one, or adds this producers section if none is present.
     pub fn add_to_wasm(&self, input: &[u8]) -> Result<Vec<u8>> {
-        rewrite_wasm(&None, self, None, input)
-    }
-
-    pub(crate) fn display(&self, f: &mut fmt::Formatter, indent: usize) -> fmt::Result {
-        let indent = std::iter::repeat(" ").take(indent).collect::<String>();
-        for (fieldname, fieldvalues) in self.0.iter() {
-            writeln!(f, "{indent}{fieldname}:")?;
-            for (name, version) in fieldvalues {
-                if version.is_empty() {
-                    writeln!(f, "{indent}    {name}")?;
-                } else {
-                    writeln!(f, "{indent}    {name}: {version}")?;
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-impl fmt::Display for Producers {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.display(f, 0)
+        rewrite_wasm(
+            &None, self, &None, &None, &None, &None, &None, &None, &None, input,
+        )
     }
 }
 
@@ -191,7 +171,7 @@ impl<'a> ProducersField<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::Metadata;
+    use crate::{Metadata, Payload};
     use wasm_encoder::Module;
 
     #[test]
@@ -203,11 +183,10 @@ mod test {
 
         let module = producers.add_to_wasm(&module).unwrap();
 
-        let metadata = Metadata::from_binary(&module).unwrap();
-        match metadata {
-            Metadata::Module {
+        match Payload::from_binary(&module).unwrap() {
+            Payload::Module(Metadata {
                 name, producers, ..
-            } => {
+            }) => {
                 assert_eq!(name, None);
                 let producers = producers.expect("some producers");
                 assert_eq!(producers.get("language").unwrap().get("bar").unwrap(), "");
@@ -232,11 +211,10 @@ mod test {
         producers.add("language", "waaat", "");
         let module = producers.add_to_wasm(&module).unwrap();
 
-        let metadata = Metadata::from_binary(&module).unwrap();
-        match metadata {
-            Metadata::Module {
+        match Payload::from_binary(&module).unwrap() {
+            Payload::Module(Metadata {
                 name, producers, ..
-            } => {
+            }) => {
                 assert_eq!(name, None);
                 let producers = producers.expect("some producers");
                 assert_eq!(producers.get("language").unwrap().get("bar").unwrap(), "");
@@ -261,9 +239,8 @@ mod test {
         producers.add("processed-by", "baz", "420");
         let module = producers.add_to_wasm(&module).unwrap();
 
-        let metadata = Metadata::from_binary(&module).unwrap();
-        match metadata {
-            Metadata::Module { producers, .. } => {
+        match Payload::from_binary(&module).unwrap() {
+            Payload::Module(Metadata { producers, .. }) => {
                 let producers = producers.expect("some producers");
                 assert_eq!(
                     producers.get("processed-by").unwrap().get("baz").unwrap(),

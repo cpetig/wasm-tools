@@ -1,6 +1,8 @@
-use crate::{ComponentNames, ModuleNames, Producers, RegistryMetadata};
+use crate::{
+    Author, ComponentNames, Description, Homepage, Licenses, ModuleNames, Producers, Revision,
+    Source,
+};
 use anyhow::Result;
-use std::borrow::Cow;
 use std::mem;
 use wasm_encoder::ComponentSection as _;
 use wasm_encoder::{ComponentSectionId, Encode, Section};
@@ -9,7 +11,13 @@ use wasmparser::{KnownCustom, Parser, Payload::*};
 pub(crate) fn rewrite_wasm(
     add_name: &Option<String>,
     add_producers: &Producers,
-    add_registry_metadata: Option<&RegistryMetadata>,
+    add_author: &Option<Author>,
+    add_description: &Option<Description>,
+    add_licenses: &Option<Licenses>,
+    add_source: &Option<Source>,
+    add_homepage: &Option<Homepage>,
+    add_revision: &Option<Revision>,
+    add_version: &Option<crate::Version>,
     input: &[u8],
 ) -> Result<Vec<u8>> {
     let mut producers_found = false;
@@ -76,17 +84,52 @@ pub(crate) fn rewrite_wasm(
                         names.section()?.as_custom().append_to(&mut output);
                         continue;
                     }
-                    KnownCustom::Unknown if c.name() == "registry-metadata" => {
-                        // Pass section through if a new registry metadata isn't provided, otherwise ignore and overwrite with new
-                        if add_registry_metadata.is_none() {
-                            let registry: RegistryMetadata =
-                                RegistryMetadata::from_bytes(&c.data(), 0)?;
-
-                            let registry_metadata = wasm_encoder::CustomSection {
-                                name: Cow::Borrowed("registry-metadata"),
-                                data: Cow::Owned(serde_json::to_vec(&registry)?),
-                            };
-                            registry_metadata.append_to(&mut output);
+                    KnownCustom::Unknown if c.name() == "author" => {
+                        if add_author.is_none() {
+                            let author = Author::parse_custom_section(c)?;
+                            author.append_to(&mut output);
+                            continue;
+                        }
+                    }
+                    KnownCustom::Unknown if c.name() == "description" => {
+                        if add_description.is_none() {
+                            let description = Description::parse_custom_section(c)?;
+                            description.append_to(&mut output);
+                            continue;
+                        }
+                    }
+                    KnownCustom::Unknown if c.name() == "licenses" => {
+                        if add_licenses.is_none() {
+                            let licenses = Licenses::parse_custom_section(c)?;
+                            licenses.append_to(&mut output);
+                            continue;
+                        }
+                    }
+                    KnownCustom::Unknown if c.name() == "source" => {
+                        if add_source.is_none() {
+                            let source = Source::parse_custom_section(c)?;
+                            source.append_to(&mut output);
+                            continue;
+                        }
+                    }
+                    KnownCustom::Unknown if c.name() == "homepage" => {
+                        if add_source.is_none() {
+                            let homepage = Homepage::parse_custom_section(c)?;
+                            homepage.append_to(&mut output);
+                            continue;
+                        }
+                    }
+                    KnownCustom::Unknown if c.name() == "revision" => {
+                        if add_source.is_none() {
+                            let revision = Revision::parse_custom_section(c)?;
+                            revision.append_to(&mut output);
+                            continue;
+                        }
+                    }
+                    KnownCustom::Unknown if c.name() == "version" => {
+                        if add_version.is_none() {
+                            let version = crate::Version::parse_custom_section(c)?;
+                            version.append_to(&mut output);
                             continue;
                         }
                     }
@@ -119,12 +162,26 @@ pub(crate) fn rewrite_wasm(
         // Encode into output:
         producers.section().append_to(&mut output);
     }
-    if add_registry_metadata.is_some() {
-        let registry_metadata = wasm_encoder::CustomSection {
-            name: Cow::Borrowed("registry-metadata"),
-            data: Cow::Owned(serde_json::to_vec(&add_registry_metadata)?),
-        };
-        registry_metadata.append_to(&mut output);
+    if let Some(author) = add_author {
+        author.append_to(&mut output);
+    }
+    if let Some(description) = add_description {
+        description.append_to(&mut output);
+    }
+    if let Some(licenses) = add_licenses {
+        licenses.append_to(&mut output);
+    }
+    if let Some(source) = add_source {
+        source.append_to(&mut output);
+    }
+    if let Some(homepage) = add_homepage {
+        homepage.append_to(&mut output);
+    }
+    if let Some(revision) = add_revision {
+        revision.append_to(&mut output);
+    }
+    if let Some(version) = add_version {
+        version.append_to(&mut output);
     }
     Ok(output)
 }

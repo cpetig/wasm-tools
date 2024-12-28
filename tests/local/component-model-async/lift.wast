@@ -1,7 +1,7 @@
 ;; async lift; no callback
 (component
   (core module $m
-    (func (export "foo") (param i32) (result i32) unreachable)
+    (func (export "foo") (param i32) unreachable)
   )
   (core instance $i (instantiate $m))
 

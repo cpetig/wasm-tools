@@ -169,7 +169,7 @@ impl RequiredOptions {
                 ret |= RequiredOptions::REALLOC;
             }
         }
-        if abi == AbiVariant::GuestExportAsync {
+        if let AbiVariant::GuestExportAsync | AbiVariant::GuestExportAsyncStackful = abi {
             ret |= RequiredOptions::ASYNC;
         }
         ret
@@ -493,10 +493,12 @@ impl<'a> EncodingState<'a> {
         // Next encode all required functions from this imported interface
         // into the instance type.
         for (_, func) in interface.functions.iter() {
-            if !(info.lowerings.contains_key(&func.name)
+            if !(info
+                .lowerings
+                .contains_key(&(func.name.clone(), AbiVariant::GuestImport))
                 || info
                     .lowerings
-                    .contains_key(&format!("[async]{}", func.name)))
+                    .contains_key(&(func.name.clone(), AbiVariant::GuestImportAsync)))
             {
                 continue;
             }
@@ -534,7 +536,13 @@ impl<'a> EncodingState<'a> {
                 WorldItem::Interface { .. } | WorldItem::Type(_) => continue,
             };
             let name = resolve.name_world_key(name);
-            if !info.lowerings.contains_key(&name) {
+            if !(info
+                .lowerings
+                .contains_key(&(name.clone(), AbiVariant::GuestImport))
+                || info
+                    .lowerings
+                    .contains_key(&(name.clone(), AbiVariant::GuestImportAsync)))
+            {
                 continue;
             }
             log::trace!("encoding function type for `{}`", func.name);
@@ -1222,8 +1230,7 @@ impl<'a> EncodingState<'a> {
                     encoding,
                 } => {
                     let interface = &self.info.import_map[interface];
-                    let (name, _) = interface.lowerings.get_index(*index).unwrap();
-                    let name = name.strip_prefix("[async]").unwrap_or(name);
+                    let ((name, _), _) = interface.lowerings.get_index(*index).unwrap();
                     let func_index = match &interface.interface {
                         Some(interface_id) => {
                             let instance_index = self.imported_instances[interface_id];
@@ -1325,7 +1332,7 @@ impl<'a> EncodingState<'a> {
                                 .collect::<Vec<_>>(),
                         )
                     };
-                    let type_index = self.payload_type_index(info.ty)?;
+                    let type_index = self.payload_type_index(info.ty, info.imported)?;
 
                     match kind {
                         PayloadFuncKind::FutureWrite => {
@@ -1385,21 +1392,18 @@ impl<'a> EncodingState<'a> {
                 ShimKind::TaskPoll { async_ } => self
                     .component
                     .task_poll(*async_, self.memory_index.unwrap()),
-                ShimKind::ErrorContextNew {
-                    for_module,
-                    encoding,
-                }
-                | ShimKind::ErrorContextDebugMessage {
-                    for_module,
-                    encoding,
-                    ..
-                } => match &shim.kind {
+                ShimKind::ErrorContextNew { encoding }
+                | ShimKind::ErrorContextDebugMessage { encoding, .. } => match &shim.kind {
                     ShimKind::ErrorContextNew { .. } => self.component.error_context_new(
                         (RequiredOptions::MEMORY | RequiredOptions::STRING_ENCODING)
                             .into_iter(*encoding, self.memory_index, None)?
                             .collect::<Vec<_>>(),
                     ),
-                    ShimKind::ErrorContextDebugMessage { realloc, .. } => {
+                    ShimKind::ErrorContextDebugMessage {
+                        for_module,
+                        realloc,
+                        ..
+                    } => {
                         let instance_index = self.instance_for(*for_module);
                         let realloc_index =
                             Some(self.core_alias_export(instance_index, realloc, ExportKind::Func));
@@ -1427,11 +1431,39 @@ impl<'a> EncodingState<'a> {
         Ok(())
     }
 
-    fn payload_type_index(&mut self, ty: TypeId) -> Result<u32> {
+    /// Encode the specified `stream` or `future` type in the component using
+    /// either the `root_import_type_encoder` or the `root_export_type_encoder`
+    /// depending on the value of `imported`.
+    ///
+    /// Note that the payload type `T` of `stream<T>` or `future<T>` may be an
+    /// imported or exported type, and that determines the appropriate type
+    /// encoder to use.
+    fn payload_type_index(&mut self, ty: TypeId, imported: bool) -> Result<u32> {
+        // `stream` and `future` types don't have owners, but their payload
+        // types (or the payload type of the payload type, etc. in the case of
+        // nesting) might have an owner, in which case we need to find that in
+        // order to make the types match up e.g. when we're exporting a resource
+        // that's used as a payload type.
+        fn owner(resolve: &Resolve, ty: TypeId) -> Option<InterfaceId> {
+            let def = &resolve.types[ty];
+            match &def.kind {
+                TypeDefKind::Future(Some(Type::Id(ty))) => owner(resolve, *ty),
+                TypeDefKind::Stream(Type::Id(ty)) => owner(resolve, *ty),
+                _ => match &def.owner {
+                    TypeOwner::World(_) | TypeOwner::None => None,
+                    TypeOwner::Interface(id) => Some(*id),
+                },
+            }
+        }
+
         let resolve = &self.info.encoder.metadata.resolve;
-        let ComponentValType::Type(type_index) = self
-            .root_import_type_encoder(None)
-            .encode_valtype(resolve, &Type::Id(ty))?
+        let ComponentValType::Type(type_index) = if imported {
+            self.root_import_type_encoder(None)
+        } else {
+            let owner = owner(resolve, ty);
+            self.root_export_type_encoder(owner)
+        }
+        .encode_valtype(resolve, &Type::Id(ty))?
         else {
             unreachable!()
         };
@@ -1739,7 +1771,7 @@ impl<'a> EncodingState<'a> {
                 return Ok((ExportKind::Func, index));
             }
             Import::StreamNew(info) => {
-                let ty = self.payload_type_index(info.ty)?;
+                let ty = self.payload_type_index(info.ty, info.imported)?;
                 let index = self.component.stream_new(ty);
                 return Ok((ExportKind::Func, index));
             }
@@ -1755,28 +1787,36 @@ impl<'a> EncodingState<'a> {
                     payload_indirect(self, *async_, info, PayloadFuncKind::StreamWrite),
                 ));
             }
-            Import::StreamCancelRead { ty, async_ } => {
-                let ty = self.payload_type_index(*ty)?;
+            Import::StreamCancelRead {
+                ty,
+                imported,
+                async_,
+            } => {
+                let ty = self.payload_type_index(*ty, *imported)?;
                 let index = self.component.stream_cancel_read(ty, *async_);
                 return Ok((ExportKind::Func, index));
             }
-            Import::StreamCancelWrite { ty, async_ } => {
-                let ty = self.payload_type_index(*ty)?;
+            Import::StreamCancelWrite {
+                ty,
+                imported,
+                async_,
+            } => {
+                let ty = self.payload_type_index(*ty, *imported)?;
                 let index = self.component.stream_cancel_write(ty, *async_);
                 return Ok((ExportKind::Func, index));
             }
-            Import::StreamCloseReadable(ty) => {
-                let type_index = self.payload_type_index(*ty)?;
+            Import::StreamCloseReadable { ty, imported } => {
+                let type_index = self.payload_type_index(*ty, *imported)?;
                 let index = self.component.stream_close_readable(type_index);
                 return Ok((ExportKind::Func, index));
             }
-            Import::StreamCloseWritable(ty) => {
-                let type_index = self.payload_type_index(*ty)?;
+            Import::StreamCloseWritable { ty, imported } => {
+                let type_index = self.payload_type_index(*ty, *imported)?;
                 let index = self.component.stream_close_writable(type_index);
                 return Ok((ExportKind::Func, index));
             }
             Import::FutureNew(info) => {
-                let ty = self.payload_type_index(info.ty)?;
+                let ty = self.payload_type_index(info.ty, info.imported)?;
                 let index = self.component.future_new(ty);
                 return Ok((ExportKind::Func, index));
             }
@@ -1792,23 +1832,31 @@ impl<'a> EncodingState<'a> {
                     payload_indirect(self, *async_, info, PayloadFuncKind::FutureWrite),
                 ));
             }
-            Import::FutureCancelRead { ty, async_ } => {
-                let ty = self.payload_type_index(*ty)?;
+            Import::FutureCancelRead {
+                ty,
+                imported,
+                async_,
+            } => {
+                let ty = self.payload_type_index(*ty, *imported)?;
                 let index = self.component.future_cancel_read(ty, *async_);
                 return Ok((ExportKind::Func, index));
             }
-            Import::FutureCancelWrite { ty, async_ } => {
-                let ty = self.payload_type_index(*ty)?;
+            Import::FutureCancelWrite {
+                ty,
+                imported,
+                async_,
+            } => {
+                let ty = self.payload_type_index(*ty, *imported)?;
                 let index = self.component.future_cancel_write(ty, *async_);
                 return Ok((ExportKind::Func, index));
             }
-            Import::FutureCloseReadable(ty) => {
-                let type_index = self.payload_type_index(*ty)?;
+            Import::FutureCloseReadable { ty, imported } => {
+                let type_index = self.payload_type_index(*ty, *imported)?;
                 let index = self.component.future_close_readable(type_index);
                 return Ok((ExportKind::Func, index));
             }
-            Import::FutureCloseWritable(ty) => {
-                let type_index = self.payload_type_index(*ty)?;
+            Import::FutureCloseWritable { ty, imported } => {
+                let type_index = self.payload_type_index(*ty, *imported)?;
                 let index = self.component.future_close_writable(type_index);
                 return Ok((ExportKind::Func, index));
             }
@@ -1817,7 +1865,6 @@ impl<'a> EncodingState<'a> {
                     self.shim_instance_index
                         .expect("shim should be instantiated"),
                     &shims.shims[&ShimKind::ErrorContextNew {
-                        for_module,
                         encoding: *encoding,
                     }]
                         .name,
@@ -1850,7 +1897,7 @@ impl<'a> EncodingState<'a> {
         };
 
         let import = &self.info.import_map[&interface_key];
-        let (index, _, lowering) = import.lowerings.get_full(name).unwrap();
+        let (index, _, lowering) = import.lowerings.get_full(&(name.clone(), abi)).unwrap();
         let metadata = self.info.module_metadata_for(for_module);
 
         let index = match lowering {
@@ -2027,6 +2074,16 @@ struct Shim<'a> {
     sig: WasmSignature,
 }
 
+/// Which variation of `{stream|future}.{read|write}` we're emitting for a
+/// `ShimKind::PayloadFunc`.
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+enum PayloadFuncKind {
+    FutureWrite,
+    FutureRead,
+    StreamWrite,
+    StreamRead,
+}
+
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 enum PayloadFuncKind {
     FutureWrite,
@@ -2066,25 +2123,46 @@ enum ShimKind<'a> {
         /// The exported function name of this destructor in the core module.
         export: &'a str,
     },
+    /// A shim used for a `{stream|future}.{read|write}` built-in function,
+    /// which must refer to the core module instance's memory from/to which
+    /// payload values must be lifted/lowered.
     PayloadFunc {
+        /// Which instance to pull the `realloc` function and string encoding
+        /// from, if necessary.
         for_module: CustomModule<'a>,
+        /// Whether this read/write call is using the `async` option.
         async_: bool,
+        /// Additional information regarding the function where this `stream` or
+        /// `future` type appeared, which we use in combination with
+        /// `for_module` to determine which `realloc` and string encoding to
+        /// use, as well as which type to specify when emitting the built-in.
         info: &'a PayloadInfo,
+        /// Which variation of `{stream|future}.{read|write}` we're emitting.
         kind: PayloadFuncKind,
     },
-    TaskWait {
-        async_: bool,
-    },
-    TaskPoll {
-        async_: bool,
-    },
+    /// A shim used for the `task.wait` built-in function, which must refer to
+    /// the core module instance's memory to which results will be written.
+    TaskWait { async_: bool },
+    /// A shim used for the `task.poll` built-in function, which must refer to
+    /// the core module instance's memory to which results will be written.
+    TaskPoll { async_: bool },
+    /// A shim used for the `error-context.new` built-in function, which must
+    /// refer to the core module instance's memory from which the debug message
+    /// will be read.
     ErrorContextNew {
-        for_module: CustomModule<'a>,
+        /// String encoding to use when lifting the debug message.
         encoding: StringEncoding,
     },
+    /// A shim used for the `error-context.debug-message` built-in function,
+    /// which must refer to the core module instance's memory to which results
+    /// will be written.
     ErrorContextDebugMessage {
+        /// Which instance to pull the `realloc` function from, if necessary.
         for_module: CustomModule<'a>,
+        /// The string encoding to use when lowering the debug message.
         encoding: StringEncoding,
+        /// The realloc function to use when allocating linear memory for the
+        /// debug message.
         realloc: &'a str,
     },
 }
@@ -2147,7 +2225,7 @@ impl<'a> Shims<'a> {
             };
 
         for (module, field, import) in module_imports.imports() {
-            let (key, name, interface_key) = match import {
+            let (key, name, interface_key, abi) = match import {
                 // These imports don't require shims, they can be satisfied
                 // as-needed when required.
                 Import::ImportedResourceDrop(..)
@@ -2166,12 +2244,12 @@ impl<'a> Shims<'a> {
                 | Import::StreamNew(..)
                 | Import::FutureCancelRead { .. }
                 | Import::FutureCancelWrite { .. }
-                | Import::FutureCloseWritable(..)
-                | Import::FutureCloseReadable(..)
+                | Import::FutureCloseWritable { .. }
+                | Import::FutureCloseReadable { .. }
                 | Import::StreamCancelRead { .. }
                 | Import::StreamCancelWrite { .. }
-                | Import::StreamCloseWritable(..)
-                | Import::StreamCloseReadable(..) => continue,
+                | Import::StreamCloseWritable { .. }
+                | Import::StreamCloseReadable { .. } => continue,
 
                 Import::FutureWrite { async_, info } => {
                     payload_push(
@@ -2263,7 +2341,6 @@ impl<'a> Shims<'a> {
                         debug_name: "error-new".to_string(),
                         options: RequiredOptions::empty(),
                         kind: ShimKind::ErrorContextNew {
-                            for_module,
                             encoding: *encoding,
                         },
                         sig: WasmSignature {
@@ -2336,13 +2413,13 @@ impl<'a> Shims<'a> {
                 // WIT-level functions may require an indirection, so yield some
                 // metadata out of this `match` to the loop below to figure that
                 // out.
-                Import::InterfaceFunc(key, _, name, _) => {
-                    (key, name, Some(resolve.name_world_key(key)))
+                Import::InterfaceFunc(key, _, name, abi) => {
+                    (key, name, Some(resolve.name_world_key(key)), *abi)
                 }
-                Import::WorldFunc(key, name, _) => (key, name, None),
+                Import::WorldFunc(key, name, abi) => (key, name, None, *abi),
             };
             let interface = &world.import_map[&interface_key];
-            let (index, _, lowering) = interface.lowerings.get_full(name).unwrap();
+            let (index, _, lowering) = interface.lowerings.get_full(&(name.clone(), abi)).unwrap();
             let shim_name = self.shims.len().to_string();
             match lowering {
                 Lowering::Direct | Lowering::ResourceDrop(_) => {}
@@ -2764,7 +2841,7 @@ impl ComponentWorld<'_> {
 mod test {
     use super::*;
     use crate::{dummy_module, embed_component_metadata};
-    use wit_parser::Mangling;
+    use wit_parser::ManglingAndAbi;
 
     #[test]
     fn it_renames_imports() {
@@ -2790,7 +2867,7 @@ world test {
             .unwrap();
         let world = resolve.select_world(pkg, None).unwrap();
 
-        let mut module = dummy_module(&resolve, world, Mangling::Standard32);
+        let mut module = dummy_module(&resolve, world, ManglingAndAbi::Standard32);
 
         embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8).unwrap();
 

@@ -3,6 +3,7 @@ use libtest_mimic::{Arguments, Trial};
 use pretty_assertions::assert_eq;
 use std::{borrow::Cow, fs, path::Path};
 use wasm_encoder::{Encode, Section};
+use wasm_metadata::{Metadata, Payload};
 use wasmparser::{Parser, Validator, WasmFeatures};
 use wit_component::{ComponentEncoder, DecodedWasm, Linker, StringEncoding, WitPrinter};
 use wit_parser::{PackageId, Resolve, UnresolvedPackageGroup};
@@ -153,39 +154,35 @@ fn run_test(path: &Path) -> Result<()> {
         }
     };
 
-    let features =
-        WasmFeatures::WASM2 | WasmFeatures::COMPONENT_MODEL | WasmFeatures::COMPONENT_MODEL_ASYNC;
-    Validator::new_with_features(features)
+    Validator::new_with_features(WasmFeatures::all())
         .validate_all(&bytes)
-        .context("failed to validated component output")?;
+        .context("failed to validate component output")?;
 
     let wat = wasmprinter::print_bytes(&bytes).context("failed to print bytes")?;
     assert_output(&wat, &component_path)?;
     let mut parser = Parser::new(0);
-    parser.set_features(features);
-    let (pkg, resolve) =
-        match wit_component::decode_reader_with_features(bytes.as_slice(), features)
-            .context("failed to decode resolve")?
-        {
-            DecodedWasm::WitPackage(..) => unreachable!(),
-            DecodedWasm::Component(resolve, world) => {
-                (resolve.worlds[world].package.unwrap(), resolve)
-            }
-        };
-    let wit = WitPrinter::default()
+    parser.set_features(WasmFeatures::all());
+    let (pkg, resolve) = match wit_component::decode_reader(bytes.as_slice())
+        .context("failed to decode resolve")?
+    {
+        DecodedWasm::WitPackage(..) => unreachable!(),
+        DecodedWasm::Component(resolve, world) => (resolve.worlds[world].package.unwrap(), resolve),
+    };
+    let mut printer = WitPrinter::default();
+    printer
         .print(&resolve, pkg, &[])
         .context("failed to print WIT")?;
+    let wit = printer.output.to_string();
     assert_output(&wit, &component_wit_path)?;
 
     UnresolvedPackageGroup::parse(&component_wit_path, &wit)
         .context("failed to parse printed WIT")?;
 
     // Check that the producer data got piped through properly
-    let metadata = wasm_metadata::Metadata::from_binary(&bytes)?;
-    match metadata {
+    match Payload::from_binary(&bytes).unwrap() {
         // Depends on the ComponentEncoder always putting the first module as the 0th child:
-        wasm_metadata::Metadata::Component { children, .. } => match children[0].as_ref() {
-            wasm_metadata::Metadata::Module { producers, .. } => {
+        Payload::Component { children, .. } => match &children[0] {
+            Payload::Module(Metadata { producers, .. }) => {
                 let producers = producers.as_ref().expect("child module has producers");
                 let processed_by = producers
                     .get("processed-by")
