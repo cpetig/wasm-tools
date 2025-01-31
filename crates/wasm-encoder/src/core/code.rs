@@ -244,7 +244,7 @@ impl Function {
     ///
     /// This encoding doesn't include the variable-width size field
     /// that `encode` will write before the added bytes. As such, its
-    /// length will match the return value of [`byte_len`].
+    /// length will match the return value of [`Function::byte_len`].
     ///
     /// # Use Case
     ///
@@ -4001,10 +4001,7 @@ impl ConstExpr {
         if prefix != 0xd2 {
             return None;
         }
-        leb128::read::unsigned(&mut &self.bytes[1..])
-            .ok()?
-            .try_into()
-            .ok()
+        leb128fmt::decode_uint_slice::<u32, 32>(&self.bytes[1..], &mut 0).ok()
     }
 }
 
