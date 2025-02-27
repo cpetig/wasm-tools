@@ -1,0 +1,14 @@
+(component
+  (core module $m (;0;)
+    (type (;0;) (func))
+    (import "" "yield" (func $yield (;0;) (type 0)))
+  )
+  (core func $yield (;0;) (canon yield async))
+  (core instance (;0;)
+    (export "yield" (func $yield))
+  )
+  (core instance $i (;1;) (instantiate $m
+      (with "" (instance 0))
+    )
+  )
+)

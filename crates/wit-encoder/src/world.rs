@@ -126,9 +126,10 @@ impl Render for World {
             _opts: &RenderOpts,
             func: &StandaloneFunc,
         ) -> fmt::Result {
-            write!(f, "{}: func({})", func.name, func.params)?;
-            if !func.results.is_empty() {
-                write!(f, " -> {}", func.results)?;
+            let opt_async = if func.async_ { "async " } else { "" };
+            write!(f, "{}: {opt_async}func({})", func.name, func.params)?;
+            if let Some(ty) = &func.result {
+                write!(f, " -> {ty}")?;
             }
             write!(f, ";\n")?;
             Ok(())

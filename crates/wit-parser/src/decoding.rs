@@ -420,7 +420,7 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedWasm> {
 /// component export represents the world. The name of the export is also the
 /// name of the package/world/etc.
 pub fn decode_world(wasm: &[u8]) -> Result<(Resolve, WorldId)> {
-    let mut validator = Validator::new();
+    let mut validator = Validator::new_with_features(WasmFeatures::all());
     let mut exports = Vec::new();
     let mut depth = 1;
     let mut types = None;
@@ -1187,38 +1187,33 @@ impl WitPackageDecoder<'_> {
             .map(|(name, ty)| Ok((name.to_string(), self.convert_valtype(ty)?)))
             .collect::<Result<Vec<_>>>()
             .context("failed to convert params")?;
-        let results = if ty.results.len() == 1 && ty.results[0].0.is_none() {
-            Results::Anon(
-                self.convert_valtype(&ty.results[0].1)
+        let result = match &ty.result {
+            Some(ty) => Some(
+                self.convert_valtype(ty)
                     .context("failed to convert anonymous result type")?,
-            )
-        } else {
-            Results::Named(
-                ty.results
-                    .iter()
-                    .map(|(name, ty)| {
-                        Ok((
-                            name.as_ref().unwrap().to_string(),
-                            self.convert_valtype(ty)?,
-                        ))
-                    })
-                    .collect::<Result<Vec<_>>>()
-                    .context("failed to convert named result types")?,
-            )
+            ),
+            None => None,
         };
         Ok(Function {
             docs: Default::default(),
             stability: Default::default(),
             kind: match name.kind() {
                 ComponentNameKind::Label(_) => FunctionKind::Freestanding,
+                ComponentNameKind::AsyncLabel(_) => FunctionKind::AsyncFreestanding,
                 ComponentNameKind::Constructor(resource) => {
                     FunctionKind::Constructor(self.resources[&owner][resource.as_str()])
                 }
                 ComponentNameKind::Method(name) => {
                     FunctionKind::Method(self.resources[&owner][name.resource().as_str()])
                 }
+                ComponentNameKind::AsyncMethod(name) => {
+                    FunctionKind::AsyncMethod(self.resources[&owner][name.resource().as_str()])
+                }
                 ComponentNameKind::Static(name) => {
                     FunctionKind::Static(self.resources[&owner][name.resource().as_str()])
+                }
+                ComponentNameKind::AsyncStatic(name) => {
+                    FunctionKind::AsyncStatic(self.resources[&owner][name.resource().as_str()])
                 }
 
                 // Functions shouldn't have ID-based names at this time.
@@ -1234,7 +1229,7 @@ impl WitPackageDecoder<'_> {
             // name.
             name: name.to_string(),
             params,
-            results,
+            result,
         })
     }
 
@@ -1264,8 +1259,7 @@ impl WitPackageDecoder<'_> {
             | TypeDefKind::Result(_)
             | TypeDefKind::Handle(_)
             | TypeDefKind::Future(_)
-            | TypeDefKind::Stream(_)
-            | TypeDefKind::ErrorContext => {}
+            | TypeDefKind::Stream(_) => {}
 
             TypeDefKind::Resource
             | TypeDefKind::Record(_)
@@ -1404,8 +1398,6 @@ impl WitPackageDecoder<'_> {
             ComponentDefinedType::Stream(ty) => Ok(TypeDefKind::Stream(
                 ty.as_ref().map(|ty| self.convert_valtype(ty)).transpose()?,
             )),
-
-            ComponentDefinedType::ErrorContext => Ok(TypeDefKind::ErrorContext),
         }
     }
 
@@ -1424,6 +1416,7 @@ impl WitPackageDecoder<'_> {
             PrimitiveValType::String => Type::String,
             PrimitiveValType::F32 => Type::F32,
             PrimitiveValType::F64 => Type::F64,
+            PrimitiveValType::ErrorContext => Type::ErrorContext,
         }
     }
 
@@ -1706,8 +1699,7 @@ impl Registrar<'_> {
             ComponentDefinedType::Flags(_)
             | ComponentDefinedType::Enum(_)
             | ComponentDefinedType::Own(_)
-            | ComponentDefinedType::Borrow(_)
-            | ComponentDefinedType::ErrorContext => Ok(()),
+            | ComponentDefinedType::Borrow(_) => Ok(()),
         }
     }
 

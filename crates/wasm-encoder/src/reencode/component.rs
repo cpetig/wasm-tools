@@ -735,18 +735,8 @@ pub mod component_utils {
                 .into_iter()
                 .map(|(name, ty)| (name, reencoder.component_val_type(ty))),
         );
-        match ty.results {
-            wasmparser::ComponentFuncResult::Unnamed(ty) => {
-                func.result(reencoder.component_val_type(ty));
-            }
-            wasmparser::ComponentFuncResult::Named(list) => {
-                func.results(
-                    Vec::from(list)
-                        .into_iter()
-                        .map(|(name, ty)| (name, reencoder.component_val_type(ty))),
-                );
-            }
-        }
+        let result = ty.result.map(|ty| reencoder.component_val_type(ty));
+        func.result(result);
         Ok(())
     }
 
@@ -806,7 +796,6 @@ pub mod component_utils {
             wasmparser::ComponentDefinedType::Stream(t) => {
                 defined.stream(t.map(|t| reencoder.component_val_type(t)));
             }
-            wasmparser::ComponentDefinedType::ErrorContext => defined.error_context(),
         }
         Ok(())
     }
@@ -956,6 +945,10 @@ pub mod component_utils {
                 let resource = reencoder.component_type_index(resource);
                 section.resource_drop(resource);
             }
+            wasmparser::CanonicalFunction::ResourceDropAsync { resource } => {
+                let resource = reencoder.component_type_index(resource);
+                section.resource_drop_async(resource);
+            }
             wasmparser::CanonicalFunction::ResourceRep { resource } => {
                 let resource = reencoder.component_type_index(resource);
                 section.resource_rep(resource);
@@ -967,20 +960,17 @@ pub mod component_utils {
             wasmparser::CanonicalFunction::ThreadAvailableParallelism => {
                 section.thread_available_parallelism();
             }
-            wasmparser::CanonicalFunction::TaskBackpressure => {
-                section.task_backpressure();
+            wasmparser::CanonicalFunction::BackpressureSet => {
+                section.backpressure_set();
             }
-            wasmparser::CanonicalFunction::TaskReturn { result } => {
-                section.task_return(result.map(|ty| reencoder.component_val_type(ty)));
+            wasmparser::CanonicalFunction::TaskReturn { result, options } => {
+                section.task_return(
+                    result.map(|ty| reencoder.component_val_type(ty)),
+                    options.iter().map(|o| reencoder.canonical_option(*o)),
+                );
             }
-            wasmparser::CanonicalFunction::TaskWait { async_, memory } => {
-                section.task_wait(async_, reencoder.memory_index(memory));
-            }
-            wasmparser::CanonicalFunction::TaskPoll { async_, memory } => {
-                section.task_poll(async_, reencoder.memory_index(memory));
-            }
-            wasmparser::CanonicalFunction::TaskYield { async_ } => {
-                section.task_yield(async_);
+            wasmparser::CanonicalFunction::Yield { async_ } => {
+                section.yield_(async_);
             }
             wasmparser::CanonicalFunction::SubtaskDrop => {
                 section.subtask_drop();
@@ -1049,6 +1039,21 @@ pub mod component_utils {
             }
             wasmparser::CanonicalFunction::ErrorContextDrop => {
                 section.error_context_drop();
+            }
+            wasmparser::CanonicalFunction::WaitableSetNew => {
+                section.waitable_set_new();
+            }
+            wasmparser::CanonicalFunction::WaitableSetWait { async_, memory } => {
+                section.waitable_set_wait(async_, reencoder.memory_index(memory));
+            }
+            wasmparser::CanonicalFunction::WaitableSetPoll { async_, memory } => {
+                section.waitable_set_poll(async_, reencoder.memory_index(memory));
+            }
+            wasmparser::CanonicalFunction::WaitableSetDrop => {
+                section.waitable_set_drop();
+            }
+            wasmparser::CanonicalFunction::WaitableJoin => {
+                section.waitable_join();
             }
         }
         Ok(())
@@ -1248,6 +1253,9 @@ pub mod component_utils {
             wasmparser::PrimitiveValType::F64 => crate::component::PrimitiveValType::F64,
             wasmparser::PrimitiveValType::Char => crate::component::PrimitiveValType::Char,
             wasmparser::PrimitiveValType::String => crate::component::PrimitiveValType::String,
+            wasmparser::PrimitiveValType::ErrorContext => {
+                crate::component::PrimitiveValType::ErrorContext
+            }
         }
     }
 

@@ -1,4 +1,4 @@
-use super::{ParamList, ResultList, WorldOrInterface};
+use super::{ParamList, WorldOrInterface};
 use crate::ast::toposort::toposort;
 use crate::*;
 use anyhow::bail;
@@ -96,7 +96,6 @@ enum Key {
     Result(Option<Type>, Option<Type>),
     Future(Option<Type>),
     Stream(Option<Type>),
-    ErrorContext,
 }
 
 enum TypeItem<'a, 'b> {
@@ -765,12 +764,18 @@ impl<'a> Resolver<'a> {
                 Ok(WorldItem::Interface { id, stability })
             }
             ast::ExternKind::Func(name, func) => {
+                let prefix = if func.async_ { "[async]" } else { "" };
+                let name = format!("{prefix}{}", name.name);
                 let func = self.resolve_function(
                     docs,
                     attrs,
-                    name.name,
+                    &name,
                     func,
-                    FunctionKind::Freestanding,
+                    if func.async_ {
+                        FunctionKind::AsyncFreestanding
+                    } else {
+                        FunctionKind::Freestanding
+                    },
                 )?;
                 Ok(WorldItem::Function(func))
             }
@@ -816,12 +821,18 @@ impl<'a> Resolver<'a> {
             match field {
                 ast::InterfaceItem::Func(f) => {
                     self.define_interface_name(&f.name, TypeOrItem::Item("function"))?;
+                    let prefix = if f.func.async_ { "[async]" } else { "" };
+                    let name = format!("{prefix}{}", f.name.name);
                     funcs.push(self.resolve_function(
                         &f.docs,
                         &f.attributes,
-                        &f.name.name,
+                        &name,
                         &f.func,
-                        FunctionKind::Freestanding,
+                        if f.func.async_ {
+                            FunctionKind::AsyncFreestanding
+                        } else {
+                            FunctionKind::Freestanding
+                        },
                     )?);
                     self.interface_spans[interface_id.index()]
                         .funcs
@@ -1012,21 +1023,33 @@ impl<'a> Resolver<'a> {
             _ => panic!("type lookup for resource failed"),
         };
         let (name, kind);
+        let named_func = func.named_func();
+        let async_ = named_func.func.async_;
         match func {
             ast::ResourceFunc::Method(f) => {
-                name = format!("[method]{}.{}", resource.name, f.name.name);
-                kind = FunctionKind::Method(resource_id);
+                let prefix = if async_ { "[async method]" } else { "[method]" };
+                name = format!("{prefix}{}.{}", resource.name, f.name.name);
+                kind = if async_ {
+                    FunctionKind::AsyncMethod(resource_id)
+                } else {
+                    FunctionKind::Method(resource_id)
+                };
             }
             ast::ResourceFunc::Static(f) => {
-                name = format!("[static]{}.{}", resource.name, f.name.name);
-                kind = FunctionKind::Static(resource_id);
+                let prefix = if async_ { "[async static]" } else { "[static]" };
+                name = format!("{prefix}{}.{}", resource.name, f.name.name);
+                kind = if async_ {
+                    FunctionKind::AsyncStatic(resource_id)
+                } else {
+                    FunctionKind::Static(resource_id)
+                };
             }
             ast::ResourceFunc::Constructor(_) => {
+                assert!(!async_); // should not be possible to parse
                 name = format!("[constructor]{}", resource.name);
                 kind = FunctionKind::Constructor(resource_id);
             }
         }
-        let named_func = func.named_func();
         self.resolve_function(
             &named_func.docs,
             &named_func.attributes,
@@ -1047,14 +1070,14 @@ impl<'a> Resolver<'a> {
         let docs = self.docs(docs);
         let stability = self.stability(attrs)?;
         let params = self.resolve_params(&func.params, &kind, func.span)?;
-        let results = self.resolve_results(&func.results, &kind, func.span)?;
+        let result = self.resolve_result(&func.result, &kind, func.span)?;
         Ok(Function {
             docs,
             stability,
             name: name.to_string(),
             kind,
             params,
-            results,
+            result,
         })
     }
 
@@ -1142,6 +1165,7 @@ impl<'a> Resolver<'a> {
             ast::Type::F64(_) => TypeDefKind::Type(Type::F64),
             ast::Type::Char(_) => TypeDefKind::Type(Type::Char),
             ast::Type::String(_) => TypeDefKind::Type(Type::String),
+            ast::Type::ErrorContext(_) => TypeDefKind::Type(Type::ErrorContext),
             ast::Type::Name(name) => {
                 let id = self.resolve_type_name(name)?;
                 TypeDefKind::Type(Type::Id(id))
@@ -1259,7 +1283,6 @@ impl<'a> Resolver<'a> {
             ast::Type::Stream(s) => {
                 TypeDefKind::Stream(self.resolve_optional_type(s.ty.as_deref(), stability)?)
             }
-            ast::Type::ErrorContext(_) => TypeDefKind::ErrorContext,
         })
     }
 
@@ -1339,8 +1362,7 @@ impl<'a> Resolver<'a> {
                 }
                 // Assume these are named types which will be annotated with an
                 // explicit stability if applicable:
-                TypeDefKind::ErrorContext
-                | TypeDefKind::Resource
+                TypeDefKind::Resource
                 | TypeDefKind::Variant(_)
                 | TypeDefKind::Record(_)
                 | TypeDefKind::Flags(_)
@@ -1425,7 +1447,6 @@ impl<'a> Resolver<'a> {
             TypeDefKind::Result(r) => Key::Result(r.ok, r.err),
             TypeDefKind::Future(ty) => Key::Future(*ty),
             TypeDefKind::Stream(ty) => Key::Stream(*ty),
-            TypeDefKind::ErrorContext => Key::ErrorContext,
             TypeDefKind::Unknown => unreachable!(),
         };
         let id = self.anon_types.entry(key).or_insert_with(|| {
@@ -1542,17 +1563,20 @@ impl<'a> Resolver<'a> {
         params: &ParamList<'_>,
         kind: &FunctionKind,
         span: Span,
-    ) -> Result<Params> {
+    ) -> Result<Vec<(String, Type)>> {
         let mut ret = IndexMap::new();
         match *kind {
             // These kinds of methods don't have any adjustments to the
             // parameters, so do nothing here.
-            FunctionKind::Freestanding | FunctionKind::Constructor(_) | FunctionKind::Static(_) => {
-            }
+            FunctionKind::Freestanding
+            | FunctionKind::AsyncFreestanding
+            | FunctionKind::Constructor(_)
+            | FunctionKind::Static(_)
+            | FunctionKind::AsyncStatic(_) => {}
 
             // Methods automatically get a `self` initial argument so insert
             // that here before processing the normal parameters.
-            FunctionKind::Method(id) => {
+            FunctionKind::Method(id) | FunctionKind::AsyncMethod(id) => {
                 let kind = TypeDefKind::Handle(Handle::Borrow(id));
                 let stability = self.find_stability(&kind, &Stability::Unknown);
                 let shared = self.anon_type_def(
@@ -1583,37 +1607,31 @@ impl<'a> Resolver<'a> {
         Ok(ret.into_iter().collect())
     }
 
-    fn resolve_results(
+    fn resolve_result(
         &mut self,
-        results: &ResultList<'_>,
+        result: &Option<ast::Type<'_>>,
         kind: &FunctionKind,
-        span: Span,
-    ) -> Result<Results> {
+        _span: Span,
+    ) -> Result<Option<Type>> {
         match *kind {
             // These kinds of methods don't have any adjustments to the return
             // values, so plumb them through as-is.
-            FunctionKind::Freestanding | FunctionKind::Method(_) | FunctionKind::Static(_) => {
-                match results {
-                    ResultList::Named(rs) => Ok(Results::Named(self.resolve_params(
-                        rs,
-                        &FunctionKind::Freestanding,
-                        span,
-                    )?)),
-                    ResultList::Anon(ty) => {
-                        Ok(Results::Anon(self.resolve_type(ty, &Stability::Unknown)?))
-                    }
-                }
-            }
+            FunctionKind::Freestanding
+            | FunctionKind::AsyncFreestanding
+            | FunctionKind::Method(_)
+            | FunctionKind::AsyncMethod(_)
+            | FunctionKind::Static(_)
+            | FunctionKind::AsyncStatic(_) => match result {
+                Some(ty) => Ok(Some(self.resolve_type(ty, &Stability::Unknown)?)),
+                None => Ok(None),
+            },
 
             // Constructors are alwys parsed as 0 returned types but they're
             // automatically translated as a single return type of the type that
             // it's a constructor for.
             FunctionKind::Constructor(id) => {
-                match results {
-                    ResultList::Named(rs) => assert!(rs.is_empty()),
-                    ResultList::Anon(_) => unreachable!(),
-                }
-                Ok(Results::Anon(Type::Id(id)))
+                assert!(result.is_none());
+                Ok(Some(Type::Id(id)))
             }
         }
     }

@@ -81,11 +81,11 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::mem;
 use wasm_encoder::*;
-use wasmparser::Validator;
+use wasmparser::{Validator, WasmFeatures};
 use wit_parser::{
     abi::{AbiVariant, WasmSignature, WasmType},
-    Function, FunctionKind, InterfaceId, LiveTypes, Resolve, Results, Stability, Type, TypeDefKind,
-    TypeId, TypeOwner, WorldItem, WorldKey,
+    Function, FunctionKind, InterfaceId, LiveTypes, Resolve, Stability, Type, TypeDefKind, TypeId,
+    TypeOwner, WorldItem, WorldKey,
 };
 
 const INDIRECT_TABLE_NAME: &str = "$imports";
@@ -137,7 +137,7 @@ impl RequiredOptions {
             resolve,
             func.params.iter().map(|(_, t)| t),
         ));
-        ret.add_lower(TypeContents::for_types(resolve, func.results.iter_types()));
+        ret.add_lower(TypeContents::for_types(resolve, &func.result));
 
         // If anything is indirect then `memory` will be required to read the
         // indirect values.
@@ -158,7 +158,7 @@ impl RequiredOptions {
             resolve,
             func.params.iter().map(|(_, t)| t),
         ));
-        ret.add_lift(TypeContents::for_types(resolve, func.results.iter_types()));
+        ret.add_lift(TypeContents::for_types(resolve, &func.result));
 
         // If anything is indirect then `memory` will be required to read the
         // indirect values, but if the arguments are indirect then `realloc` is
@@ -277,7 +277,7 @@ bitflags::bitflags! {
 }
 
 impl TypeContents {
-    fn for_types<'a>(resolve: &Resolve, types: impl Iterator<Item = &'a Type>) -> Self {
+    fn for_types<'a>(resolve: &Resolve, types: impl IntoIterator<Item = &'a Type>) -> Self {
         let mut cur = TypeContents::empty();
         for ty in types {
             cur |= Self::for_type(resolve, ty);
@@ -323,7 +323,6 @@ impl TypeContents {
                 TypeDefKind::Type(t) => Self::for_type(resolve, t),
                 TypeDefKind::Future(_) => Self::empty(),
                 TypeDefKind::Stream(_) => Self::empty(),
-                TypeDefKind::ErrorContext => Self::empty(),
                 TypeDefKind::Unknown => unreachable!(),
             },
             Type::String => Self::STRING,
@@ -992,8 +991,8 @@ impl<'a> EncodingState<'a> {
 
         fn import_func_name(f: &Function) -> String {
             match f.kind {
-                FunctionKind::Freestanding => {
-                    format!("import-func-{}", f.name)
+                FunctionKind::Freestanding | FunctionKind::AsyncFreestanding => {
+                    format!("import-func-{}", f.item_name())
                 }
 
                 // transform `[method]foo.bar` into `import-method-foo-bar` to
@@ -1004,11 +1003,13 @@ impl<'a> EncodingState<'a> {
                 // but quick-and-dirty string manipulation should work well
                 // enough for now hopefully.
                 FunctionKind::Method(_)
+                | FunctionKind::AsyncMethod(_)
                 | FunctionKind::Static(_)
+                | FunctionKind::AsyncStatic(_)
                 | FunctionKind::Constructor(_) => {
                     format!(
                         "import-{}",
-                        f.name.replace('[', "").replace([']', '.'], "-")
+                        f.name.replace('[', "").replace([']', '.', ' '], "-")
                     )
                 }
             }
@@ -1043,7 +1044,7 @@ impl<'a> EncodingState<'a> {
             .unwrap();
         let exports = self.info.exports_for(module);
         let realloc_index = exports
-            .export_realloc_for(key, func)
+            .export_realloc_for(key, &func.name)
             .map(|name| self.core_alias_export(instance_index, name, ExportKind::Func));
         let mut options = options
             .into_iter(encoding, self.memory_index, realloc_index)?
@@ -1183,14 +1184,11 @@ impl<'a> EncodingState<'a> {
     ) {
         let mut func = wasm_encoder::Function::new(std::iter::empty());
         for i in 0..param_count {
-            func.instruction(&Instruction::LocalGet(i));
+            func.instructions().local_get(i);
         }
-        func.instruction(&Instruction::I32Const(func_index as i32));
-        func.instruction(&Instruction::CallIndirect {
-            type_index,
-            table_index: 0,
-        });
-        func.instruction(&Instruction::End);
+        func.instructions().i32_const(func_index as i32);
+        func.instructions().call_indirect(0, type_index);
+        func.instructions().end();
         code.function(&func);
     }
 
@@ -1273,7 +1271,6 @@ impl<'a> EncodingState<'a> {
 
                 ShimKind::PayloadFunc {
                     for_module,
-                    async_,
                     info,
                     kind,
                 } => {
@@ -1284,152 +1281,90 @@ impl<'a> EncodingState<'a> {
                         (
                             metadata
                                 .import_encodings
-                                .get(resolve, &info.key, &info.function.name),
-                            exports.import_realloc_for(info.interface, &info.function.name),
+                                .get(resolve, &info.key, &info.function),
+                            exports.import_realloc_for(info.interface, &info.function),
                         )
                     } else {
                         (
                             metadata
                                 .export_encodings
-                                .get(resolve, &info.key, &info.function.name),
+                                .get(resolve, &info.key, &info.function),
                             exports.export_realloc_for(&info.key, &info.function),
                         )
                     };
                     let encoding = encoding.unwrap_or(StringEncoding::UTF8);
                     let realloc_index = realloc
                         .map(|name| self.core_alias_export(instance_index, name, ExportKind::Func));
-                    let options = |me: &mut Self, params: Vec<Type>, results: Vec<Type>| {
-                        Ok::<_, anyhow::Error>(
-                            (RequiredOptions::for_import(
-                                resolve,
-                                &Function {
-                                    name: String::new(),
-                                    kind: FunctionKind::Freestanding,
-                                    params: params
-                                        .into_iter()
-                                        .enumerate()
-                                        .map(|(i, v)| (format!("a{i}"), v))
-                                        .collect(),
-                                    results: match &results[..] {
-                                        [] => Results::Named(Vec::new()),
-                                        [ty] => Results::Anon(*ty),
-                                        _ => unreachable!(),
-                                    },
-                                    docs: Default::default(),
-                                    stability: Stability::Unknown,
-                                },
-                                if *async_ {
-                                    AbiVariant::GuestImportAsync
-                                } else {
-                                    AbiVariant::GuestImport
-                                },
-                            ) | RequiredOptions::MEMORY)
-                                .into_iter(encoding, me.memory_index, realloc_index)?
-                                .collect::<Vec<_>>(),
-                        )
-                    };
-                    let type_index = self.payload_type_index(info.ty, info.imported)?;
+                    let type_index = self.payload_type_index(info)?;
+                    let options =
+                        shim.options
+                            .into_iter(encoding, self.memory_index, realloc_index)?;
 
                     match kind {
                         PayloadFuncKind::FutureWrite => {
-                            let TypeDefKind::Future(payload_type) = &resolve.types[info.ty].kind
-                            else {
-                                unreachable!()
-                            };
-                            let options = options(
-                                self,
-                                if let Some(payload_type) = payload_type {
-                                    vec![*payload_type]
-                                } else {
-                                    vec![]
-                                },
-                                vec![],
-                            )?;
                             self.component.future_write(type_index, options)
                         }
                         PayloadFuncKind::FutureRead => {
-                            let TypeDefKind::Future(payload_type) = &resolve.types[info.ty].kind
-                            else {
-                                unreachable!()
-                            };
-                            let options = options(
-                                self,
-                                vec![],
-                                if let Some(payload_type) = payload_type {
-                                    vec![*payload_type]
-                                } else {
-                                    vec![]
-                                },
-                            )?;
                             self.component.future_read(type_index, options)
                         }
                         PayloadFuncKind::StreamWrite => {
-                            let TypeDefKind::Stream(payload_type) = &resolve.types[info.ty].kind
-                            else {
-                                unreachable!()
-                            };
-                            let options = options(
-                                self,
-                                if let Some(payload_type) = payload_type {
-                                    vec![*payload_type]
-                                } else {
-                                    vec![]
-                                },
-                                vec![],
-                            )?;
                             self.component.stream_write(type_index, options)
                         }
                         PayloadFuncKind::StreamRead => {
-                            let TypeDefKind::Stream(payload_type) = &resolve.types[info.ty].kind
-                            else {
-                                unreachable!()
-                            };
-                            let options = options(
-                                self,
-                                vec![],
-                                if let Some(payload_type) = payload_type {
-                                    vec![*payload_type]
-                                } else {
-                                    vec![]
-                                },
-                            )?;
                             self.component.stream_read(type_index, options)
                         }
                     }
                 }
 
-                ShimKind::TaskWait { async_ } => self
+                ShimKind::WaitableSetWait { async_ } => self
                     .component
-                    .task_wait(*async_, self.memory_index.unwrap()),
-                ShimKind::TaskPoll { async_ } => self
+                    .waitable_set_wait(*async_, self.memory_index.unwrap()),
+                ShimKind::WaitableSetPoll { async_ } => self
                     .component
-                    .task_poll(*async_, self.memory_index.unwrap()),
-                ShimKind::ErrorContextNew { encoding }
-                | ShimKind::ErrorContextDebugMessage { encoding, .. } => match &shim.kind {
-                    ShimKind::ErrorContextNew { .. } => self.component.error_context_new(
-                        (RequiredOptions::MEMORY | RequiredOptions::STRING_ENCODING)
-                            .into_iter(*encoding, self.memory_index, None)?
-                            .collect::<Vec<_>>(),
-                    ),
-                    ShimKind::ErrorContextDebugMessage {
-                        for_module,
-                        realloc,
-                        ..
-                    } => {
-                        let instance_index = self.instance_for(*for_module);
-                        let realloc_index =
-                            Some(self.core_alias_export(instance_index, realloc, ExportKind::Func));
+                    .waitable_set_poll(*async_, self.memory_index.unwrap()),
+                ShimKind::ErrorContextNew { encoding } => self.component.error_context_new(
+                    shim.options.into_iter(*encoding, self.memory_index, None)?,
+                ),
+                ShimKind::ErrorContextDebugMessage {
+                    for_module,
+                    encoding,
+                } => {
+                    let instance_index = self.instance_for(*for_module);
+                    let realloc = self.info.exports_for(*for_module).import_realloc_fallback();
+                    let realloc_index = realloc
+                        .map(|r| self.core_alias_export(instance_index, r, ExportKind::Func));
 
-                        self.component.error_context_debug_message(
-                            (RequiredOptions::MEMORY
-                                | RequiredOptions::STRING_ENCODING
-                                | RequiredOptions::REALLOC)
-                                .into_iter(*encoding, self.memory_index, realloc_index)?
-                                .collect::<Vec<_>>(),
-                        )
-                    }
-                    _ => unreachable!(),
-                },
+                    self.component
+                        .error_context_debug_message(shim.options.into_iter(
+                            *encoding,
+                            self.memory_index,
+                            realloc_index,
+                        )?)
+                }
+                ShimKind::TaskReturn {
+                    interface,
+                    func,
+                    result,
+                    encoding,
+                    for_module,
+                } => {
+                    let mut encoder = self.root_export_type_encoder(*interface);
+                    let result = match result {
+                        Some(ty) => Some(encoder.encode_valtype(resolve, ty)?),
+                        None => None,
+                    };
+
+                    let exports = self.info.exports_for(*for_module);
+                    let realloc = exports.import_realloc_for(*interface, func);
+
+                    let instance_index = self.instance_for(*for_module);
+                    let realloc_index = realloc
+                        .map(|r| self.core_alias_export(instance_index, r, ExportKind::Func));
+                    let options =
+                        shim.options
+                            .into_iter(*encoding, self.memory_index, realloc_index)?;
+                    self.component.task_return(result, options)
+                }
             };
 
             exports.push((shim.name.as_str(), ExportKind::Func, core_func_index));
@@ -1450,32 +1385,14 @@ impl<'a> EncodingState<'a> {
     /// Note that the payload type `T` of `stream<T>` or `future<T>` may be an
     /// imported or exported type, and that determines the appropriate type
     /// encoder to use.
-    fn payload_type_index(&mut self, ty: TypeId, imported: bool) -> Result<u32> {
-        // `stream` and `future` types don't have owners, but their payload
-        // types (or the payload type of the payload type, etc. in the case of
-        // nesting) might have an owner, in which case we need to find that in
-        // order to make the types match up e.g. when we're exporting a resource
-        // that's used as a payload type.
-        fn owner(resolve: &Resolve, ty: TypeId) -> Option<InterfaceId> {
-            let def = &resolve.types[ty];
-            match &def.kind {
-                TypeDefKind::Future(Some(Type::Id(ty)))
-                | TypeDefKind::Stream(Some(Type::Id(ty))) => owner(resolve, *ty),
-                _ => match &def.owner {
-                    TypeOwner::World(_) | TypeOwner::None => None,
-                    TypeOwner::Interface(id) => Some(*id),
-                },
-            }
-        }
-
+    fn payload_type_index(&mut self, info: &PayloadInfo) -> Result<u32> {
         let resolve = &self.info.encoder.metadata.resolve;
-        let ComponentValType::Type(type_index) = if imported {
-            self.root_import_type_encoder(None)
+        let ComponentValType::Type(type_index) = if info.imported {
+            self.root_import_type_encoder(info.interface)
         } else {
-            let owner = owner(resolve, ty);
-            self.root_export_type_encoder(owner)
+            self.root_export_type_encoder(info.interface)
         }
-        .encode_valtype(resolve, &Type::Id(ty))?
+        .encode_valtype(resolve, &Type::Id(info.ty))?
         else {
             unreachable!()
         };
@@ -1626,38 +1543,18 @@ impl<'a> EncodingState<'a> {
     ) -> Result<(ExportKind, u32)> {
         log::trace!("attempting to materialize import of `{module}::{field}` for {for_module:?}");
         let resolve = &self.info.encoder.metadata.resolve;
-        let payload_indirect = |me: &mut Self, async_, info, kind| {
-            me.component.core_alias_export(
-                me.shim_instance_index.expect("shim should be instantiated"),
-                &shims.shims[&ShimKind::PayloadFunc {
-                    for_module,
-                    async_,
-                    info,
-                    kind,
-                }]
-                    .name,
-                ExportKind::Func,
-            )
-        };
-        let name_tmp;
-        let (key, name, interface_key, abi) = match import {
+        match import {
             // Main module dependencies on an adapter in use are done with an
             // indirection here, so load the shim function and use that.
             Import::AdapterExport(_) => {
                 assert!(self.info.encoder.adapters.contains_key(module));
-                let shim_instance = self
-                    .shim_instance_index
-                    .expect("shim should be instantiated");
-                let index = self.core_alias_export(
-                    shim_instance,
-                    &shims.shims[&ShimKind::Adapter {
+                Ok(self.materialize_shim_import(
+                    shims,
+                    &ShimKind::Adapter {
                         adapter: module,
                         func: field,
-                    }]
-                        .name,
-                    ExportKind::Func,
-                );
-                return Ok((ExportKind::Func, index));
+                    },
+                ))
             }
 
             // Adapters might uset he main module's memory, in which case it
@@ -1666,14 +1563,14 @@ impl<'a> EncodingState<'a> {
                 let index = self
                     .memory_index
                     .ok_or_else(|| anyhow!("main module cannot import memory"))?;
-                return Ok((ExportKind::Memory, index));
+                Ok((ExportKind::Memory, index))
             }
 
             // Grab-bag of "this adapter wants this thing from the main module".
             Import::MainModuleExport { name, kind } => {
                 let instance = self.instance_index.unwrap();
                 let index = self.core_alias_export(instance, name, *kind);
-                return Ok((*kind, index));
+                Ok((*kind, index))
             }
 
             // A similar grab-bag to above but with a slightly different
@@ -1682,7 +1579,7 @@ impl<'a> EncodingState<'a> {
             Import::Item(item) => {
                 let instance = self.instance_for(item.which.to_custom_module());
                 let index = self.core_alias_export(instance, &item.name, item.kind);
-                return Ok((item.kind, index));
+                Ok((item.kind, index))
             }
 
             // Resource intrinsics related to exported resources. Despite being
@@ -1692,15 +1589,15 @@ impl<'a> EncodingState<'a> {
             // `declare_exported_resources` above.
             Import::ExportedResourceDrop(_key, id) => {
                 let index = self.component.resource_drop(self.export_type_map[id]);
-                return Ok((ExportKind::Func, index));
+                Ok((ExportKind::Func, index))
             }
             Import::ExportedResourceRep(_key, id) => {
                 let index = self.component.resource_rep(self.export_type_map[id]);
-                return Ok((ExportKind::Func, index));
+                Ok((ExportKind::Func, index))
             }
             Import::ExportedResourceNew(_key, id) => {
                 let index = self.component.resource_new(self.export_type_map[id]);
-                return Ok((ExportKind::Func, index));
+                Ok((ExportKind::Func, index))
             }
 
             // And finally here at the end these cases are going to all fall
@@ -1710,187 +1607,222 @@ impl<'a> EncodingState<'a> {
             Import::ImportedResourceDrop(key, iface, id) => {
                 let ty = &resolve.types[*id];
                 let name = ty.name.as_ref().unwrap();
-                name_tmp = format!("{name}_drop");
-                (
-                    key,
-                    &name_tmp,
+                self.materialize_wit_import(
+                    shims,
+                    for_module,
                     iface.map(|_| resolve.name_world_key(key)),
+                    &format!("{name}_drop"),
+                    key,
                     AbiVariant::GuestImport,
                 )
             }
-            Import::ExportedTaskReturn(interface, function) => {
-                let mut encoder = self.root_export_type_encoder(*interface);
+            Import::ExportedTaskReturn(key, interface, func, result) => {
+                let (options, _sig) = task_return_options_and_type(resolve, *result);
+                if options.is_empty() {
+                    let mut encoder = self.root_export_type_encoder(*interface);
 
-                let result = match &function.results {
-                    Results::Named(rs) => {
-                        if rs.is_empty() {
-                            None
-                        } else {
-                            bail!("named results not supported for `task.return` intrinsic")
-                        }
-                    }
-                    Results::Anon(ty) => Some(encoder.encode_valtype(resolve, ty)?),
-                };
-
-                let index = self.component.task_return(result);
-                return Ok((ExportKind::Func, index));
+                    let result = match result {
+                        Some(ty) => Some(encoder.encode_valtype(resolve, ty)?),
+                        None => None,
+                    };
+                    let index = self.component.task_return(result, []);
+                    Ok((ExportKind::Func, index))
+                } else {
+                    let metadata = &self.info.encoder.metadata.metadata;
+                    let encoding = metadata.export_encodings.get(resolve, key, func).unwrap();
+                    Ok(self.materialize_shim_import(
+                        shims,
+                        &ShimKind::TaskReturn {
+                            for_module,
+                            interface: *interface,
+                            func,
+                            result: *result,
+                            encoding,
+                        },
+                    ))
+                }
             }
-            Import::TaskBackpressure => {
-                let index = self.component.task_backpressure();
-                return Ok((ExportKind::Func, index));
+            Import::BackpressureSet => {
+                let index = self.component.backpressure_set();
+                Ok((ExportKind::Func, index))
             }
-            Import::TaskWait { async_ } => {
-                let index = self.component.core_alias_export(
-                    self.shim_instance_index
-                        .expect("shim should be instantiated"),
-                    &shims.shims[&ShimKind::TaskWait { async_: *async_ }].name,
-                    ExportKind::Func,
-                );
-                return Ok((ExportKind::Func, index));
+            Import::WaitableSetWait { async_ } => {
+                Ok(self
+                    .materialize_shim_import(shims, &ShimKind::WaitableSetWait { async_: *async_ }))
             }
-            Import::TaskPoll { async_ } => {
-                let index = self.component.core_alias_export(
-                    self.shim_instance_index
-                        .expect("shim should be instantiated"),
-                    &shims.shims[&ShimKind::TaskPoll { async_: *async_ }].name,
-                    ExportKind::Func,
-                );
-                return Ok((ExportKind::Func, index));
+            Import::WaitableSetPoll { async_ } => {
+                Ok(self
+                    .materialize_shim_import(shims, &ShimKind::WaitableSetPoll { async_: *async_ }))
             }
-            Import::TaskYield { async_ } => {
-                let index = self.component.task_yield(*async_);
-                return Ok((ExportKind::Func, index));
+            Import::Yield { async_ } => {
+                let index = self.component.yield_(*async_);
+                Ok((ExportKind::Func, index))
             }
             Import::SubtaskDrop => {
                 let index = self.component.subtask_drop();
-                return Ok((ExportKind::Func, index));
+                Ok((ExportKind::Func, index))
             }
             Import::StreamNew(info) => {
-                let ty = self.payload_type_index(info.ty, info.imported)?;
+                let ty = self.payload_type_index(info)?;
                 let index = self.component.stream_new(ty);
-                return Ok((ExportKind::Func, index));
+                Ok((ExportKind::Func, index))
             }
-            Import::StreamRead { async_, info } => {
-                return Ok((
-                    ExportKind::Func,
-                    payload_indirect(self, *async_, info, PayloadFuncKind::StreamRead),
-                ));
-            }
-            Import::StreamWrite { async_, info } => {
-                return Ok((
-                    ExportKind::Func,
-                    payload_indirect(self, *async_, info, PayloadFuncKind::StreamWrite),
-                ));
-            }
-            Import::StreamCancelRead {
-                ty,
-                imported,
-                async_,
-            } => {
-                let ty = self.payload_type_index(*ty, *imported)?;
+            Import::StreamRead { info, .. } => Ok(self.materialize_payload_import(
+                shims,
+                for_module,
+                info,
+                PayloadFuncKind::StreamRead,
+            )),
+            Import::StreamWrite { info, .. } => Ok(self.materialize_payload_import(
+                shims,
+                for_module,
+                info,
+                PayloadFuncKind::StreamWrite,
+            )),
+            Import::StreamCancelRead { info, async_ } => {
+                let ty = self.payload_type_index(info)?;
                 let index = self.component.stream_cancel_read(ty, *async_);
-                return Ok((ExportKind::Func, index));
+                Ok((ExportKind::Func, index))
             }
-            Import::StreamCancelWrite {
-                ty,
-                imported,
-                async_,
-            } => {
-                let ty = self.payload_type_index(*ty, *imported)?;
+            Import::StreamCancelWrite { info, async_ } => {
+                let ty = self.payload_type_index(info)?;
                 let index = self.component.stream_cancel_write(ty, *async_);
-                return Ok((ExportKind::Func, index));
+                Ok((ExportKind::Func, index))
             }
-            Import::StreamCloseReadable { ty, imported } => {
-                let type_index = self.payload_type_index(*ty, *imported)?;
+            Import::StreamCloseReadable(info) => {
+                let type_index = self.payload_type_index(info)?;
                 let index = self.component.stream_close_readable(type_index);
-                return Ok((ExportKind::Func, index));
+                Ok((ExportKind::Func, index))
             }
-            Import::StreamCloseWritable { ty, imported } => {
-                let type_index = self.payload_type_index(*ty, *imported)?;
+            Import::StreamCloseWritable(info) => {
+                let type_index = self.payload_type_index(info)?;
                 let index = self.component.stream_close_writable(type_index);
-                return Ok((ExportKind::Func, index));
+                Ok((ExportKind::Func, index))
             }
             Import::FutureNew(info) => {
-                let ty = self.payload_type_index(info.ty, info.imported)?;
+                let ty = self.payload_type_index(info)?;
                 let index = self.component.future_new(ty);
-                return Ok((ExportKind::Func, index));
+                Ok((ExportKind::Func, index))
             }
-            Import::FutureRead { async_, info } => {
-                return Ok((
-                    ExportKind::Func,
-                    payload_indirect(self, *async_, info, PayloadFuncKind::FutureRead),
-                ));
-            }
-            Import::FutureWrite { async_, info } => {
-                return Ok((
-                    ExportKind::Func,
-                    payload_indirect(self, *async_, info, PayloadFuncKind::FutureWrite),
-                ));
-            }
-            Import::FutureCancelRead {
-                ty,
-                imported,
-                async_,
-            } => {
-                let ty = self.payload_type_index(*ty, *imported)?;
+            Import::FutureRead { info, .. } => Ok(self.materialize_payload_import(
+                shims,
+                for_module,
+                info,
+                PayloadFuncKind::FutureRead,
+            )),
+            Import::FutureWrite { info, .. } => Ok(self.materialize_payload_import(
+                shims,
+                for_module,
+                info,
+                PayloadFuncKind::FutureWrite,
+            )),
+            Import::FutureCancelRead { info, async_ } => {
+                let ty = self.payload_type_index(info)?;
                 let index = self.component.future_cancel_read(ty, *async_);
-                return Ok((ExportKind::Func, index));
+                Ok((ExportKind::Func, index))
             }
-            Import::FutureCancelWrite {
-                ty,
-                imported,
-                async_,
-            } => {
-                let ty = self.payload_type_index(*ty, *imported)?;
+            Import::FutureCancelWrite { info, async_ } => {
+                let ty = self.payload_type_index(info)?;
                 let index = self.component.future_cancel_write(ty, *async_);
-                return Ok((ExportKind::Func, index));
+                Ok((ExportKind::Func, index))
             }
-            Import::FutureCloseReadable { ty, imported } => {
-                let type_index = self.payload_type_index(*ty, *imported)?;
+            Import::FutureCloseReadable(info) => {
+                let type_index = self.payload_type_index(info)?;
                 let index = self.component.future_close_readable(type_index);
-                return Ok((ExportKind::Func, index));
+                Ok((ExportKind::Func, index))
             }
-            Import::FutureCloseWritable { ty, imported } => {
-                let type_index = self.payload_type_index(*ty, *imported)?;
+            Import::FutureCloseWritable(info) => {
+                let type_index = self.payload_type_index(info)?;
                 let index = self.component.future_close_writable(type_index);
-                return Ok((ExportKind::Func, index));
+                Ok((ExportKind::Func, index))
             }
-            Import::ErrorContextNew { encoding } => {
-                let index = self.component.core_alias_export(
-                    self.shim_instance_index
-                        .expect("shim should be instantiated"),
-                    &shims.shims[&ShimKind::ErrorContextNew {
-                        encoding: *encoding,
-                    }]
-                        .name,
-                    ExportKind::Func,
-                );
-                return Ok((ExportKind::Func, index));
-            }
-            Import::ErrorContextDebugMessage { encoding, realloc } => {
-                let index = self.component.core_alias_export(
-                    self.shim_instance_index
-                        .expect("shim should be instantiated"),
-                    &shims.shims[&ShimKind::ErrorContextDebugMessage {
-                        for_module,
-                        encoding: *encoding,
-                        realloc,
-                    }]
-                        .name,
-                    ExportKind::Func,
-                );
-                return Ok((ExportKind::Func, index));
-            }
+            Import::ErrorContextNew { encoding } => Ok(self.materialize_shim_import(
+                shims,
+                &ShimKind::ErrorContextNew {
+                    encoding: *encoding,
+                },
+            )),
+            Import::ErrorContextDebugMessage { encoding } => Ok(self.materialize_shim_import(
+                shims,
+                &ShimKind::ErrorContextDebugMessage {
+                    for_module,
+                    encoding: *encoding,
+                },
+            )),
             Import::ErrorContextDrop => {
                 let index = self.component.error_context_drop();
-                return Ok((ExportKind::Func, index));
+                Ok((ExportKind::Func, index))
             }
-            Import::WorldFunc(key, name, abi) => (key, name, None, *abi),
-            Import::InterfaceFunc(key, _, name, abi) => {
-                (key, name, Some(resolve.name_world_key(key)), *abi)
+            Import::WorldFunc(key, name, abi) => {
+                self.materialize_wit_import(shims, for_module, None, name, key, *abi)
             }
-        };
+            Import::InterfaceFunc(key, _, name, abi) => self.materialize_wit_import(
+                shims,
+                for_module,
+                Some(resolve.name_world_key(key)),
+                name,
+                key,
+                *abi,
+            ),
 
+            Import::WaitableSetNew => {
+                let index = self.component.waitable_set_new();
+                Ok((ExportKind::Func, index))
+            }
+            Import::WaitableSetDrop => {
+                let index = self.component.waitable_set_drop();
+                Ok((ExportKind::Func, index))
+            }
+            Import::WaitableJoin => {
+                let index = self.component.waitable_join();
+                Ok((ExportKind::Func, index))
+            }
+        }
+    }
+
+    /// Helper for `materialize_import` above for materializing functions that
+    /// are part of the "shim module" generated.
+    fn materialize_shim_import(&mut self, shims: &Shims<'_>, kind: &ShimKind) -> (ExportKind, u32) {
+        let index = self.core_alias_export(
+            self.shim_instance_index
+                .expect("shim should be instantiated"),
+            &shims.shims[kind].name,
+            ExportKind::Func,
+        );
+        (ExportKind::Func, index)
+    }
+
+    /// Helper for `materialize_import` above for generating imports for
+    /// future/stream read/write intrinsics.
+    fn materialize_payload_import(
+        &mut self,
+        shims: &Shims<'_>,
+        for_module: CustomModule<'_>,
+        info: &PayloadInfo,
+        kind: PayloadFuncKind,
+    ) -> (ExportKind, u32) {
+        self.materialize_shim_import(
+            shims,
+            &ShimKind::PayloadFunc {
+                for_module,
+                info,
+                kind,
+            },
+        )
+    }
+
+    /// Helper for `materialize_import` above which specifically operates on
+    /// WIT-level functions identified by `interface_key`, `name`, and `abi`.
+    fn materialize_wit_import(
+        &mut self,
+        shims: &Shims<'_>,
+        for_module: CustomModule<'_>,
+        interface_key: Option<String>,
+        name: &String,
+        key: &WorldKey,
+        abi: AbiVariant,
+    ) -> Result<(ExportKind, u32)> {
+        let resolve = &self.info.encoder.metadata.resolve;
         let import = &self.info.import_map[&interface_key];
         let (index, _, lowering) = import.lowerings.get_full(&(name.clone(), abi)).unwrap();
         let metadata = self.info.module_metadata_for(for_module);
@@ -1922,18 +1854,15 @@ impl<'a> EncodingState<'a> {
             // import.
             Lowering::Indirect { .. } => {
                 let encoding = metadata.import_encodings.get(resolve, key, name).unwrap();
-                self.core_alias_export(
-                    self.shim_instance_index
-                        .expect("shim should be instantiated"),
-                    &shims.shims[&ShimKind::IndirectLowering {
+                return Ok(self.materialize_shim_import(
+                    shims,
+                    &ShimKind::IndirectLowering {
                         interface: interface_key,
                         index,
                         realloc: for_module,
                         encoding,
-                    }]
-                        .name,
-                    ExportKind::Func,
-                )
+                    },
+                ));
             }
 
             // A "resource drop" intrinsic only needs to find the index of the
@@ -2117,8 +2046,6 @@ enum ShimKind<'a> {
         /// Which instance to pull the `realloc` function and string encoding
         /// from, if necessary.
         for_module: CustomModule<'a>,
-        /// Whether this read/write call is using the `async` option.
-        async_: bool,
         /// Additional information regarding the function where this `stream` or
         /// `future` type appeared, which we use in combination with
         /// `for_module` to determine which `realloc` and string encoding to
@@ -2127,12 +2054,29 @@ enum ShimKind<'a> {
         /// Which variation of `{stream|future}.{read|write}` we're emitting.
         kind: PayloadFuncKind,
     },
-    /// A shim used for the `task.wait` built-in function, which must refer to
-    /// the core module instance's memory to which results will be written.
-    TaskWait { async_: bool },
-    /// A shim used for the `task.poll` built-in function, which must refer to
-    /// the core module instance's memory to which results will be written.
-    TaskPoll { async_: bool },
+    /// A shim used for the `waitable-set.wait` built-in function, which must
+    /// refer to the core module instance's memory to which results will be
+    /// written.
+    WaitableSetWait { async_: bool },
+    /// A shim used for the `waitable-set.poll` built-in function, which must
+    /// refer to the core module instance's memory to which results will be
+    /// written.
+    WaitableSetPoll { async_: bool },
+    /// Shim for `task.return` to handle a reference to a `memory` which may
+    TaskReturn {
+        /// The interface (optional) that owns `func` below. If `None` then it's
+        /// a world export.
+        interface: Option<InterfaceId>,
+        /// The function that this `task.return` is returning for, owned
+        /// within `interface` above.
+        func: &'a str,
+        /// The WIT type that `func` returns.
+        result: Option<Type>,
+        /// Which instance to pull the `realloc` function from, if necessary.
+        for_module: CustomModule<'a>,
+        /// String encoding to use in the ABI options.
+        encoding: StringEncoding,
+    },
     /// A shim used for the `error-context.new` built-in function, which must
     /// refer to the core module instance's memory from which the debug message
     /// will be read.
@@ -2148,9 +2092,6 @@ enum ShimKind<'a> {
         for_module: CustomModule<'a>,
         /// The string encoding to use when lowering the debug message.
         encoding: StringEncoding,
-        /// The realloc function to use when allocating linear memory for the
-        /// debug message.
-        realloc: &'a str,
     },
 }
 
@@ -2185,34 +2126,10 @@ impl<'a> Shims<'a> {
     ) -> Result<()> {
         let module_imports = world.imports_for(for_module);
         let module_exports = world.exports_for(for_module);
-        let metadata = world.module_metadata_for(for_module);
         let resolve = &world.encoder.metadata.resolve;
 
-        let payload_push =
-            |me: &mut Self, module, async_, info: &'a PayloadInfo, kind, params, results| {
-                let debug_name = format!("{module}-{}", info.name);
-                let name = me.shims.len().to_string();
-                me.push(Shim {
-                    name,
-                    debug_name,
-                    options: RequiredOptions::empty(),
-                    kind: ShimKind::PayloadFunc {
-                        for_module,
-                        async_,
-                        info,
-                        kind,
-                    },
-                    sig: WasmSignature {
-                        params,
-                        results,
-                        indirect_params: false,
-                        retptr: false,
-                    },
-                });
-            };
-
         for (module, field, import) in module_imports.imports() {
-            let (key, name, interface_key, abi) = match import {
+            match import {
                 // These imports don't require shims, they can be satisfied
                 // as-needed when required.
                 Import::ImportedResourceDrop(..)
@@ -2223,10 +2140,9 @@ impl<'a> Shims<'a> {
                 | Import::ExportedResourceRep(..)
                 | Import::ExportedResourceNew(..)
                 | Import::ErrorContextDrop
-                | Import::TaskBackpressure
-                | Import::TaskYield { .. }
+                | Import::BackpressureSet
+                | Import::Yield { .. }
                 | Import::SubtaskDrop
-                | Import::ExportedTaskReturn(..)
                 | Import::FutureNew(..)
                 | Import::StreamNew(..)
                 | Import::FutureCancelRead { .. }
@@ -2236,11 +2152,49 @@ impl<'a> Shims<'a> {
                 | Import::StreamCancelRead { .. }
                 | Import::StreamCancelWrite { .. }
                 | Import::StreamCloseWritable { .. }
-                | Import::StreamCloseReadable { .. } => continue,
+                | Import::StreamCloseReadable { .. }
+                | Import::WaitableSetNew
+                | Import::WaitableSetDrop
+                | Import::WaitableJoin => {}
+
+                // If `task.return` needs to be indirect then generate a shim
+                // for it, otherwise skip the shim and let it get materialized
+                // naturally later.
+                Import::ExportedTaskReturn(key, interface, func, ty) => {
+                    let (options, sig) = task_return_options_and_type(resolve, *ty);
+                    if options.is_empty() {
+                        continue;
+                    }
+                    let name = self.shims.len().to_string();
+                    let encoding = world
+                        .module_metadata_for(for_module)
+                        .export_encodings
+                        .get(resolve, key, func)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "missing component metadata for export of \
+                                `{module}::{field}`"
+                            )
+                        })?;
+                    self.push(Shim {
+                        name,
+                        debug_name: format!("task-return-{func}"),
+                        options,
+                        kind: ShimKind::TaskReturn {
+                            interface: *interface,
+                            func,
+                            result: *ty,
+                            for_module,
+                            encoding,
+                        },
+                        sig,
+                    });
+                }
 
                 Import::FutureWrite { async_, info } => {
-                    payload_push(
-                        self,
+                    self.append_indirect_payload_push(
+                        resolve,
+                        for_module,
                         module,
                         *async_,
                         info,
@@ -2248,11 +2202,11 @@ impl<'a> Shims<'a> {
                         vec![WasmType::I32; 2],
                         vec![WasmType::I32],
                     );
-                    continue;
                 }
                 Import::FutureRead { async_, info } => {
-                    payload_push(
-                        self,
+                    self.append_indirect_payload_push(
+                        resolve,
+                        for_module,
                         module,
                         *async_,
                         info,
@@ -2260,11 +2214,11 @@ impl<'a> Shims<'a> {
                         vec![WasmType::I32; 2],
                         vec![WasmType::I32],
                     );
-                    continue;
                 }
                 Import::StreamWrite { async_, info } => {
-                    payload_push(
-                        self,
+                    self.append_indirect_payload_push(
+                        resolve,
+                        for_module,
                         module,
                         *async_,
                         info,
@@ -2272,11 +2226,11 @@ impl<'a> Shims<'a> {
                         vec![WasmType::I32; 3],
                         vec![WasmType::I32],
                     );
-                    continue;
                 }
                 Import::StreamRead { async_, info } => {
-                    payload_push(
-                        self,
+                    self.append_indirect_payload_push(
+                        resolve,
+                        for_module,
                         module,
                         *async_,
                         info,
@@ -2284,41 +2238,38 @@ impl<'a> Shims<'a> {
                         vec![WasmType::I32; 3],
                         vec![WasmType::I32],
                     );
-                    continue;
                 }
 
-                Import::TaskWait { async_ } => {
+                Import::WaitableSetWait { async_ } => {
                     let name = self.shims.len().to_string();
                     self.push(Shim {
                         name,
-                        debug_name: "task-wait".to_string(),
+                        debug_name: "waitable-set.wait".to_string(),
                         options: RequiredOptions::empty(),
-                        kind: ShimKind::TaskWait { async_: *async_ },
+                        kind: ShimKind::WaitableSetWait { async_: *async_ },
                         sig: WasmSignature {
-                            params: vec![WasmType::I32],
+                            params: vec![WasmType::I32; 2],
                             results: vec![WasmType::I32],
                             indirect_params: false,
                             retptr: false,
                         },
                     });
-                    continue;
                 }
 
-                Import::TaskPoll { async_ } => {
+                Import::WaitableSetPoll { async_ } => {
                     let name = self.shims.len().to_string();
                     self.push(Shim {
                         name,
-                        debug_name: "task-poll".to_string(),
+                        debug_name: "waitable-set.poll".to_string(),
                         options: RequiredOptions::empty(),
-                        kind: ShimKind::TaskPoll { async_: *async_ },
+                        kind: ShimKind::WaitableSetPoll { async_: *async_ },
                         sig: WasmSignature {
-                            params: vec![WasmType::I32],
+                            params: vec![WasmType::I32; 2],
                             results: vec![WasmType::I32],
                             indirect_params: false,
                             retptr: false,
                         },
                     });
-                    continue;
                 }
 
                 Import::ErrorContextNew { encoding } => {
@@ -2326,7 +2277,7 @@ impl<'a> Shims<'a> {
                     self.push(Shim {
                         name,
                         debug_name: "error-new".to_string(),
-                        options: RequiredOptions::empty(),
+                        options: RequiredOptions::MEMORY | RequiredOptions::STRING_ENCODING,
                         kind: ShimKind::ErrorContextNew {
                             encoding: *encoding,
                         },
@@ -2337,19 +2288,19 @@ impl<'a> Shims<'a> {
                             retptr: false,
                         },
                     });
-                    continue;
                 }
 
-                Import::ErrorContextDebugMessage { encoding, realloc } => {
+                Import::ErrorContextDebugMessage { encoding } => {
                     let name = self.shims.len().to_string();
                     self.push(Shim {
                         name,
                         debug_name: "error-debug-message".to_string(),
-                        options: RequiredOptions::empty(),
+                        options: RequiredOptions::MEMORY
+                            | RequiredOptions::STRING_ENCODING
+                            | RequiredOptions::REALLOC,
                         kind: ShimKind::ErrorContextDebugMessage {
                             for_module,
                             encoding: *encoding,
-                            realloc,
                         },
                         sig: WasmSignature {
                             params: vec![WasmType::I32; 2],
@@ -2358,7 +2309,6 @@ impl<'a> Shims<'a> {
                             retptr: false,
                         },
                     });
-                    continue;
                 }
 
                 // Adapter imports into the main module must got through an
@@ -2384,7 +2334,6 @@ impl<'a> Shims<'a> {
                             retptr: false,
                         },
                     });
-                    continue;
 
                     fn to_wasm_type(ty: &wasmparser::ValType) -> WasmType {
                         match ty {
@@ -2401,41 +2350,21 @@ impl<'a> Shims<'a> {
                 // metadata out of this `match` to the loop below to figure that
                 // out.
                 Import::InterfaceFunc(key, _, name, abi) => {
-                    (key, name, Some(resolve.name_world_key(key)), *abi)
+                    self.append_indirect_wit_func(
+                        world,
+                        for_module,
+                        module,
+                        field,
+                        key,
+                        name,
+                        Some(resolve.name_world_key(key)),
+                        *abi,
+                    )?;
                 }
-                Import::WorldFunc(key, name, abi) => (key, name, None, *abi),
-            };
-            let interface = &world.import_map[&interface_key];
-            let (index, _, lowering) = interface.lowerings.get_full(&(name.clone(), abi)).unwrap();
-            let shim_name = self.shims.len().to_string();
-            match lowering {
-                Lowering::Direct | Lowering::ResourceDrop(_) => {}
-
-                Lowering::Indirect { sig, options } => {
-                    log::debug!(
-                        "shim {shim_name} is import `{module}::{field}` lowering {index} `{name}`",
-                    );
-                    let encoding = metadata
-                        .import_encodings
-                        .get(resolve, key, name)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "missing component metadata for import of \
-                                `{module}::{field}`"
-                            )
-                        })?;
-                    self.push(Shim {
-                        name: shim_name,
-                        debug_name: format!("indirect-{module}-{field}"),
-                        options: *options,
-                        kind: ShimKind::IndirectLowering {
-                            interface: interface_key,
-                            index,
-                            realloc: for_module,
-                            encoding,
-                        },
-                        sig: sig.clone(),
-                    });
+                Import::WorldFunc(key, name, abi) => {
+                    self.append_indirect_wit_func(
+                        world, for_module, module, field, key, name, None, *abi,
+                    )?;
                 }
             }
         }
@@ -2472,6 +2401,116 @@ impl<'a> Shims<'a> {
         Ok(())
     }
 
+    /// Helper of `append_indirect` above which pushes information for
+    /// futures/streams read/write intrinsics.
+    fn append_indirect_payload_push(
+        &mut self,
+        resolve: &Resolve,
+        for_module: CustomModule<'a>,
+        module: &str,
+        async_: bool,
+        info: &'a PayloadInfo,
+        kind: PayloadFuncKind,
+        params: Vec<WasmType>,
+        results: Vec<WasmType>,
+    ) {
+        let debug_name = format!("{module}-{}", info.name);
+        let name = self.shims.len().to_string();
+
+        let payload = info.payload(resolve);
+        let (wit_param, wit_result) = match kind {
+            PayloadFuncKind::StreamRead | PayloadFuncKind::FutureRead => (None, payload),
+            PayloadFuncKind::StreamWrite | PayloadFuncKind::FutureWrite => (payload, None),
+        };
+        self.push(Shim {
+            name,
+            debug_name,
+            options: RequiredOptions::MEMORY
+                | RequiredOptions::for_import(
+                    resolve,
+                    &Function {
+                        name: String::new(),
+                        kind: FunctionKind::Freestanding,
+                        params: match wit_param {
+                            Some(ty) => vec![("a".to_string(), ty)],
+                            None => Vec::new(),
+                        },
+                        result: wit_result,
+                        docs: Default::default(),
+                        stability: Stability::Unknown,
+                    },
+                    if async_ {
+                        AbiVariant::GuestImportAsync
+                    } else {
+                        AbiVariant::GuestImport
+                    },
+                ),
+            kind: ShimKind::PayloadFunc {
+                for_module,
+                info,
+                kind,
+            },
+            sig: WasmSignature {
+                params,
+                results,
+                indirect_params: false,
+                retptr: false,
+            },
+        });
+    }
+
+    /// Helper for `append_indirect` above which will conditionally push a shim
+    /// for the WIT function specified by `interface_key`, `name`, and `abi`.
+    fn append_indirect_wit_func(
+        &mut self,
+        world: &'a ComponentWorld<'a>,
+        for_module: CustomModule<'a>,
+        module: &str,
+        field: &str,
+        key: &WorldKey,
+        name: &String,
+        interface_key: Option<String>,
+        abi: AbiVariant,
+    ) -> Result<()> {
+        let resolve = &world.encoder.metadata.resolve;
+        let metadata = world.module_metadata_for(for_module);
+        let interface = &world.import_map[&interface_key];
+        let (index, _, lowering) = interface.lowerings.get_full(&(name.clone(), abi)).unwrap();
+        let shim_name = self.shims.len().to_string();
+        match lowering {
+            Lowering::Direct | Lowering::ResourceDrop(_) => {}
+
+            Lowering::Indirect { sig, options } => {
+                log::debug!(
+                    "shim {shim_name} is import `{module}::{field}` lowering {index} `{name}`",
+                );
+                let encoding = metadata
+                    .import_encodings
+                    .get(resolve, key, name)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "missing component metadata for import of \
+                                `{module}::{field}`"
+                        )
+                    })?;
+                self.push(Shim {
+                    name: shim_name,
+                    debug_name: format!("indirect-{module}-{field}"),
+                    options: *options,
+                    kind: ShimKind::IndirectLowering {
+                        interface: interface_key,
+                        index,
+                        realloc: for_module,
+                        encoding,
+                    },
+                    sig: sig.clone(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     fn push(&mut self, shim: Shim<'a>) {
         // Only one shim per `ShimKind` is retained, so if it's already present
         // don't overwrite it. If it's not present though go ahead and insert
@@ -2480,6 +2519,27 @@ impl<'a> Shims<'a> {
             self.shims.insert(shim.kind.clone(), shim);
         }
     }
+}
+
+fn task_return_options_and_type(
+    resolve: &Resolve,
+    ty: Option<Type>,
+) -> (RequiredOptions, WasmSignature) {
+    let func_tmp = Function {
+        name: String::new(),
+        kind: FunctionKind::Freestanding,
+        params: match ty {
+            Some(ty) => vec![("a".to_string(), ty)],
+            None => Vec::new(),
+        },
+        result: None,
+        docs: Default::default(),
+        stability: Stability::Unknown,
+    };
+    let abi = AbiVariant::GuestImport;
+    let options = RequiredOptions::for_import(resolve, &func_tmp, abi);
+    let sig = resolve.wasm_signature(abi, &func_tmp);
+    (options, sig)
 }
 
 /// Alias argument to an instantiation
@@ -2784,7 +2844,7 @@ impl ComponentEncoder {
         let bytes = state.component.finish();
 
         if self.validate {
-            Validator::new()
+            Validator::new_with_features(WasmFeatures::all())
                 .validate_all(&bytes)
                 .context("failed to validate component output")?;
         }

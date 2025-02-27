@@ -125,9 +125,16 @@ impl Render for InterfaceItems {
                     if let Some(docs) = &func.docs {
                         docs.render(f, opts)?;
                     }
-                    write!(f, "{}{}: func({})", opts.spaces(), func.name, func.params,)?;
-                    if !func.results.is_empty() {
-                        write!(f, " -> {}", func.results)?;
+                    let opt_async = if func.async_ { "async " } else { "" };
+                    write!(
+                        f,
+                        "{}{}: {opt_async}func({})",
+                        opts.spaces(),
+                        func.name,
+                        func.params,
+                    )?;
+                    if let Some(ty) = &func.result {
+                        write!(f, " -> {ty}")?;
                     }
                     write!(f, ";\n")?;
                 }

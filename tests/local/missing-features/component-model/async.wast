@@ -28,16 +28,16 @@
   "canonical option `async` requires the component model async feature"
 )
 
-;; task.backpressure
+;; backpressure.set
 (assert_invalid
   (component
     (core module $m
-      (import "" "task.backpressure" (func $task-backpressure (param i32)))
+      (import "" "backpressure.set" (func $backpressure-set (param i32)))
     )
-    (core func $task-backpressure (canon task.backpressure))
-    (core instance $i (instantiate $m (with "" (instance (export "task.backpressure" (func $task-backpressure))))))
+    (core func $backpressure.set (canon backpressure.set))
+    (core instance $i (instantiate $m (with "" (instance (export "backpressure.set" (func $backpressure.set))))))
   )
-  "`task.backpressure` requires the component model async feature"
+  "`backpressure.set` requires the component model async feature"
 )
 
 ;; task.return
@@ -52,44 +52,62 @@
   "`task.return` requires the component model async feature"
 )
 
-;; task.wait
+;; waitable-set.new
+(assert_invalid
+  (component (core func (canon waitable-set.new)))
+  "`waitable-set.new` requires the component model async feature"
+)
+
+;; waitable-set.wait
 (assert_invalid
   (component
     (core module $libc (memory (export "memory") 1))
     (core instance $libc (instantiate $libc))
     (core module $m
-      (import "" "task.wait" (func $task-wait (param i32) (result i32)))
+      (import "" "waitable-set.wait" (func $waitable-set-wait (param i32) (result i32)))
     )
-    (core func $task-wait (canon task.wait async (memory $libc "memory")))
-    (core instance $i (instantiate $m (with "" (instance (export "task.wait" (func $task-wait))))))
+    (core func $waitable-set-wait (canon waitable-set.wait async (memory $libc "memory")))
+    (core instance $i (instantiate $m (with "" (instance (export "waitable-set.wait" (func $waitable-set-wait))))))
   )
-  "`task.wait` requires the component model async feature"
+  "`waitable-set.wait` requires the component model async feature"
 )
 
-;; task.poll
+;; waitable-set.poll
 (assert_invalid
   (component
     (core module $libc (memory (export "memory") 1))
     (core instance $libc (instantiate $libc))
     (core module $m
-      (import "" "task.poll" (func $task-poll (param i32) (result i32)))
+      (import "" "waitable-set.poll" (func $waitable-set-poll (param i32) (result i32)))
     )
-    (core func $task-poll (canon task.poll async (memory $libc "memory")))
-    (core instance $i (instantiate $m (with "" (instance (export "task.poll" (func $task-poll))))))
+    (core func $waitable-set-poll (canon waitable-set.poll async (memory $libc "memory")))
+    (core instance $i (instantiate $m (with "" (instance (export "waitable-set.poll" (func $waitable-set-poll))))))
   )
-  "`task.poll` requires the component model async feature"
+  "`waitable-set.poll` requires the component model async feature"
 )
 
-;; task.yield
+;; waitable-set.drop
+(assert_invalid
+  (component (core func (canon waitable-set.drop)))
+  "`waitable-set.drop` requires the component model async feature"
+)
+
+;; waitable.join
+(assert_invalid
+  (component (core func (canon waitable.join)))
+  "`waitable.join` requires the component model async feature"
+)
+
+;; yield
 (assert_invalid
   (component
     (core module $m
-      (import "" "task.yield" (func $task-yield))
+      (import "" "yield" (func $yield))
     )
-    (core func $task-yield (canon task.yield async))
-    (core instance $i (instantiate $m (with "" (instance (export "task.yield" (func $task-yield))))))
+    (core func $yield (canon yield async))
+    (core instance $i (instantiate $m (with "" (instance (export "yield" (func $yield))))))
   )
-  "`task.yield` requires the component model async feature"
+  "`yield` requires the component model async feature"
 )
 
 ;; subtask.drop
@@ -114,7 +132,7 @@
     (core func $stream-new (canon stream.new $stream-type))
     (core instance $i (instantiate $m (with "" (instance (export "stream.new" (func $stream-new))))))
   )
-  "`stream.new` requires the component model async feature"
+  "requires the component model async feature"
 )
 
 ;; stream.read
@@ -129,7 +147,7 @@
     (core func $stream-read (canon stream.read $stream-type async (memory $libc "memory")))
     (core instance $i (instantiate $m (with "" (instance (export "stream.read" (func $stream-read))))))
   )
-  "`stream.read` requires the component model async feature"
+  "requires the component model async feature"
 )
 
 ;; stream.write
@@ -144,7 +162,7 @@
     (core func $stream-write (canon stream.write $stream-type async (memory $libc "memory")))
     (core instance $i (instantiate $m (with "" (instance (export "stream.write" (func $stream-write))))))
   )
-  "`stream.write` requires the component model async feature"
+  "requires the component model async feature"
 )
 
 ;; stream.cancel-read
@@ -157,7 +175,7 @@
     (core func $stream-cancel-read (canon stream.cancel-read $stream-type async))
     (core instance $i (instantiate $m (with "" (instance (export "stream.cancel-read" (func $stream-cancel-read))))))
   )
-  "`stream.cancel-read` requires the component model async feature"
+  "requires the component model async feature"
 )
 
 ;; stream.cancel-write
@@ -170,7 +188,7 @@
     (core func $stream-cancel-write (canon stream.cancel-write $stream-type async))
     (core instance $i (instantiate $m (with "" (instance (export "stream.cancel-write" (func $stream-cancel-write))))))
   )
-  "`stream.cancel-write` requires the component model async feature"
+  "requires the component model async feature"
 )
 
 ;; stream.close-readable
@@ -183,7 +201,7 @@
     (core func $stream-close-readable (canon stream.close-readable $stream-type))
     (core instance $i (instantiate $m (with "" (instance (export "stream.close-readable" (func $stream-close-readable))))))
   )
-  "`stream.close-readable` requires the component model async feature"
+  "requires the component model async feature"
 )
 
 ;; stream.close-writable
@@ -196,7 +214,7 @@
     (core func $stream-close-writable (canon stream.close-writable $stream-type))
     (core instance $i (instantiate $m (with "" (instance (export "stream.close-writable" (func $stream-close-writable))))))
   )
-  "`stream.close-writable` requires the component model async feature"
+  "requires the component model async feature"
 )
 
 ;; future.new
@@ -209,7 +227,7 @@
     (core func $future-new (canon future.new $future-type))
     (core instance $i (instantiate $m (with "" (instance (export "future.new" (func $future-new))))))
   )
-  "`future.new` requires the component model async feature"
+  "requires the component model async feature"
 )
 
 ;; future.read
@@ -224,7 +242,7 @@
     (core func $future-read (canon future.read $future-type async (memory $libc "memory")))
     (core instance $i (instantiate $m (with "" (instance (export "future.read" (func $future-read))))))
   )
-  "`future.read` requires the component model async feature"
+  "requires the component model async feature"
 )
 
 ;; future.write
@@ -239,7 +257,7 @@
     (core func $future-write (canon future.write $future-type async (memory $libc "memory")))
     (core instance $i (instantiate $m (with "" (instance (export "future.write" (func $future-write))))))
   )
-  "`future.write` requires the component model async feature"
+  "requires the component model async feature"
 )
 
 ;; future.cancel-read
@@ -252,7 +270,7 @@
     (core func $future-cancel-read (canon future.cancel-read $future-type async))
     (core instance $i (instantiate $m (with "" (instance (export "future.cancel-read" (func $future-cancel-read))))))
   )
-  "`future.cancel-read` requires the component model async feature"
+  "requires the component model async feature"
 )
 
 ;; future.cancel-write
@@ -265,7 +283,7 @@
     (core func $future-cancel-write (canon future.cancel-write $future-type async))
     (core instance $i (instantiate $m (with "" (instance (export "future.cancel-write" (func $future-cancel-write))))))
   )
-  "`future.cancel-write` requires the component model async feature"
+  "requires the component model async feature"
 )
 
 ;; future.close-readable
@@ -278,7 +296,7 @@
     (core func $future-close-readable (canon future.close-readable $future-type))
     (core instance $i (instantiate $m (with "" (instance (export "future.close-readable" (func $future-close-readable))))))
   )
-  "`future.close-readable` requires the component model async feature"
+  "requires the component model async feature"
 )
 
 ;; future.close-writable
@@ -291,7 +309,7 @@
     (core func $future-close-writable (canon future.close-writable $future-type))
     (core instance $i (instantiate $m (with "" (instance (export "future.close-writable" (func $future-close-writable))))))
   )
-  "`future.close-writable` requires the component model async feature"
+  "requires the component model async feature"
 )
 
 ;; error-context.new
@@ -335,4 +353,40 @@
     (core instance $i (instantiate $m (with "" (instance (export "error-context.drop" (func $error-context-drop))))))
   )
   "`error-context.drop` requires the component model async feature"
+)
+
+;; various types
+(assert_invalid
+  (component (type (future)))
+  "requires the component model async feature"
+)
+(assert_invalid
+  (component (type (stream)))
+  "requires the component model async feature"
+)
+(assert_invalid
+  (component (type error-context))
+  "requires the component model async feature"
+)
+(assert_invalid
+  (component
+    (type $t (resource (rep i32)))
+    (core func $f (canon resource.drop $t async))
+  )
+  "requires the component model async feature"
+)
+
+(assert_invalid
+  (component (import "[async]f" (func)))
+  "require the component model async feature"
+)
+
+(assert_invalid
+  (component (import "[async method]a.b" (func)))
+  "require the component model async feature"
+)
+
+(assert_invalid
+  (component (import "[async static]a.b" (func)))
+  "require the component model async feature"
 )

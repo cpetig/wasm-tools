@@ -183,7 +183,8 @@ impl ArchitectureSize {
         self.format_term(ptrsize_expr, false)
     }
 
-    // create a suitable expression in bytes from a pointer size argument
+    // create a suitable expression in bytes from a pointer size argument,
+    // extended API with optional brackets around the sum
     pub fn format_term(&self, ptrsize_expr: &str, suppress_brackets: bool) -> String {
         if self.pointers != 0 {
             if self.bytes > 0 {
@@ -287,11 +288,7 @@ impl SizeAlign {
             // A resource is represented as an index.
             // A future is represented as an index.
             // A stream is represented as an index.
-            // An error is represented as an index.
-            TypeDefKind::Handle(_)
-            | TypeDefKind::Future(_)
-            | TypeDefKind::Stream(_)
-            | TypeDefKind::ErrorContext => {
+            TypeDefKind::Handle(_) | TypeDefKind::Future(_) | TypeDefKind::Stream(_) => {
                 if self.symmetric {
                     ElementInfo::new(ArchitectureSize::new(0, 1), Alignment::Pointer)
                 } else {
@@ -312,7 +309,9 @@ impl SizeAlign {
         match ty {
             Type::Bool | Type::U8 | Type::S8 => ArchitectureSize::new(1, 0),
             Type::U16 | Type::S16 => ArchitectureSize::new(2, 0),
-            Type::U32 | Type::S32 | Type::F32 | Type::Char => ArchitectureSize::new(4, 0),
+            Type::U32 | Type::S32 | Type::F32 | Type::Char | Type::ErrorContext => {
+                ArchitectureSize::new(4, 0)
+            }
             Type::U64 | Type::S64 | Type::F64 => ArchitectureSize::new(8, 0),
             Type::String => ArchitectureSize::new(0, 2),
             Type::Id(id) => self.map[id.index()].size,
@@ -323,7 +322,7 @@ impl SizeAlign {
         match ty {
             Type::Bool | Type::U8 | Type::S8 => Alignment::Bytes(NonZeroUsize::new(1).unwrap()),
             Type::U16 | Type::S16 => Alignment::Bytes(NonZeroUsize::new(2).unwrap()),
-            Type::U32 | Type::S32 | Type::F32 | Type::Char => {
+            Type::U32 | Type::S32 | Type::F32 | Type::Char | Type::ErrorContext => {
                 Alignment::Bytes(NonZeroUsize::new(4).unwrap())
             }
             Type::U64 | Type::S64 | Type::F64 => Alignment::Bytes(NonZeroUsize::new(8).unwrap()),
@@ -362,7 +361,7 @@ impl SizeAlign {
         align_to_arch(tag_size, max_align)
     }
 
-    pub fn record<'a>(&self, types: impl Iterator<Item = &'a Type>) -> ElementInfo {
+    pub fn record<'a>(&self, types: impl IntoIterator<Item = &'a Type>) -> ElementInfo {
         let mut size = ArchitectureSize::default();
         let mut align = Alignment::default();
         for ty in types {

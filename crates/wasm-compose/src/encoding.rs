@@ -476,26 +476,12 @@ impl<'a> TypeEncoder<'a> {
             .map(|(name, ty)| (name.as_str(), self.component_val_type(state, *ty)))
             .collect::<Vec<_>>();
 
-        let results = ty
-            .results
-            .iter()
-            .map(|(name, ty)| (name.as_deref(), self.component_val_type(state, *ty)))
-            .collect::<Vec<_>>();
+        let result = ty.result.map(|ty| self.component_val_type(state, ty));
 
         let index = state.cur.encodable.type_count();
         let mut f = state.cur.encodable.ty().function();
 
-        f.params(params);
-
-        if results.len() == 1 && results[0].0.is_none() {
-            f.result(results[0].1);
-        } else {
-            f.results(
-                results
-                    .into_iter()
-                    .map(|(name, ty)| (name.unwrap().as_str(), ty)),
-            );
-        }
+        f.params(params).result(result);
 
         index
     }
@@ -682,7 +668,6 @@ impl<'a> TypeEncoder<'a> {
             }
             ComponentDefinedType::Future(ty) => self.future(state, *ty),
             ComponentDefinedType::Stream(ty) => self.stream(state, *ty),
-            ComponentDefinedType::ErrorContext => self.error_context(state),
         }
     }
 
@@ -818,12 +803,6 @@ impl<'a> TypeEncoder<'a> {
 
         let index = state.cur.encodable.type_count();
         state.cur.encodable.ty().defined_type().stream(ty);
-        index
-    }
-
-    fn error_context(&self, state: &mut TypeState<'a>) -> u32 {
-        let index = state.cur.encodable.type_count();
-        state.cur.encodable.ty().defined_type().error_context();
         index
     }
 }
@@ -1239,12 +1218,7 @@ impl DependencyRegistrar<'_, '_> {
 
     fn func(&mut self, ty: ComponentFuncTypeId) {
         let ty = &self.types[ty];
-        for ty in ty
-            .params
-            .iter()
-            .map(|p| p.1)
-            .chain(ty.results.iter().map(|p| p.1))
-        {
+        for ty in ty.params.iter().map(|p| p.1).chain(ty.result) {
             self.val_type(ty);
         }
     }
@@ -1253,8 +1227,7 @@ impl DependencyRegistrar<'_, '_> {
         match &self.types[ty] {
             ComponentDefinedType::Primitive(_)
             | ComponentDefinedType::Enum(_)
-            | ComponentDefinedType::Flags(_)
-            | ComponentDefinedType::ErrorContext => {}
+            | ComponentDefinedType::Flags(_) => {}
             ComponentDefinedType::List(t) | ComponentDefinedType::Option(t) => self.val_type(*t),
             ComponentDefinedType::Own(r) | ComponentDefinedType::Borrow(r) => {
                 self.ty(ComponentAnyTypeId::Resource(*r))

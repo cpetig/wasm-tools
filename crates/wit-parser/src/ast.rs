@@ -490,8 +490,8 @@ impl<'a> ExternKind<'a> {
         let mut clone = tokens.clone();
         let id = parse_id(&mut clone)?;
         if clone.eat(Token::Colon)? {
-            // import foo: func(...)
-            if clone.clone().eat(Token::Func)? {
+            // import foo: async? func(...)
+            if clone.clone().eat(Token::Func)? || clone.clone().eat(Token::Async)? {
                 *tokens = clone;
                 let ret = ExternKind::Func(id, Func::parse(tokens)?);
                 tokens.expect_semicolon()?;
@@ -818,8 +818,9 @@ impl<'a> ResourceFunc<'a> {
                     },
                     func: Func {
                         span,
+                        async_: false,
                         params,
-                        results: ResultList::Named(Vec::new()),
+                        result: None,
                     },
                 }))
             }
@@ -934,15 +935,11 @@ struct NamedFunc<'a> {
 
 type ParamList<'a> = Vec<(Id<'a>, Type<'a>)>;
 
-enum ResultList<'a> {
-    Named(ParamList<'a>),
-    Anon(Type<'a>),
-}
-
 struct Func<'a> {
     span: Span,
+    async_: bool,
     params: ParamList<'a>,
-    results: ResultList<'a>,
+    result: Option<Type<'a>>,
 }
 
 impl<'a> Func<'a> {
@@ -959,25 +956,20 @@ impl<'a> Func<'a> {
             })
         }
 
+        let async_ = tokens.eat(Token::Async)?;
         let span = tokens.expect(Token::Func)?;
         let params = parse_params(tokens, true)?;
-        let results = if tokens.eat(Token::RArrow)? {
-            // If we eat a '(', parse the remainder of the named
-            // result types. Otherwise parse a single anonymous type.
-            if tokens.eat(Token::LeftParen)? {
-                let results = parse_params(tokens, false)?;
-                ResultList::Named(results)
-            } else {
-                let ty = Type::parse(tokens)?;
-                ResultList::Anon(ty)
-            }
+        let result = if tokens.eat(Token::RArrow)? {
+            let ty = Type::parse(tokens)?;
+            Some(ty)
         } else {
-            ResultList::Named(Vec::new())
+            None
         };
         Ok(Func {
             span,
+            async_,
             params,
-            results,
+            result,
         })
     }
 }

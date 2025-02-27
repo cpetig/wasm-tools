@@ -18,9 +18,9 @@ use crate::ast::{parse_use_path, ParsedUsePath};
 use crate::serde_::{serialize_arena, serialize_id_map};
 use crate::{
     AstItem, Docs, Error, Function, FunctionKind, Handle, IncludeName, Interface, InterfaceId,
-    InterfaceSpan, LiftLowerAbi, ManglingAndAbi, PackageName, PackageNotFoundError, Results,
-    SourceMap, Stability, Type, TypeDef, TypeDefKind, TypeId, TypeIdVisitor, TypeOwner,
-    UnresolvedPackage, UnresolvedPackageGroup, World, WorldId, WorldItem, WorldKey, WorldSpan,
+    InterfaceSpan, LiftLowerAbi, ManglingAndAbi, PackageName, PackageNotFoundError, SourceMap,
+    Stability, Type, TypeDef, TypeDefKind, TypeId, TypeIdVisitor, TypeOwner, UnresolvedPackage,
+    UnresolvedPackageGroup, World, WorldId, WorldItem, WorldKey, WorldSpan,
 };
 
 mod clone;
@@ -563,7 +563,7 @@ package {name} is defined in two different locations:\n\
             | Type::F32
             | Type::F64 => true,
 
-            Type::Bool | Type::Char | Type::String => false,
+            Type::Bool | Type::Char | Type::String | Type::ErrorContext => false,
 
             Type::Id(id) => match &self.types[*id].kind {
                 TypeDefKind::List(_)
@@ -572,8 +572,7 @@ package {name} is defined in two different locations:\n\
                 | TypeDefKind::Option(_)
                 | TypeDefKind::Result(_)
                 | TypeDefKind::Future(_)
-                | TypeDefKind::Stream(_)
-                | TypeDefKind::ErrorContext => false,
+                | TypeDefKind::Stream(_) => false,
                 TypeDefKind::Type(t) => self.all_bits_valid(t),
 
                 TypeDefKind::Handle(h) => match h {
@@ -2652,7 +2651,13 @@ impl Remap {
             worlds: Default::default(),
         });
         let prev = resolve.package_names.insert(unresolved.name.clone(), pkgid);
-        assert!(prev.is_none());
+        if let Some(prev) = prev {
+            resolve.package_names.insert(unresolved.name.clone(), prev);
+            bail!(
+                "attempting to re-add package `{}` when it's already present in this `Resolve`",
+                unresolved.name,
+            );
+        }
 
         self.process_foreign_deps(resolve, pkgid, &unresolved)?;
 
@@ -2892,7 +2897,13 @@ impl Remap {
         self.process_foreign_types(unresolved, pkgid, resolve)?;
 
         for (id, span) in unresolved.required_resource_types.iter() {
-            let mut id = self.map_type(*id, Some(*span))?;
+            // Note that errors are ignored here because an error represents a
+            // type that has been configured away. If a type is configured away
+            // then any future use of it will generate an error so there's no
+            // need to validate that it's a resource here.
+            let Ok(mut id) = self.map_type(*id, Some(*span)) else {
+                continue;
+            };
             loop {
                 match resolve.types[id].kind {
                     TypeDefKind::Type(Type::Id(i)) => id = i,
@@ -3088,7 +3099,6 @@ impl Remap {
                     self.update_ty(resolve, ty, span)?;
                 }
             }
-            ErrorContext => {}
 
             // Note that `update_ty` is specifically not used here as typedefs
             // because for the `type a = b` form that doesn't force `a` to be a
@@ -3210,39 +3220,30 @@ impl Remap {
         func: &mut Function,
         span: Option<Span>,
     ) -> Result<()> {
-        match &mut func.kind {
-            FunctionKind::Freestanding => {}
-            FunctionKind::Method(id) | FunctionKind::Constructor(id) | FunctionKind::Static(id) => {
-                self.update_type_id(id, span)?;
-            }
+        if let Some(id) = func.kind.resource_mut() {
+            self.update_type_id(id, span)?;
         }
         for (_, ty) in func.params.iter_mut() {
             self.update_ty(resolve, ty, span)?;
         }
-        match &mut func.results {
-            Results::Named(named) => {
-                for (_, ty) in named.iter_mut() {
-                    self.update_ty(resolve, ty, span)?;
-                }
-            }
-            Results::Anon(ty) => self.update_ty(resolve, ty, span)?,
+        if let Some(ty) = &mut func.result {
+            self.update_ty(resolve, ty, span)?;
         }
 
-        for ty in func.results.iter_types() {
-            if !self.type_has_borrow(resolve, ty) {
-                continue;
-            }
-            match span {
-                Some(span) => {
-                    bail!(Error::new(
-                        span,
-                        format!(
-                            "function returns a type which contains \
-                             a `borrow<T>` which is not supported"
-                        )
-                    ))
+        if let Some(ty) = &func.result {
+            if self.type_has_borrow(resolve, ty) {
+                match span {
+                    Some(span) => {
+                        bail!(Error::new(
+                            span,
+                            format!(
+                                "function returns a type which contains \
+                                 a `borrow<T>` which is not supported"
+                            )
+                        ))
+                    }
+                    None => unreachable!(),
                 }
-                None => unreachable!(),
             }
         }
 
@@ -3481,9 +3482,7 @@ impl Remap {
                 .iter()
                 .filter_map(|t| t.as_ref())
                 .any(|t| self.type_has_borrow(resolve, t)),
-            TypeDefKind::Future(None) | TypeDefKind::Stream(None) | TypeDefKind::ErrorContext => {
-                false
-            }
+            TypeDefKind::Future(None) | TypeDefKind::Stream(None) => false,
             TypeDefKind::Unknown => unreachable!(),
         }
     }
@@ -3679,17 +3678,24 @@ impl<'a> MergeMap<'a> {
         }
         match (&from_func.kind, &into_func.kind) {
             (FunctionKind::Freestanding, FunctionKind::Freestanding) => {}
+            (FunctionKind::AsyncFreestanding, FunctionKind::AsyncFreestanding) => {}
 
             (FunctionKind::Method(from), FunctionKind::Method(into))
-            | (FunctionKind::Constructor(from), FunctionKind::Constructor(into))
-            | (FunctionKind::Static(from), FunctionKind::Static(into)) => self
-                .build_type_id(*from, *into)
-                .context("different function kind types")?,
+            | (FunctionKind::Static(from), FunctionKind::Static(into))
+            | (FunctionKind::AsyncMethod(from), FunctionKind::AsyncMethod(into))
+            | (FunctionKind::AsyncStatic(from), FunctionKind::AsyncStatic(into))
+            | (FunctionKind::Constructor(from), FunctionKind::Constructor(into)) => {
+                self.build_type_id(*from, *into)
+                    .context("different function kind types")?;
+            }
 
             (FunctionKind::Method(_), _)
             | (FunctionKind::Constructor(_), _)
             | (FunctionKind::Static(_), _)
-            | (FunctionKind::Freestanding, _) => {
+            | (FunctionKind::Freestanding, _)
+            | (FunctionKind::AsyncFreestanding, _)
+            | (FunctionKind::AsyncMethod(_), _)
+            | (FunctionKind::AsyncStatic(_), _) => {
                 bail!("different function kind types")
             }
         }
@@ -3706,16 +3712,13 @@ impl<'a> MergeMap<'a> {
             self.build_type(from_ty, into_ty)
                 .with_context(|| format!("different function parameter types for `{from_name}`"))?;
         }
-        if from_func.results.len() != into_func.results.len() {
-            bail!("different number of function results");
-        }
-        for (from_ty, into_ty) in from_func
-            .results
-            .iter_types()
-            .zip(into_func.results.iter_types())
-        {
-            self.build_type(from_ty, into_ty)
-                .context("different function result types")?;
+        match (&from_func.result, &into_func.result) {
+            (Some(from_ty), Some(into_ty)) => {
+                self.build_type(from_ty, into_ty)
+                    .context("different function result types")?;
+            }
+            (None, None) => {}
+            (Some(_), None) | (None, Some(_)) => bail!("different number of function results"),
         }
         Ok(())
     }

@@ -1,7 +1,7 @@
 use crate::{
     Enum, Flags, Ident, Interface, InterfaceItem, Package, PackageName, Params, Record, Resource,
-    ResourceFunc, Result_, Results, StandaloneFunc, Tuple, Type, TypeDef, TypeDefKind, Variant,
-    World, WorldItem,
+    ResourceFunc, Result_, StandaloneFunc, Tuple, Type, TypeDef, TypeDefKind, Variant, World,
+    WorldItem,
 };
 use id_arena::Id;
 use wit_parser::PackageId;
@@ -234,7 +234,6 @@ impl<'a> Converter<'a> {
                     wit_parser::TypeDefKind::Stream(ty) => {
                         TypeDefKind::Type(Type::stream(self.convert_option_type(ty)))
                     }
-                    wit_parser::TypeDefKind::ErrorContext => TypeDefKind::Type(Type::ErrorContext),
                     // all the following are just `type` declarations
                     wit_parser::TypeDefKind::Option(ty) => {
                         let output = Type::option(self.convert_type(ty));
@@ -287,6 +286,7 @@ impl<'a> Converter<'a> {
             wit_parser::Type::F64 => Type::F64,
             wit_parser::Type::Char => Type::Char,
             wit_parser::Type::String => Type::String,
+            wit_parser::Type::ErrorContext => Type::ErrorContext,
             wit_parser::Type::Id(id) => {
                 let type_def = self.resolve.types.get(*id).expect("Type not found");
                 match &type_def.name {
@@ -311,7 +311,6 @@ impl<'a> Converter<'a> {
                         wit_parser::TypeDefKind::Stream(type_) => {
                             Type::stream(self.convert_option_type(type_))
                         }
-                        wit_parser::TypeDefKind::ErrorContext => Type::ErrorContext,
                         wit_parser::TypeDefKind::Record(_)
                         | wit_parser::TypeDefKind::Resource
                         | wit_parser::TypeDefKind::Flags(_)
@@ -394,21 +393,24 @@ impl<'a> Converter<'a> {
         // constructors can't return anything
         let mut with_returns = true;
         let mut method = match func.kind {
-            wit_parser::FunctionKind::Freestanding => return None,
-            wit_parser::FunctionKind::Method(id) => {
+            wit_parser::FunctionKind::Freestanding
+            | wit_parser::FunctionKind::AsyncFreestanding => return None,
+            wit_parser::FunctionKind::Method(id) | wit_parser::FunctionKind::AsyncMethod(id) => {
                 if id != resource_id {
                     return None;
                 }
                 skip_first_param = true;
                 let name = clean_func_name(resource_name, &func.name);
-                ResourceFunc::method(name)
+                let async_ = matches!(func.kind, wit_parser::FunctionKind::AsyncMethod(_));
+                ResourceFunc::method(name, async_)
             }
-            wit_parser::FunctionKind::Static(id) => {
+            wit_parser::FunctionKind::Static(id) | wit_parser::FunctionKind::AsyncStatic(id) => {
                 if id != resource_id {
                     return None;
                 }
                 let name = clean_func_name(resource_name, &func.name);
-                ResourceFunc::static_(name)
+                let async_ = matches!(func.kind, wit_parser::FunctionKind::AsyncStatic(_));
+                ResourceFunc::static_(name, async_)
             }
             wit_parser::FunctionKind::Constructor(id) => {
                 if id != resource_id {
@@ -425,7 +427,7 @@ impl<'a> Converter<'a> {
         }
 
         if with_returns {
-            method.set_results(self.convert_results(&func.results));
+            method.set_result(func.result.as_ref().map(|ty| self.convert_type(ty)));
         }
 
         Some(method)
@@ -434,20 +436,24 @@ impl<'a> Converter<'a> {
     fn standalone_func_convert(&self, func: &wit_parser::Function) -> Option<StandaloneFunc> {
         match func.kind {
             wit_parser::FunctionKind::Method(_)
+            | wit_parser::FunctionKind::AsyncMethod(_)
             | wit_parser::FunctionKind::Static(_)
+            | wit_parser::FunctionKind::AsyncStatic(_)
             | wit_parser::FunctionKind::Constructor(_) => None,
-            wit_parser::FunctionKind::Freestanding => {
-                let mut output = StandaloneFunc::new(func.name.clone());
+            wit_parser::FunctionKind::Freestanding
+            | wit_parser::FunctionKind::AsyncFreestanding => {
+                let async_ = matches!(func.kind, wit_parser::FunctionKind::AsyncFreestanding);
+                let mut output = StandaloneFunc::new(func.name.clone(), async_);
 
                 output.set_params(self.convert_params(&func.params));
-                output.set_results(self.convert_results(&func.results));
+                output.set_result(func.result.map(|ty| self.convert_type(&ty)));
 
                 Some(output)
             }
         }
     }
 
-    fn convert_params(&self, params: &wit_parser::Params) -> Params {
+    fn convert_params(&self, params: &[(String, wit_parser::Type)]) -> Params {
         let mut output = Params::empty();
         for (name, ty) in params.iter() {
             let name = name.to_string();
@@ -455,16 +461,6 @@ impl<'a> Converter<'a> {
             output.push(name, ty);
         }
         output
-    }
-
-    fn convert_results(&self, results: &wit_parser::Results) -> Results {
-        match results {
-            wit_parser::Results::Named(named) => Results::named(named.iter().map(|(name, ty)| {
-                let ty = self.convert_type(ty);
-                (name.to_owned(), ty)
-            })),
-            wit_parser::Results::Anon(ty) => Results::Anon(self.convert_type(ty)),
-        }
     }
 
     fn handle_to_type(&self, handle: &wit_parser::Handle) -> Type {

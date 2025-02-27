@@ -105,8 +105,7 @@ impl<'a> Cloner<'a> {
             TypeDefKind::Type(_)
             | TypeDefKind::Resource
             | TypeDefKind::Flags(_)
-            | TypeDefKind::Enum(_)
-            | TypeDefKind::ErrorContext => {}
+            | TypeDefKind::Enum(_) => {}
             TypeDefKind::Handle(Handle::Own(ty) | Handle::Borrow(ty)) => {
                 self.type_id(ty);
             }
@@ -155,22 +154,14 @@ impl<'a> Cloner<'a> {
     }
 
     fn function(&mut self, func: &mut Function) {
-        match &mut func.kind {
-            FunctionKind::Freestanding => {}
-            FunctionKind::Method(id) | FunctionKind::Static(id) | FunctionKind::Constructor(id) => {
-                self.type_id(id)
-            }
+        if let Some(id) = func.kind.resource_mut() {
+            self.type_id(id);
         }
         for (_, ty) in func.params.iter_mut() {
             self.ty(ty);
         }
-        match &mut func.results {
-            Results::Named(named) => {
-                for (_, ty) in named {
-                    self.ty(ty);
-                }
-            }
-            Results::Anon(ty) => self.ty(ty),
+        if let Some(ty) = &mut func.result {
+            self.ty(ty);
         }
     }
 
