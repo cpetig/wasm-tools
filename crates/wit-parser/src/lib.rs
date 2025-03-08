@@ -1042,6 +1042,15 @@ impl ManglingAndAbi {
             | Self::Legacy(LiftLowerAbi::AsyncStackful) => Self::Legacy(LiftLowerAbi::Sync),
         }
     }
+
+    /// Returns whether this is an async ABI
+    pub fn is_async(&self) -> bool {
+        match self {
+            Self::Standard32 | Self::Legacy(LiftLowerAbi::Sync) => false,
+            Self::Legacy(LiftLowerAbi::AsyncCallback)
+            | Self::Legacy(LiftLowerAbi::AsyncStackful) => true,
+        }
+    }
 }
 
 impl Function {
@@ -1176,29 +1185,14 @@ fn find_futures_and_streams(resolve: &Resolve, ty: Type, results: &mut Vec<TypeI
 ///
 /// This is added for WebAssembly/component-model#332 where @since and @unstable
 /// annotations were added to WIT.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The order of the of enum values is significant since it is used with Ord and PartialOrd
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde_derive::Deserialize, Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 pub enum Stability {
-    /// `@since(version = 1.2.3)`
-    ///
-    /// This item is explicitly tagged with `@since` as stable since the
-    /// specified version.  This may optionally have a feature listed as well.
-    Stable {
-        #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_version"))]
-        #[cfg_attr(feature = "serde", serde(deserialize_with = "deserialize_version"))]
-        since: Version,
-        #[cfg_attr(
-            feature = "serde",
-            serde(
-                skip_serializing_if = "Option::is_none",
-                default,
-                serialize_with = "serialize_optional_version",
-                deserialize_with = "deserialize_optional_version"
-            )
-        )]
-        deprecated: Option<Version>,
-    },
+    /// This item does not have either `@since` or `@unstable`.
+    Unknown,
 
     /// `@unstable(feature = foo)`
     ///
@@ -1218,8 +1212,25 @@ pub enum Stability {
         deprecated: Option<Version>,
     },
 
-    /// This item does not have either `@since` or `@unstable`.
-    Unknown,
+    /// `@since(version = 1.2.3)`
+    ///
+    /// This item is explicitly tagged with `@since` as stable since the
+    /// specified version.  This may optionally have a feature listed as well.
+    Stable {
+        #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_version"))]
+        #[cfg_attr(feature = "serde", serde(deserialize_with = "deserialize_version"))]
+        since: Version,
+        #[cfg_attr(
+            feature = "serde",
+            serde(
+                skip_serializing_if = "Option::is_none",
+                default,
+                serialize_with = "serialize_optional_version",
+                deserialize_with = "deserialize_optional_version"
+            )
+        )]
+        deprecated: Option<Version>,
+    },
 }
 
 impl Stability {

@@ -692,9 +692,23 @@ package {name} is defined in two different locations:\n\
         let mut moved_worlds = Vec::new();
         for (id, mut world) in worlds {
             let new_id = match world_map.get(&id).copied() {
-                Some(id) => {
-                    update_stability(&world.stability, &mut self.worlds[id].stability)?;
-                    id
+                Some(world_id) => {
+                    update_stability(&world.stability, &mut self.worlds[world_id].stability)?;
+                    for from_import in world.imports.iter() {
+                        Resolve::update_world_imports_stability(
+                            from_import,
+                            &mut self.worlds[world_id].imports,
+                            &interface_map,
+                        )?;
+                    }
+                    for from_export in world.exports.iter() {
+                        Resolve::update_world_imports_stability(
+                            from_export,
+                            &mut self.worlds[world_id].exports,
+                            &interface_map,
+                        )?;
+                    }
+                    world_id
                 }
                 None => {
                     log::debug!("moving world {}", world.name);
@@ -796,6 +810,46 @@ package {name} is defined in two different locations:\n\
         #[cfg(debug_assertions)]
         self.assert_valid();
         Ok(remap)
+    }
+
+    fn update_world_imports_stability(
+        from_item: (&WorldKey, &WorldItem),
+        into_items: &mut IndexMap<WorldKey, WorldItem>,
+        interface_map: &HashMap<Id<Interface>, Id<Interface>>,
+    ) -> Result<()> {
+        match from_item.0 {
+            WorldKey::Name(_) => {
+                // No stability info to update here, only updating import/include stability
+                Ok(())
+            }
+            key @ WorldKey::Interface(_) => {
+                let new_key = MergeMap::map_name(key, interface_map);
+                if let Some(into) = into_items.get_mut(&new_key) {
+                    match (from_item.1, into) {
+                        (
+                            WorldItem::Interface {
+                                id: aid,
+                                stability: astability,
+                            },
+                            WorldItem::Interface {
+                                id: bid,
+                                stability: bstability,
+                            },
+                        ) => {
+                            let aid = interface_map.get(aid).copied().unwrap_or(*aid);
+                            assert_eq!(aid, *bid);
+                            update_stability(astability, bstability)?;
+                            Ok(())
+                        }
+                        _ => unreachable!(),
+                    }
+                } else {
+                    // we've already matched all the imports/exports by the time we are calling this
+                    // so this is unreachable since we should always find the item
+                    unreachable!()
+                }
+            }
+        }
     }
 
     /// Merges the world `from` into the world `into`.
@@ -3418,7 +3472,7 @@ impl Remap {
                         },
                     ) => {
                         assert_eq!(*aid, *bid);
-                        update_stability(astability, bstability)?;
+                        merge_stability(astability, bstability)?;
                     }
                     (WorldItem::Interface { .. }, _) => unreachable!(),
                     (WorldItem::Function(_), _) => unreachable!(),
@@ -3746,7 +3800,7 @@ impl<'a> MergeMap<'a> {
         }
 
         for (from_name, from) in from_world.imports.iter() {
-            let into_name = self.map_name(from_name);
+            let into_name = MergeMap::map_name(from_name, &self.interface_map);
             let name_str = self.from.name_world_key(from_name);
             let into = into_world
                 .imports
@@ -3757,7 +3811,7 @@ impl<'a> MergeMap<'a> {
         }
 
         for (from_name, from) in from_world.exports.iter() {
-            let into_name = self.map_name(from_name);
+            let into_name = MergeMap::map_name(from_name, &self.interface_map);
             let name_str = self.from.name_world_key(from_name);
             let into = into_world
                 .exports
@@ -3770,11 +3824,14 @@ impl<'a> MergeMap<'a> {
         Ok(())
     }
 
-    fn map_name(&self, from_name: &WorldKey) -> WorldKey {
+    fn map_name(
+        from_name: &WorldKey,
+        interface_map: &HashMap<InterfaceId, InterfaceId>,
+    ) -> WorldKey {
         match from_name {
             WorldKey::Name(s) => WorldKey::Name(s.clone()),
             WorldKey::Interface(id) => {
-                WorldKey::Interface(self.interface_map.get(id).copied().unwrap_or(*id))
+                WorldKey::Interface(interface_map.get(id).copied().unwrap_or(*id))
             }
         }
     }
@@ -3844,7 +3901,28 @@ fn update_stability(from: &Stability, into: &mut Stability) -> Result<()> {
 
     // Failing all that this means that the two attributes are different so
     // generate an error.
-    bail!("mismatch in stability attributes")
+    bail!("mismatch in stability from '{:?}' to '{:?}'", from, into)
+}
+
+/// Compares the two attributes and if the `from` is more stable than the `into` then
+/// it will elevate the `into` to the same stability.
+/// This should be used after its already been confirmed that the types are the same and
+/// should be apart of the component because versions/features are enabled.
+fn merge_stability(from: &Stability, into: &mut Stability) -> Result<()> {
+    // If the two stability annotations are equal then
+    // there's nothing to do here.
+    if from == into {
+        return Ok(());
+    }
+
+    // if the from is more stable elevate stability of into
+    if from > into {
+        *into = from.clone();
+        return Ok(());
+    }
+
+    // otherwise `into`` already has higher stability
+    return Ok(());
 }
 
 /// An error that can be returned during "world elaboration" during various
