@@ -1923,14 +1923,8 @@ fn print_func_signature<'a>(func: &Func<'a>) {
     print!("(");
     print_args(&func.params);
     print!(")");
-    match &func.results {
-        ResultList::Named(n) => {
-            if !n.is_empty() {
-                print!(" -> ");
-                todo!();
-            }
-        }
-        ResultList::Anon(a) => print!(" -> {}", type_string(a, "").unwrap()),
+    if let Some(a) = &func.result {
+        print!(" -> {}", type_string(a, "").unwrap());
     }
 }
 
