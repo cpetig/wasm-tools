@@ -201,8 +201,10 @@ fn push_imported_future_and_stream_intrinsics(
 (import {module:?} "[future-close-writable-{i}]{name}" (func (param i32 i32)))
 (import {module:?} "[async-lower][future-read-{i}]{name}" (func (param i32 i32) (result i32)))
 (import {module:?} "[async-lower][future-write-{i}]{name}" (func (param i32 i32) (result i32)))
-(import {module:?} "[async-lower][future-cancel-read-{i}]{name}" (func (param i32) (result i32)))
-(import {module:?} "[async-lower][future-cancel-write-{i}]{name}" (func (param i32) (result i32)))
+
+;; deferred behind 🚝
+;;(import {module:?} "[async-lower][future-cancel-read-{i}]{name}" (func (param i32) (result i32)))
+;;(import {module:?} "[async-lower][future-cancel-write-{i}]{name}" (func (param i32) (result i32)))
 "#
                 ));
             }
@@ -218,8 +220,10 @@ fn push_imported_future_and_stream_intrinsics(
 (import {module:?} "[stream-close-writable-{i}]{name}" (func (param i32 i32)))
 (import {module:?} "[async-lower][stream-read-{i}]{name}" (func (param i32 i32 i32) (result i32)))
 (import {module:?} "[async-lower][stream-write-{i}]{name}" (func (param i32 i32 i32) (result i32)))
-(import {module:?} "[async-lower][stream-cancel-read-{i}]{name}" (func (param i32) (result i32)))
-(import {module:?} "[async-lower][stream-cancel-write-{i}]{name}" (func (param i32) (result i32)))
+
+;; deferred behind 🚝
+;;(import {module:?} "[async-lower][stream-cancel-read-{i}]{name}" (func (param i32) (result i32)))
+;;(import {module:?} "[async-lower][stream-cancel-write-{i}]{name}" (func (param i32) (result i32)))
 "#
                 ));
             }
@@ -337,7 +341,7 @@ fn push_func_export(
                 },
             );
             wat.push_str(&format!(
-                "(func (export \"{name}\") (param i32 i32 i32 i32) (result i32) unreachable)\n"
+                "(func (export \"{name}\") (param i32 i32 i32) (result i32) unreachable)\n"
             ));
         }
         ManglingAndAbi::Legacy(LiftLowerAbi::AsyncStackful) => {}
@@ -371,13 +375,10 @@ fn push_root_async_intrinsics(dst: &mut String) {
 (import "$root" "[backpressure-set]" (func (param i32)))
 (import "$root" "[waitable-set-new]" (func (result i32)))
 (import "$root" "[waitable-set-wait]" (func (param i32 i32) (result i32)))
-(import "$root" "[async-lower][waitable-set-wait]" (func (param i32 i32) (result i32)))
 (import "$root" "[waitable-set-poll]" (func (param i32 i32) (result i32)))
-(import "$root" "[async-lower][waitable-set-poll]" (func (param i32 i32) (result i32)))
 (import "$root" "[waitable-set-drop]" (func (param i32)))
 (import "$root" "[waitable-join]" (func (param i32 i32)))
 (import "$root" "[yield]" (func))
-(import "$root" "[async-lower][yield]" (func))
 (import "$root" "[subtask-drop]" (func (param i32)))
 (import "$root" "[error-context-new-utf8]" (func (param i32 i32) (result i32)))
 (import "$root" "[error-context-new-utf16]" (func (param i32 i32) (result i32)))
@@ -386,6 +387,15 @@ fn push_root_async_intrinsics(dst: &mut String) {
 (import "$root" "[error-context-debug-message-utf16]" (func (param i32 i32)))
 (import "$root" "[error-context-debug-message-latin1+utf16]" (func (param i32 i32)))
 (import "$root" "[error-context-drop]" (func (param i32)))
+(import "$root" "[context-get-0]" (func (result i32)))
+(import "$root" "[context-get-1]" (func (result i32)))
+(import "$root" "[context-set-0]" (func (param i32)))
+(import "$root" "[context-set-1]" (func (param i32)))
+
+;; deferred behind 🚝 or 🚟 upstream
+;;(import "$root" "[async-lower][waitable-set-wait]" (func (param i32 i32) (result i32)))
+;;(import "$root" "[async-lower][waitable-set-poll]" (func (param i32 i32) (result i32)))
+;;(import "$root" "[async-lower][yield]" (func))
 "#,
     );
 }

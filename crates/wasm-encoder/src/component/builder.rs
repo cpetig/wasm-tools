@@ -379,9 +379,9 @@ impl ComponentBuilder {
         inc(&mut self.core_funcs)
     }
 
-    /// Declares a new `thread.spawn` intrinsic.
-    pub fn thread_spawn(&mut self, ty: u32) -> u32 {
-        self.canonical_functions().thread_spawn(ty);
+    /// Declares a new `thread.spawn_ref` intrinsic.
+    pub fn thread_spawn_ref(&mut self, ty: u32) -> u32 {
+        self.canonical_functions().thread_spawn_ref(ty);
         inc(&mut self.core_funcs)
     }
 
@@ -404,6 +404,18 @@ impl ComponentBuilder {
         O::IntoIter: ExactSizeIterator,
     {
         self.canonical_functions().task_return(ty, options);
+        inc(&mut self.core_funcs)
+    }
+
+    /// Declares a new `context.get` intrinsic.
+    pub fn context_get(&mut self, i: u32) -> u32 {
+        self.canonical_functions().context_get(i);
+        inc(&mut self.core_funcs)
+    }
+
+    /// Declares a new `context.set` intrinsic.
+    pub fn context_set(&mut self, i: u32) -> u32 {
+        self.canonical_functions().context_set(i);
         inc(&mut self.core_funcs)
     }
 

@@ -353,9 +353,14 @@ impl<'a> Encoder<'a> {
                     self.core_func_names.push(name);
                     self.funcs.resource_rep(info.ty.into());
                 }
-                CoreFuncKind::ThreadSpawn(info) => {
+                CoreFuncKind::ThreadSpawnRef(info) => {
                     self.core_func_names.push(name);
-                    self.funcs.thread_spawn(info.ty.into());
+                    self.funcs.thread_spawn_ref(info.ty.into());
+                }
+                CoreFuncKind::ThreadSpawnIndirect(info) => {
+                    self.core_func_names.push(name);
+                    self.funcs
+                        .thread_spawn_indirect(info.ty.into(), info.table.idx.into());
                 }
                 CoreFuncKind::ThreadAvailableParallelism(_info) => {
                     self.core_func_names.push(name);
@@ -373,6 +378,14 @@ impl<'a> Encoder<'a> {
                             .map(|ty| wasm_encoder::ComponentValType::from(ty)),
                         info.opts.iter().map(Into::into),
                     );
+                }
+                CoreFuncKind::ContextGet(i) => {
+                    self.core_func_names.push(name);
+                    self.funcs.context_get(*i);
+                }
+                CoreFuncKind::ContextSet(i) => {
+                    self.core_func_names.push(name);
+                    self.funcs.context_set(*i);
                 }
                 CoreFuncKind::Yield(info) => {
                     self.core_func_names.push(name);

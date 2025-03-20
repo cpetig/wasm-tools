@@ -987,9 +987,13 @@ impl ComponentState {
             CanonicalFunction::ResourceRep { resource } => {
                 self.resource_rep(resource, types, offset)
             }
-            CanonicalFunction::ThreadSpawn { func_ty_index } => {
-                self.thread_spawn(func_ty_index, types, offset, features)
+            CanonicalFunction::ThreadSpawnRef { func_ty_index } => {
+                self.thread_spawn_ref(func_ty_index, types, offset, features)
             }
+            CanonicalFunction::ThreadSpawnIndirect {
+                func_ty_index,
+                table_index,
+            } => self.thread_spawn_indirect(func_ty_index, table_index, types, offset, features),
             CanonicalFunction::ThreadAvailableParallelism => {
                 self.thread_available_parallelism(types, offset, features)
             }
@@ -997,6 +1001,8 @@ impl ComponentState {
             CanonicalFunction::TaskReturn { result, options } => {
                 self.task_return(&result, &options, types, offset, features)
             }
+            CanonicalFunction::ContextGet(i) => self.context_get(i, types, offset, features),
+            CanonicalFunction::ContextSet(i) => self.context_set(i, types, offset, features),
             CanonicalFunction::Yield { async_ } => self.yield_(async_, types, offset, features),
             CanonicalFunction::SubtaskDrop => self.subtask_drop(types, offset, features),
             CanonicalFunction::StreamNew { ty } => self.stream_new(ty, types, offset, features),
@@ -1149,10 +1155,10 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async_builtins() {
             bail!(
                 offset,
-                "`resource.drop` as `async` requires the component model async feature"
+                "`resource.drop` as `async` requires the component model async builtins feature"
             )
         }
         self.resource_at(resource, types, offset)?;
@@ -1174,7 +1180,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`backpressure.set` requires the component model async feature"
@@ -1194,7 +1200,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`task.return` requires the component model async feature"
@@ -1246,15 +1252,65 @@ impl ComponentState {
         Ok(())
     }
 
-    fn yield_(
+    fn context_get(
         &mut self,
-        _async_: bool,
+        i: u32,
         types: &mut TypeAlloc,
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
+            bail!(
+                offset,
+                "`context.get` requires the component model async feature"
+            )
+        }
+        if i > 2 {
+            bail!(offset, "`context.get` immediate larger than two: {i}")
+        }
+
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([], [ValType::I32]), offset));
+        Ok(())
+    }
+
+    fn context_set(
+        &mut self,
+        i: u32,
+        types: &mut TypeAlloc,
+        offset: usize,
+        features: &WasmFeatures,
+    ) -> Result<()> {
+        if !features.cm_async() {
+            bail!(
+                offset,
+                "`context.set` requires the component model async feature"
+            )
+        }
+        if i > 2 {
+            bail!(offset, "`context.set` immediate larger than two: {i}")
+        }
+
+        self.core_funcs
+            .push(types.intern_func_type(FuncType::new([ValType::I32], []), offset));
+        Ok(())
+    }
+
+    fn yield_(
+        &mut self,
+        async_: bool,
+        types: &mut TypeAlloc,
+        offset: usize,
+        features: &WasmFeatures,
+    ) -> Result<()> {
+        if !features.cm_async() {
             bail!(offset, "`yield` requires the component model async feature")
+        }
+        if async_ && !features.cm_async_stackful() {
+            bail!(
+                offset,
+                "async `yield` requires the component model async stackful feature"
+            )
         }
 
         self.core_funcs
@@ -1268,7 +1324,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`subtask.drop` requires the component model async feature"
@@ -1287,7 +1343,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`stream.new` requires the component model async feature"
@@ -1312,7 +1368,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`stream.read` requires the component model async feature"
@@ -1344,7 +1400,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`stream.write` requires the component model async feature"
@@ -1369,15 +1425,21 @@ impl ComponentState {
     fn stream_cancel_read(
         &mut self,
         ty: u32,
-        _async_: bool,
+        async_: bool,
         types: &mut TypeAlloc,
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`stream.cancel-read` requires the component model async feature"
+            )
+        }
+        if async_ && !features.cm_async_builtins() {
+            bail!(
+                offset,
+                "async `stream.cancel-read` requires the component model async builtins feature"
             )
         }
 
@@ -1394,15 +1456,21 @@ impl ComponentState {
     fn stream_cancel_write(
         &mut self,
         ty: u32,
-        _async_: bool,
+        async_: bool,
         types: &mut TypeAlloc,
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`stream.cancel-write` requires the component model async feature"
+            )
+        }
+        if async_ && !features.cm_async_builtins() {
+            bail!(
+                offset,
+                "async `stream.cancel-write` requires the component model async builtins feature"
             )
         }
 
@@ -1423,7 +1491,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`stream.close-readable` requires the component model async feature"
@@ -1447,7 +1515,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`stream.close-writable` requires the component model async feature"
@@ -1471,7 +1539,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`future.new` requires the component model async feature"
@@ -1496,7 +1564,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`future.read` requires the component model async feature"
@@ -1528,7 +1596,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`future.write` requires the component model async feature"
@@ -1553,15 +1621,21 @@ impl ComponentState {
     fn future_cancel_read(
         &mut self,
         ty: u32,
-        _async_: bool,
+        async_: bool,
         types: &mut TypeAlloc,
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`future.cancel-read` requires the component model async feature"
+            )
+        }
+        if async_ && !features.cm_async_builtins() {
+            bail!(
+                offset,
+                "async `future.cancel-read` requires the component model async builtins feature"
             )
         }
 
@@ -1578,15 +1652,21 @@ impl ComponentState {
     fn future_cancel_write(
         &mut self,
         ty: u32,
-        _async_: bool,
+        async_: bool,
         types: &mut TypeAlloc,
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`future.cancel-write` requires the component model async feature"
+            )
+        }
+        if async_ && !features.cm_async_builtins() {
+            bail!(
+                offset,
+                "async `future.cancel-write` requires the component model async builtins feature"
             )
         }
 
@@ -1607,7 +1687,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`future.close-readable` requires the component model async feature"
@@ -1631,7 +1711,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`future.close-writable` requires the component model async feature"
@@ -1655,7 +1735,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`error-context.new` requires the component model async feature"
@@ -1679,7 +1759,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`error-context.debug-message` requires the component model async feature"
@@ -1702,7 +1782,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`error-context.drop` requires the component model async feature"
@@ -1720,7 +1800,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`waitable-set.new` requires the component model async feature"
@@ -1734,20 +1814,26 @@ impl ComponentState {
 
     fn waitable_set_wait(
         &mut self,
-        _async_: bool,
+        async_: bool,
         memory: u32,
         types: &mut TypeAlloc,
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`waitable-set.wait` requires the component model async feature"
             )
         }
+        if async_ && !features.cm_async_stackful() {
+            bail!(
+                offset,
+                "async `waitable-set.wait` requires the component model async stackful feature"
+            )
+        }
 
-        self.memory_at(memory, offset)?;
+        self.cabi_memory_at(memory, offset)?;
 
         self.core_funcs
             .push(types.intern_func_type(FuncType::new([ValType::I32; 2], [ValType::I32]), offset));
@@ -1756,20 +1842,26 @@ impl ComponentState {
 
     fn waitable_set_poll(
         &mut self,
-        _async_: bool,
+        async_: bool,
         memory: u32,
         types: &mut TypeAlloc,
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`waitable-set.poll` requires the component model async feature"
             )
         }
+        if async_ && !features.cm_async_stackful() {
+            bail!(
+                offset,
+                "async `waitable-set.poll` requires the component model async stackful feature"
+            )
+        }
 
-        self.memory_at(memory, offset)?;
+        self.cabi_memory_at(memory, offset)?;
 
         self.core_funcs
             .push(types.intern_func_type(FuncType::new([ValType::I32; 2], [ValType::I32]), offset));
@@ -1782,7 +1874,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`waitable-set.drop` requires the component model async feature"
@@ -1800,7 +1892,7 @@ impl ComponentState {
         offset: usize,
         features: &WasmFeatures,
     ) -> Result<()> {
-        if !features.component_model_async() {
+        if !features.cm_async() {
             bail!(
                 offset,
                 "`waitable.join` requires the component model async feature"
@@ -1836,7 +1928,7 @@ impl ComponentState {
         bail!(offset, "type index {} is not a resource type", idx)
     }
 
-    fn thread_spawn(
+    fn thread_spawn_ref(
         &mut self,
         func_ty_index: u32,
         types: &mut TypeAlloc,
@@ -1846,11 +1938,86 @@ impl ComponentState {
         if !features.shared_everything_threads() {
             bail!(
                 offset,
-                "`thread.spawn` requires the shared-everything-threads proposal"
+                "`thread.spawn_ref` requires the shared-everything-threads proposal"
             )
         }
+        let core_type_id = self.validate_spawn_type(func_ty_index, types, offset)?;
 
-        // Validate the type accepted by `thread.spawn`.
+        // Insert the core function.
+        let packed_index = PackedIndex::from_id(core_type_id).ok_or_else(|| {
+            format_err!(offset, "implementation limit: too many types in `TypeList`")
+        })?;
+        let start_func_ref = RefType::concrete(true, packed_index);
+        let func_ty = FuncType::new([ValType::Ref(start_func_ref), ValType::I32], [ValType::I32]);
+        let core_ty = SubType::func(func_ty, true);
+        let id = types.intern_sub_type(core_ty, offset);
+        self.core_funcs.push(id);
+
+        Ok(())
+    }
+
+    fn thread_spawn_indirect(
+        &mut self,
+        func_ty_index: u32,
+        table_index: u32,
+        types: &mut TypeAlloc,
+        offset: usize,
+        features: &WasmFeatures,
+    ) -> Result<()> {
+        if !features.shared_everything_threads() {
+            bail!(
+                offset,
+                "`thread.spawn_indirect` requires the shared-everything-threads proposal"
+            )
+        }
+        let _ = self.validate_spawn_type(func_ty_index, types, offset)?;
+
+        // Check this much like `call_indirect` (see
+        // `OperatorValidatorTemp::check_call_indirect_ty`), but loosen the
+        // table type restrictions to just a `funcref`. See the component model
+        // for more details:
+        // https://github.com/WebAssembly/component-model/blob/6e08e283/design/mvp/CanonicalABI.md#-canon-threadspawn_indirect.
+        let table = self.table_at(table_index, offset)?;
+
+        SubtypeCx::table_type(
+            table,
+            &TableType {
+                initial: 0,
+                maximum: None,
+                table64: false,
+                shared: true,
+                element_type: RefType::FUNCREF
+                    .shared()
+                    .expect("a funcref can always be shared"),
+            },
+            offset,
+        )
+        .map_err(|mut e| {
+            e.add_context("table is not a 32-bit shared table of (ref null (shared func))".into());
+            e
+        })?;
+
+        // Insert the core function.
+        let func_ty = FuncType::new([ValType::I32, ValType::I32], [ValType::I32]);
+        let core_ty = SubType::func(func_ty, true);
+        let id = types.intern_sub_type(core_ty, offset);
+        self.core_funcs.push(id);
+
+        Ok(())
+    }
+
+    /// Validates the type of a `thread.spawn*` instruction.
+    ///
+    /// This is currently limited to shared functions with the signature `[i32]
+    /// -> []`. See component model [explanation] for more details.
+    ///
+    /// [explanation]: https://github.com/WebAssembly/component-model/blob/6e08e283/design/mvp/CanonicalABI.md#-canon-threadspawn_ref
+    fn validate_spawn_type(
+        &self,
+        func_ty_index: u32,
+        types: &TypeAlloc,
+        offset: usize,
+    ) -> Result<CoreTypeId> {
         let core_type_id = match self.core_type_at(func_ty_index, offset)? {
             ComponentCoreTypeId::Sub(c) => c,
             ComponentCoreTypeId::Module(_) => bail!(offset, "expected a core function type"),
@@ -1873,18 +2040,7 @@ impl ComponentState {
             }
             _ => bail!(offset, "spawn type must be a function"),
         }
-
-        // Insert the core function.
-        let packed_index = PackedIndex::from_id(core_type_id).ok_or_else(|| {
-            format_err!(offset, "implementation limit: too many types in `TypeList`")
-        })?;
-        let start_func_ref = RefType::concrete(true, packed_index);
-        let func_ty = FuncType::new([ValType::Ref(start_func_ref), ValType::I32], [ValType::I32]);
-        let core_ty = SubType::func(func_ty, true);
-        let id = types.intern_sub_type(core_ty, offset);
-        self.core_funcs.push(id);
-
-        Ok(())
+        Ok(core_type_id)
     }
 
     fn thread_available_parallelism(
@@ -1999,7 +2155,7 @@ impl ComponentState {
         types: &mut TypeList,
         offset: usize,
     ) -> Result<()> {
-        if !features.component_model_values() {
+        if !features.cm_values() {
             bail!(
                 offset,
                 "support for component model `value`s is not enabled"
@@ -2098,7 +2254,7 @@ impl ComponentState {
                 CanonicalOption::Memory(idx) => {
                     memory = match memory {
                         None => {
-                            self.memory_at(*idx, offset)?;
+                            self.cabi_memory_at(*idx, offset)?;
                             Some(*idx)
                         }
                         Some(_) => {
@@ -2167,7 +2323,7 @@ impl ComponentState {
                             offset,
                         ));
                     } else {
-                        if !features.component_model_async() {
+                        if !features.cm_async() {
                             bail!(
                                 offset,
                                 "canonical option `async` requires the component model async feature"
@@ -2189,7 +2345,7 @@ impl ComponentState {
 
                             let ty = types[self.core_function_at(*idx, offset)?].unwrap_func();
 
-                            if ty.params() != [ValType::I32; 4] && ty.params() != [ValType::I32] {
+                            if ty.params() != [ValType::I32; 3] && ty.params() != [ValType::I32] {
                                 return Err(BinaryReaderError::new(
                                     "canonical option `callback` uses a core function with an incorrect signature",
                                     offset,
@@ -2208,19 +2364,45 @@ impl ComponentState {
             }
         }
 
-        if async_ && !allow_async {
-            bail!(offset, "async option not allowed here")
-        }
+        // Validate various combinations of options with respect to async.
+        // Modeled as a `match` here to double-check that everything is
+        // exhaustive at compile-time.
+        match (
+            async_,
+            allow_async,
+            callback.is_some(),
+            core_ty,
+            post_return.is_some(),
+        ) {
+            (true, false, ..) => bail!(offset, "async option not allowed here"),
+            (false, _, true, _, _) => {
+                bail!(offset, "cannot specify callback without lifting async")
+            }
+            (true, true, _, _, true) => {
+                bail!(
+                    offset,
+                    "cannot specify post-return function when lifting async"
+                )
+            }
 
-        if callback.is_some() && !async_ {
-            bail!(offset, "cannot specify callback without lifting async")
-        }
+            // Async + allowed + this is a lift (core_ty present) + stackful ABI
+            (true, true, false, Some(_), false) => {
+                if !features.cm_async_stackful() {
+                    bail!(
+                        offset,
+                        "`async` without `callback` requires the async stackful feature"
+                    )
+                }
+            }
 
-        if post_return.is_some() && async_ {
-            bail!(
-                offset,
-                "cannot specify post-return function when lifting async"
-            )
+            // Async + allowed + this is a lower (no core_ty)
+            (true, true, false, None, false) => {}
+
+            // Not async, no callback, this is ok
+            (false, _, false, _, _) => {}
+
+            // Async + allowed + callback ABI
+            (true, true, true, _, false) => {}
         }
 
         if info.requires_memory && memory.is_none() {
@@ -3158,20 +3340,6 @@ impl ComponentState {
                     offset,
                 )?;
                 push_module_export!(EntityType::Table, core_tables, "table");
-
-                let ty = self.core_tables.last().unwrap();
-                if ty.table64 {
-                    bail!(
-                        offset,
-                        "64-bit tables are not compatible with components yet"
-                    );
-                }
-                if ty.shared {
-                    bail!(
-                        offset,
-                        "shared tables are not compatible with components yet"
-                    );
-                }
             }
             ExternalKind::Memory => {
                 check_max(
@@ -3182,20 +3350,6 @@ impl ComponentState {
                     offset,
                 )?;
                 push_module_export!(EntityType::Memory, core_memories, "memory");
-
-                let ty = self.core_memories.last().unwrap();
-                if ty.memory64 {
-                    bail!(
-                        offset,
-                        "64-bit linear memories are not compatible with components yet"
-                    );
-                }
-                if ty.shared {
-                    bail!(
-                        offset,
-                        "shared linear memories are not compatible with components yet"
-                    );
-                }
             }
             ExternalKind::Global => {
                 check_max(
@@ -3400,8 +3554,7 @@ impl ComponentState {
     ) -> Result<ComponentDefinedType> {
         match ty {
             crate::ComponentDefinedType::Primitive(ty) => {
-                if ty == crate::PrimitiveValType::ErrorContext && !features.component_model_async()
-                {
+                if ty == crate::PrimitiveValType::ErrorContext && !features.cm_async() {
                     bail!(
                         offset,
                         "`error-context` requires the component model async feature"
@@ -3445,7 +3598,7 @@ impl ComponentState {
                 self.resource_at(idx, types, offset)?,
             )),
             crate::ComponentDefinedType::Future(ty) => {
-                if !features.component_model_async() {
+                if !features.cm_async() {
                     bail!(
                         offset,
                         "`future` requires the component model async feature"
@@ -3457,7 +3610,7 @@ impl ComponentState {
                 ))
             }
             crate::ComponentDefinedType::Stream(ty) => {
-                if !features.component_model_async() {
+                if !features.cm_async() {
                     bail!(
                         offset,
                         "`stream` requires the component model async feature"
@@ -3805,6 +3958,30 @@ impl ComponentState {
         }
     }
 
+    /// Validates that the linear memory at `idx` is valid to use as a canonical
+    /// ABI memory.
+    ///
+    /// At this time this requires that the memory is a plain 32-bit linear
+    /// memory. Notably this disallows shared memory and 64-bit linear memories.
+    fn cabi_memory_at(&self, idx: u32, offset: usize) -> Result<()> {
+        let ty = self.memory_at(idx, offset)?;
+        SubtypeCx::memory_type(
+            ty,
+            &MemoryType {
+                initial: 0,
+                maximum: None,
+                memory64: false,
+                shared: false,
+                page_size_log2: None,
+            },
+            offset,
+        )
+        .map_err(|mut e| {
+            e.add_context("canonical ABI memory is not a 32-bit linear memory".into());
+            e
+        })
+    }
+
     /// Completes the translation of this component, performing final
     /// validation of its structure.
     ///
@@ -3906,7 +4083,7 @@ impl ComponentState {
     }
 
     fn check_value_support(&self, features: &WasmFeatures, offset: usize) -> Result<()> {
-        if !features.component_model_values() {
+        if !features.cm_values() {
             bail!(
                 offset,
                 "support for component model `value`s is not enabled"
@@ -4039,7 +4216,7 @@ impl ComponentNameContext {
             ComponentNameKind::AsyncLabel(_)
             | ComponentNameKind::AsyncMethod(_)
             | ComponentNameKind::AsyncStatic(_) => {
-                if !features.component_model_async() {
+                if !features.cm_async() {
                     bail!(
                         offset,
                         "async kebab-names require the component model async feature"
