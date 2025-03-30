@@ -71,8 +71,8 @@ pub struct Opts {
     /// tests by default such as asserting that the text format round-trips
     /// where possible. Asserts can be listed here to perform extra checks when
     /// validating the `*.wast` input.
-    #[clap(long, short, value_parser = parse_asserts)]
-    assert: Vec<Vec<Assert>>,
+    #[clap(long, short, value_delimiter = ',')]
+    assert: Vec<Assert>,
 
     /// Directory to place snapshots in with `--assert snapshot-*` flags.
     #[clap(long)]
@@ -238,18 +238,19 @@ impl Opts {
 
     /// Tests whether `assert` is enabled.
     fn assert(&self, assert: Assert) -> bool {
-        self.assert
-            .iter()
-            .flat_map(|v| v)
-            .any(|a| match (*a, assert) {
-                // if explicitly requested, always enable
-                (a, b) if a == b => true,
-                // exclude some assertions from the default
-                (Assert::Default, Assert::SnapshotFolded) => false,
-                // otherwise allow all other assertions when default is enabled
-                (Assert::Default, _) => true,
-                _ => false,
-            })
+        let mut enabled = false;
+        for &a in self.assert.iter() {
+            match (a, assert) {
+                // if explicitly requested, enable
+                (a, b) if a == b => enabled = true,
+                // default enables almost all assertions
+                (Assert::Default, b) if b != Assert::SnapshotFolded => enabled = true,
+                // NoTestFolded disables TestFolded
+                (Assert::NoTestFolded, Assert::TestFolded) => enabled = false,
+                _ => (),
+            }
+        }
+        enabled
     }
 
     /// Returns whether `error`, from the validator, matches the expected error
@@ -274,12 +275,8 @@ impl Opts {
         }
 
         // Test that we can print these bytes with instructions in folded form.
-        //
-        // Note though that the folded form doesn't support legacy exceptions,
-        // so if that's enabled disable testing automatically.
         let mut folded_string = String::new();
-        let test_folded = !self.features.features().legacy_exceptions();
-        if test_folded {
+        if self.assert(Assert::TestFolded) {
             let mut folding_printer = wasmprinter::Config::new();
             folding_printer.fold_instructions(true);
             folding_printer
@@ -300,7 +297,7 @@ impl Opts {
             self.binary_compare(&binary2, contents)
                 .context("failed to compare original `wat` with roundtrip `wat`")?;
 
-            if test_folded {
+            if self.assert(Assert::TestFolded) {
                 let binary2f = wat::parse_str(&folded_string)
                     .context("failed to parse folded `wat` from `wasmprinter`")?;
                 self.binary_compare(&binary2f, contents)
@@ -555,7 +552,7 @@ impl Opts {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(clap::ValueEnum, Debug, Copy, Clone, PartialEq, Eq)]
 enum Assert {
     Default,
     Roundtrip,
@@ -563,22 +560,6 @@ enum Assert {
     SnapshotPrint,
     SnapshotJson,
     SnapshotFolded,
-}
-
-fn parse_asserts(arg: &str) -> Result<Vec<Assert>> {
-    let mut ret = Vec::new();
-
-    for part in arg.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        match part {
-            "default" => ret.push(Assert::Default),
-            "roundtrip" => ret.push(Assert::Roundtrip),
-            "pretty-whitespace" => ret.push(Assert::PrettyWhitespace),
-            "snapshot-print" => ret.push(Assert::SnapshotPrint),
-            "snapshot-json" => ret.push(Assert::SnapshotJson),
-            "snapshot-folded" => ret.push(Assert::SnapshotFolded),
-            other => bail!("unknown assertion: {other}"),
-        }
-    }
-
-    Ok(ret)
+    TestFolded,
+    NoTestFolded,
 }
