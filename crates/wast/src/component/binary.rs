@@ -380,6 +380,10 @@ impl<'a> Encoder<'a> {
                         info.opts.iter().map(Into::into),
                     );
                 }
+                CoreFuncKind::TaskCancel => {
+                    self.core_func_names.push(name);
+                    self.funcs.task_cancel();
+                }
                 CoreFuncKind::ContextGet(i) => {
                     self.core_func_names.push(name);
                     self.funcs.context_get(*i);
@@ -395,6 +399,10 @@ impl<'a> Encoder<'a> {
                 CoreFuncKind::SubtaskDrop => {
                     self.core_func_names.push(name);
                     self.funcs.subtask_drop();
+                }
+                CoreFuncKind::SubtaskCancel(info) => {
+                    self.core_func_names.push(name);
+                    self.funcs.subtask_cancel(info.async_);
                 }
                 CoreFuncKind::StreamNew(info) => {
                     self.core_func_names.push(name);

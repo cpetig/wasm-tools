@@ -1699,6 +1699,10 @@ impl<'a> EncodingState<'a> {
                 let index = self.component.subtask_drop();
                 Ok((ExportKind::Func, index))
             }
+            Import::SubtaskCancel { async_ } => {
+                let index = self.component.subtask_cancel(*async_);
+                Ok((ExportKind::Func, index))
+            }
             Import::StreamNew(info) => {
                 let ty = self.payload_type_index(info)?;
                 let index = self.component.stream_new(ty);
@@ -1820,6 +1824,10 @@ impl<'a> EncodingState<'a> {
             }
             Import::ContextSet(n) => {
                 let index = self.component.context_set(*n);
+                Ok((ExportKind::Func, index))
+            }
+            Import::ExportedTaskCancel => {
+                let index = self.component.task_cancel();
                 Ok((ExportKind::Func, index))
             }
         }
@@ -2184,10 +2192,12 @@ impl<'a> Shims<'a> {
                 | Import::ExportedResourceDrop(..)
                 | Import::ExportedResourceRep(..)
                 | Import::ExportedResourceNew(..)
+                | Import::ExportedTaskCancel
                 | Import::ErrorContextDrop
                 | Import::BackpressureSet
                 | Import::Yield { .. }
                 | Import::SubtaskDrop
+                | Import::SubtaskCancel { .. }
                 | Import::FutureNew(..)
                 | Import::StreamNew(..)
                 | Import::FutureCancelRead { .. }
