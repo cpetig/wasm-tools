@@ -573,7 +573,7 @@ package {name} is defined in two different locations:\n\
                 | TypeDefKind::Result(_)
                 | TypeDefKind::Future(_)
                 | TypeDefKind::Stream(_) => false,
-                TypeDefKind::Type(t) => self.all_bits_valid(t),
+                TypeDefKind::Type(t) | TypeDefKind::FixedSizeList(t, ..) => self.all_bits_valid(t),
 
                 TypeDefKind::Handle(h) => match h {
                     crate::Handle::Own(_) => true,
@@ -1938,7 +1938,52 @@ package {name} is defined in two different locations:\n\
         // topological order between them.
         let mut new_imports = IndexMap::new();
         let world = &self.worlds[world_id];
-        for (name, item) in world.imports.iter() {
+
+        // Sort the imports by "class" to ensure that this matches the order
+        // that items are printed and that items are in topological order.
+        //
+        // When printing worlds in WIT:
+        //
+        // * interfaces come first
+        // * types are next
+        //   * type imports are first
+        //   * type definitions are next
+        //   * resource definitions have methods printed inline
+        // * freestanding functions are last
+        //
+        // This reflects the topological order between items where types
+        // can refer to imports and functions can refer to these types. Ordering
+        // within a single class (e.g. imports depending on each other, types
+        // referring to each other) is already preserved by other passes in this
+        // file and general AST resolution. That means that a stable sort here
+        // can be used to ensure that each class is in the right location
+        // relative to the others.
+        //
+        // Overall this ensures that round-trips of WIT through wasm should
+        // always produce the same result.
+        let sort_key = |resolve: &Resolve, item: &WorldItem| match item {
+            WorldItem::Interface { .. } => 0,
+            WorldItem::Type(ty) => {
+                let ty = &resolve.types[*ty];
+                match ty.kind {
+                    TypeDefKind::Type(Type::Id(t)) if resolve.types[t].owner != ty.owner => 1,
+                    _ => 2,
+                }
+            }
+            WorldItem::Function(f) => {
+                if f.kind.resource().is_none() {
+                    3
+                } else {
+                    4
+                }
+            }
+        };
+
+        // Sort world items when we start to elaborate the world to start with a
+        // topological view of items.
+        let mut world_imports = world.imports.iter().collect::<Vec<_>>();
+        world_imports.sort_by_key(|(_name, import)| sort_key(self, import));
+        for (name, item) in world_imports {
             match item {
                 // Interfaces get their dependencies added first followed by the
                 // interface itself.
@@ -1993,6 +2038,11 @@ package {name} is defined in two different locations:\n\
         }
 
         self.elaborate_world_exports(&export_interfaces, &mut new_imports, &mut new_exports)?;
+
+        // In addition to sorting at the start of elaboration also sort here at
+        // the end of elaboration to handle types being interspersed with
+        // interfaces as they're found.
+        new_imports.sort_by_cached_key(|_name, import| sort_key(self, import));
 
         // And with all that done the world is updated in-place with
         // imports/exports.
@@ -3142,7 +3192,7 @@ impl Remap {
                     }
                 }
             }
-            Option(t) | List(t) | Future(Some(t)) | Stream(Some(t)) => {
+            Option(t) | List(t, ..) | FixedSizeList(t, ..) | Future(Some(t)) | Stream(Some(t)) => {
                 self.update_ty(resolve, t, span)?
             }
             Result(r) => {
@@ -3529,6 +3579,7 @@ impl Remap {
             TypeDefKind::Tuple(t) => t.types.iter().any(|t| self.type_has_borrow(resolve, t)),
             TypeDefKind::Enum(_) => false,
             TypeDefKind::List(ty)
+            | TypeDefKind::FixedSizeList(ty, ..)
             | TypeDefKind::Future(Some(ty))
             | TypeDefKind::Stream(Some(ty))
             | TypeDefKind::Option(ty) => self.type_has_borrow(resolve, ty),

@@ -109,6 +109,9 @@ fn encode_defined_type(encoder: ComponentDefinedTypeEncoder, ty: &ComponentDefin
         ComponentDefinedType::List(l) => {
             encoder.list(l.element.as_ref());
         }
+        ComponentDefinedType::FixedSizeList(l) => {
+            encoder.fixed_size_list(l.element.as_ref(), l.elements);
+        }
         ComponentDefinedType::Tuple(t) => {
             encoder.tuple(t.fields.iter());
         }
@@ -972,6 +975,7 @@ impl From<&CanonOpt<'_>> for wasm_encoder::CanonicalOption {
             CanonOpt::PostReturn(f) => Self::PostReturn(f.idx.into()),
             CanonOpt::Async => Self::Async,
             CanonOpt::Callback(f) => Self::Callback(f.idx.into()),
+            CanonOpt::CoreType(t) => Self::CoreType(t.idx.into()),
         }
     }
 }

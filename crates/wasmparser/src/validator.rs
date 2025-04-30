@@ -346,7 +346,7 @@ pub enum ValidPayload<'a> {
     /// This result indicates that the specified parser should be used instead
     /// of the currently-used parser until this returned one ends.
     Parser(Parser),
-    /// A function was found to be validate.
+    /// A function was found to be validated.
     Func(FuncToValidate<ValidatorResources>, FunctionBody<'a>),
     /// The end payload was validated and the types known to the validator
     /// are provided.
@@ -390,6 +390,14 @@ impl Validator {
     /// use the same type identifiers (such as
     /// [`CoreTypeId`][crate::types::CoreTypeId]) for the same types that are
     /// defined multiple times across different modules and components.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the validator was mid-way through
+    /// validating a binary. Validation must complete entirely or not have
+    /// started at all for this method to be called.
+    ///
+    /// # Examples
     ///
     /// ```
     /// fn foo() -> anyhow::Result<()> {
@@ -440,7 +448,7 @@ impl Validator {
             // they are using the same validation context, even after resetting.
             id: _,
 
-            // Don't mess with `types`, we specifically want to reuse canonicalizations.
+            // Don't mess with `types`, we specifically want to reuse canonicalization.
             types: _,
 
             // Also leave features as they are. While this is perhaps not
@@ -458,7 +466,7 @@ impl Validator {
         } = self;
 
         assert!(
-            matches!(state, State::End),
+            matches!(state, State::End) || matches!(state, State::Unparsed(None)),
             "cannot reset a validator that did not successfully complete validation"
         );
         assert!(module.is_none());
@@ -1353,7 +1361,7 @@ impl Validator {
 
                 // If there's a parent component, pop the stack, add it to the parent,
                 // and continue to validate the component
-                let ty = component.finish(&mut self.types, offset)?;
+                let ty = component.finish(&self.types, offset)?;
                 if let Some(parent) = self.components.last_mut() {
                     parent.add_component(ty, &mut self.types)?;
                     self.state = State::Component;
@@ -1601,5 +1609,10 @@ mod tests {
         assert!(std::ptr::eq(&types[t_id], &types[a2_id],));
 
         Ok(())
+    }
+
+    #[test]
+    fn reset_fresh_validator() {
+        Validator::new().reset();
     }
 }

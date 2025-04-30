@@ -28,6 +28,8 @@ pub enum CanonicalOption {
     /// The function to use if the async lifting of a function should receive task/stream/future progress events
     /// using a callback.
     Callback(u32),
+    /// The core function type to lower this component function to.
+    CoreType(u32),
 }
 
 /// Represents a canonical function in a WebAssembly component.
@@ -367,10 +369,10 @@ impl<'a> FromReader<'a> for CanonicalFunction {
             },
             0x22 => CanonicalFunction::WaitableSetDrop,
             0x23 => CanonicalFunction::WaitableJoin,
-            0x24 => CanonicalFunction::SubtaskCancel {
+            0x06 => CanonicalFunction::SubtaskCancel {
                 async_: reader.read()?,
             },
-            0x25 => CanonicalFunction::TaskCancel,
+            0x05 => CanonicalFunction::TaskCancel,
             0x40 => CanonicalFunction::ThreadSpawnRef {
                 func_ty_index: reader.read()?,
             },
@@ -401,6 +403,7 @@ impl<'a> FromReader<'a> for CanonicalOption {
             0x05 => CanonicalOption::PostReturn(reader.read_var_u32()?),
             0x06 => CanonicalOption::Async,
             0x07 => CanonicalOption::Callback(reader.read_var_u32()?),
+            0x08 => CanonicalOption::CoreType(reader.read_var_u32()?),
             x => return reader.invalid_leading_byte(x, "canonical option"),
         })
     }

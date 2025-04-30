@@ -211,9 +211,14 @@ pub fn run(u: &mut Unstructured<'_>) -> Result<()> {
             }
 
             (a, b) => {
-                panic!("expected {:?}\ngot {:?}", b, a);
+                panic!("expected {b:?}\ngot {a:?}");
             }
         }
     }
     Ok(())
+}
+
+#[test]
+fn smoke() {
+    super::test::test_n_times(100, run);
 }

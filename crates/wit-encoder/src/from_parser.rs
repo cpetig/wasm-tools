@@ -243,6 +243,10 @@ impl<'a> Converter<'a> {
                         let output = Type::list(self.convert_type(ty));
                         TypeDefKind::Type(output)
                     }
+                    wit_parser::TypeDefKind::FixedSizeList(ty, size) => {
+                        let output = Type::fixed_size_list(self.convert_type(ty), *size);
+                        TypeDefKind::Type(output)
+                    }
                     wit_parser::TypeDefKind::Handle(handle) => {
                         let output = self.handle_to_type(handle);
                         TypeDefKind::Type(output)
@@ -303,6 +307,9 @@ impl<'a> Converter<'a> {
                         }
                         wit_parser::TypeDefKind::List(type_) => {
                             Type::list(self.convert_type(type_))
+                        }
+                        wit_parser::TypeDefKind::FixedSizeList(type_, size) => {
+                            Type::fixed_size_list(self.convert_type(type_), *size)
                         }
                         wit_parser::TypeDefKind::Handle(handle) => self.handle_to_type(handle),
                         wit_parser::TypeDefKind::Future(type_) => {
@@ -522,7 +529,7 @@ impl<'a> Converter<'a> {
                                 .name
                                 .version
                                 .as_ref()
-                                .map(|version| format!("@{}", version))
+                                .map(|version| format!("@{version}"))
                                 .unwrap_or_else(|| "".to_string())
                         )),
                         None => Ident::new(name.clone()),

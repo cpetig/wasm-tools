@@ -767,6 +767,9 @@ pub mod component_utils {
             wasmparser::ComponentDefinedType::List(t) => {
                 defined.list(reencoder.component_val_type(t));
             }
+            wasmparser::ComponentDefinedType::FixedSizeList(t, elements) => {
+                defined.fixed_size_list(reencoder.component_val_type(t), elements);
+            }
             wasmparser::ComponentDefinedType::Tuple(t) => {
                 defined.tuple(t.iter().map(|t| reencoder.component_val_type(*t)));
             }
@@ -1363,6 +1366,9 @@ pub mod component_utils {
             wasmparser::CanonicalOption::Async => crate::component::CanonicalOption::Async,
             wasmparser::CanonicalOption::Callback(u) => {
                 crate::component::CanonicalOption::Callback(reencoder.function_index(u))
+            }
+            wasmparser::CanonicalOption::CoreType(u) => {
+                crate::component::CanonicalOption::CoreType(reencoder.type_index(u))
             }
         }
     }

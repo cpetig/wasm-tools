@@ -32,22 +32,15 @@ pub fn run(u: &mut Unstructured<'_>) -> Result<()> {
         } else {
             "module"
         };
-        panic!("Invalid {}: {}", component_or_module, e);
+        panic!("Invalid {component_or_module}: {e}");
     }
 
     // Round-trip `wasm_bytes` through text and back to binary.
     let wat_string = wasmprinter::print_bytes(&wasm_bytes).unwrap_or_else(|e| {
-        panic!(
-            "failed first disassembly of Wasm into wat with `wasmprinter::print_bytes`: {}",
-            e
-        )
+        panic!("failed first disassembly of Wasm into wat with `wasmprinter::print_bytes`: {e}")
     });
-    let wasm_bytes = wat::parse_str(&wat_string).unwrap_or_else(|e| {
-        panic!(
-            "failed to assemble wat into Wasm with `wat::parse_str`: {}",
-            e
-        )
-    });
+    let wasm_bytes = wat::parse_str(&wat_string)
+        .unwrap_or_else(|e| panic!("failed to assemble wat into Wasm with `wat::parse_str`: {e}"));
     crate::log_wasm(&wasm_bytes, &config);
 
     let mut wat_string2 = String::new();
@@ -61,20 +54,20 @@ pub fn run(u: &mut Unstructured<'_>) -> Result<()> {
         )
         .unwrap_or_else(|e| {
             panic!(
-                "failed second disassembly of Wasm into wat with `wasmprinter::print_bytes`: {}",
-                e
+                "failed second disassembly of Wasm into wat with `wasmprinter::print_bytes`: {e}"
             )
         });
-    let wasm_bytes2 = wat::parse_str(&wat_string2).unwrap_or_else(|e| {
-        panic!(
-            "failed to assemble wat into Wasm with `wat::parse_str`: {}",
-            e
-        )
-    });
+    let wasm_bytes2 = wat::parse_str(&wat_string2)
+        .unwrap_or_else(|e| panic!("failed to assemble wat into Wasm with `wat::parse_str`: {e}"));
     crate::log_wasm(&wasm_bytes2, &config);
 
     if wasm_bytes != wasm_bytes2 {
         panic!("failed to roundtrip valid module");
     }
     Ok(())
+}
+
+#[test]
+fn smoke() {
+    super::test::test_n_times(100, run);
 }

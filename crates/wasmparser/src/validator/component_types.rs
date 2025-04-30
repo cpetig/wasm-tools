@@ -1,6 +1,7 @@
 //! Types relating to type information provided by validation.
 
 use super::component::ExternKind;
+use super::{CanonicalOptions, Concurrency};
 use crate::prelude::*;
 use crate::validator::names::KebabString;
 use crate::validator::types::{
@@ -8,8 +9,7 @@ use crate::validator::types::{
     Types, TypesKind, TypesRef, TypesRefKind,
 };
 use crate::{
-    BinaryReaderError, CanonicalOption, FuncType, MemoryType, PrimitiveValType, Result, TableType,
-    ValType,
+    BinaryReaderError, FuncType, MemoryType, PrimitiveValType, Result, TableType, ValType,
 };
 use core::fmt;
 use core::ops::Index;
@@ -96,16 +96,15 @@ impl fmt::Debug for LoweredTypes {
     }
 }
 
-/// Represents information about a component function type lowering.
+/// Represents a component function type's in-progress lowering into a core
+/// type.
 #[derive(Debug)]
-pub(crate) struct LoweringInfo {
-    pub(crate) params: LoweredTypes,
-    pub(crate) results: LoweredTypes,
-    pub(crate) requires_memory: bool,
-    pub(crate) requires_realloc: bool,
+struct LoweredSignature {
+    params: LoweredTypes,
+    results: LoweredTypes,
 }
 
-impl LoweringInfo {
+impl LoweredSignature {
     pub(crate) fn into_func_type(self) -> FuncType {
         FuncType::new(
             self.params.as_slice().iter().copied(),
@@ -114,13 +113,11 @@ impl LoweringInfo {
     }
 }
 
-impl Default for LoweringInfo {
+impl Default for LoweredSignature {
     fn default() -> Self {
         Self {
             params: LoweredTypes::new(MAX_FLAT_FUNC_PARAMS),
             results: LoweredTypes::new(MAX_FLAT_FUNC_RESULTS),
-            requires_memory: false,
-            requires_realloc: false,
         }
     }
 }
@@ -537,7 +534,7 @@ pub enum ComponentValType {
 
 impl TypeData for ComponentValType {
     type Id = ComponentValueTypeId;
-
+    const IS_CORE_SUB_TYPE: bool = false;
     fn type_info(&self, types: &TypeList) -> TypeInfo {
         match self {
             ComponentValType::Primitive(_) => TypeInfo::new(),
@@ -644,7 +641,7 @@ pub struct ModuleType {
 
 impl TypeData for ModuleType {
     type Id = ComponentCoreModuleTypeId;
-
+    const IS_CORE_SUB_TYPE: bool = false;
     fn type_info(&self, _types: &TypeList) -> TypeInfo {
         self.info
     }
@@ -680,7 +677,7 @@ pub struct InstanceType {
 
 impl TypeData for InstanceType {
     type Id = ComponentCoreInstanceTypeId;
-
+    const IS_CORE_SUB_TYPE: bool = false;
     fn type_info(&self, _types: &TypeList) -> TypeInfo {
         self.info
     }
@@ -733,7 +730,13 @@ pub enum ComponentEntityType {
 
 impl ComponentEntityType {
     /// Determines if component entity type `a` is a subtype of `b`.
-    pub fn is_subtype_of(a: &Self, at: TypesRef, b: &Self, bt: TypesRef) -> bool {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the two given `TypesRef`s are not associated with the same
+    /// `Validator`.
+    pub fn is_subtype_of(a: &Self, at: TypesRef<'_>, b: &Self, bt: TypesRef<'_>) -> bool {
+        assert_eq!(at.id(), bt.id());
         SubtypeCx::new(at.list, bt.list)
             .component_entity_type(a, b, 0)
             .is_ok()
@@ -820,7 +823,7 @@ pub struct ComponentType {
 
 impl TypeData for ComponentType {
     type Id = ComponentTypeId;
-
+    const IS_CORE_SUB_TYPE: bool = false;
     fn type_info(&self, _types: &TypeList) -> TypeInfo {
         self.info
     }
@@ -878,7 +881,7 @@ pub struct ComponentInstanceType {
 
 impl TypeData for ComponentInstanceType {
     type Id = ComponentInstanceTypeId;
-
+    const IS_CORE_SUB_TYPE: bool = false;
     fn type_info(&self, _types: &TypeList) -> TypeInfo {
         self.info
     }
@@ -897,73 +900,41 @@ pub struct ComponentFuncType {
 
 impl TypeData for ComponentFuncType {
     type Id = ComponentFuncTypeId;
-
+    const IS_CORE_SUB_TYPE: bool = false;
     fn type_info(&self, _types: &TypeList) -> TypeInfo {
         self.info
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Abi {
-    /// Use to generate the core wasm signature of a component model function
-    /// that is `canon lower`'d with the synchronous ABI option set.
-    LowerSync,
-    /// Use to generate the core wasm signature of a component model function
-    /// that is `canon lower`'d with the asynchronous ABI option set.
-    LowerAsync,
-    /// Use to generate the core wasm signature that when `canon lift`'d with
-    /// the synchronous ABI option set will generate a component model function
-    /// type.
-    LiftSync,
-    /// Use to generate the core wasm signature that when `canon lift`'d with
-    /// the asynchronous + callback ABI options set will generate a component
-    /// model function type.
-    LiftAsync,
-    /// Use to generate the core wasm signature that when `canon lift`'d with
-    /// the asynchronou ABI option set will generate a component
-    /// model function type.
-    LiftAsyncStackful,
-}
-
-impl Abi {
-    pub(crate) fn for_lift(options: &[CanonicalOption]) -> Abi {
-        if options.contains(&CanonicalOption::Async) {
-            if options
-                .iter()
-                .any(|v| matches!(v, CanonicalOption::Callback(_)))
-            {
-                Abi::LiftAsync
-            } else {
-                Abi::LiftAsyncStackful
-            }
-        } else {
-            Abi::LiftSync
-        }
-    }
+    Lift,
+    Lower,
 }
 
 impl ComponentFuncType {
     /// Lowers the component function type to core parameter and result types for the
     /// canonical ABI.
-    pub(crate) fn lower(&self, types: &TypeList, abi: Abi) -> LoweringInfo {
-        let mut info = LoweringInfo::default();
+    pub(crate) fn lower(
+        &self,
+        types: &TypeList,
+        options: &CanonicalOptions,
+        abi: Abi,
+        offset: usize,
+    ) -> Result<FuncType> {
+        let mut sig = LoweredSignature::default();
 
-        let is_lower = match abi {
-            Abi::LowerAsync => {
-                for _ in 0..2 {
-                    info.params.push(ValType::I32);
-                }
-                info.results.push(ValType::I32);
-                info.requires_memory = true;
-                info.requires_realloc = self
-                    .result
-                    .map(|ty| ty.contains_ptr(types))
-                    .unwrap_or(false);
-                return info;
+        if abi == Abi::Lower && options.concurrency.is_async() {
+            for _ in 0..2 {
+                sig.params.push(ValType::I32);
             }
-            Abi::LowerSync => true,
-            Abi::LiftSync | Abi::LiftAsync | Abi::LiftAsyncStackful => false,
-        };
+            sig.results.push(ValType::I32);
+            options.require_memory(offset)?;
+            if self.result.is_some_and(|ty| ty.contains_ptr(types)) {
+                options.require_realloc(offset)?;
+            }
+            return Ok(sig.into_func_type());
+        }
 
         for (_, ty) in self.params.iter() {
             // Check to see if `ty` has a pointer somewhere in it, needed for
@@ -972,68 +943,70 @@ impl ComponentFuncType {
             // lifted functions must specify `realloc` as well. Lifted functions
             // gain their memory requirement through the final clause of this
             // function.
-            if is_lower {
-                if !info.requires_memory {
-                    info.requires_memory = ty.contains_ptr(types);
+            match abi {
+                Abi::Lower => {
+                    options.require_memory_if(offset, || ty.contains_ptr(types))?;
                 }
-            } else {
-                if !info.requires_realloc {
-                    info.requires_realloc = ty.contains_ptr(types);
+                Abi::Lift => {
+                    options.require_realloc_if(offset, || ty.contains_ptr(types))?;
                 }
             }
 
-            if !ty.push_wasm_types(types, &mut info.params) {
+            if !ty.push_wasm_types(types, &mut sig.params) {
                 // Too many parameters to pass directly
                 // Function will have a single pointer parameter to pass the arguments
                 // via linear memory
-                info.params.clear();
-                assert!(info.params.push(ValType::I32));
-                info.requires_memory = true;
+                sig.params.clear();
+                assert!(sig.params.push(ValType::I32));
+                options.require_memory(offset)?;
 
                 // We need realloc as well when lifting a function
-                if !is_lower {
-                    info.requires_realloc = true;
+                if let Abi::Lift = abi {
+                    options.require_realloc(offset)?;
                 }
                 break;
             }
         }
 
-        match abi {
-            Abi::LowerAsync => unreachable!(),
-            Abi::LowerSync | Abi::LiftSync => {
+        match (abi, options.concurrency) {
+            (Abi::Lower, Concurrency::Async { .. }) => {
+                unreachable!("special-cased at the start of the function")
+            }
+            (Abi::Lower | Abi::Lift, Concurrency::Sync) => {
                 if let Some(ty) = &self.result {
                     // Results of lowered functions that contains pointers must be
                     // allocated by the callee meaning that realloc is required.
                     // Results of lifted function are allocated by the guest which
                     // means that no realloc option is necessary.
-                    if is_lower && !info.requires_realloc {
-                        info.requires_realloc = ty.contains_ptr(types);
-                    }
+                    options.require_realloc_if(offset, || {
+                        abi == Abi::Lower && ty.contains_ptr(types)
+                    })?;
 
-                    if !ty.push_wasm_types(types, &mut info.results) {
-                        // Too many results to return directly, either a retptr parameter will be used (import)
-                        // or a single pointer will be returned (export)
-                        info.results.clear();
-                        if is_lower {
-                            info.params.max = MAX_LOWERED_TYPES;
-                            assert!(info.params.push(ValType::I32));
-                        } else {
-                            assert!(info.results.push(ValType::I32));
+                    if !ty.push_wasm_types(types, &mut sig.results) {
+                        // Too many results to return directly, either a retptr
+                        // parameter will be used (import) or a single pointer
+                        // will be returned (export).
+                        sig.results.clear();
+                        options.require_memory(offset)?;
+                        match abi {
+                            Abi::Lower => {
+                                sig.params.max = MAX_LOWERED_TYPES;
+                                assert!(sig.params.push(ValType::I32));
+                            }
+                            Abi::Lift => {
+                                assert!(sig.results.push(ValType::I32));
+                            }
                         }
-                        info.requires_memory = true;
                     }
                 }
             }
-            Abi::LiftAsync => {
-                info.results.push(ValType::I32);
+            (Abi::Lift, Concurrency::Async { callback: Some(_) }) => {
+                sig.results.push(ValType::I32);
             }
-            Abi::LiftAsyncStackful => {}
+            (Abi::Lift, Concurrency::Async { callback: None }) => {}
         }
 
-        // Memory is always required when realloc is required
-        info.requires_memory |= info.requires_realloc;
-
-        info
+        Ok(sig.into_func_type())
     }
 }
 
@@ -1084,6 +1057,8 @@ pub enum ComponentDefinedType {
     Variant(VariantType),
     /// The type is a list.
     List(ComponentValType),
+    /// The type is a fixed size list.
+    FixedSizeList(ComponentValType, u32),
     /// The type is a tuple.
     Tuple(TupleType),
     /// The type is a set of flags.
@@ -1111,7 +1086,7 @@ pub enum ComponentDefinedType {
 
 impl TypeData for ComponentDefinedType {
     type Id = ComponentDefinedTypeId;
-
+    const IS_CORE_SUB_TYPE: bool = false;
     fn type_info(&self, types: &TypeList) -> TypeInfo {
         match self {
             Self::Primitive(_)
@@ -1124,7 +1099,7 @@ impl TypeData for ComponentDefinedType {
             Self::Record(r) => r.info,
             Self::Variant(v) => v.info,
             Self::Tuple(t) => t.info,
-            Self::List(ty) | Self::Option(ty) => ty.info(types),
+            Self::List(ty) | Self::FixedSizeList(ty, _) | Self::Option(ty) => ty.info(types),
             Self::Result { ok, err } => {
                 let default = TypeInfo::new();
                 let mut info = ok.map(|ty| ty.type_info(types)).unwrap_or(default);
@@ -1153,7 +1128,7 @@ impl ComponentDefinedType {
             | Self::Borrow(_)
             | Self::Future(_)
             | Self::Stream(_) => false,
-            Self::Option(ty) => ty.contains_ptr(types),
+            Self::Option(ty) | Self::FixedSizeList(ty, _) => ty.contains_ptr(types),
             Self::Result { ok, err } => {
                 ok.map(|ty| ty.contains_ptr(types)).unwrap_or(false)
                     || err.map(|ty| ty.contains_ptr(types)).unwrap_or(false)
@@ -1174,6 +1149,9 @@ impl ComponentDefinedType {
                 lowered_types,
             ),
             Self::List(_) => lowered_types.push(ValType::I32) && lowered_types.push(ValType::I32),
+            Self::FixedSizeList(ty, length) => {
+                (0..*length).all(|_n| ty.push_wasm_types(types, lowered_types))
+            }
             Self::Tuple(t) => t
                 .types
                 .iter()
@@ -1248,6 +1226,7 @@ impl ComponentDefinedType {
             ComponentDefinedType::Flags(_) => "flags",
             ComponentDefinedType::Option(_) => "option",
             ComponentDefinedType::List(_) => "list",
+            ComponentDefinedType::FixedSizeList(_, _) => "fixed size list",
             ComponentDefinedType::Result { .. } => "result",
             ComponentDefinedType::Own(_) => "own",
             ComponentDefinedType::Borrow(_) => "borrow",
@@ -1985,7 +1964,9 @@ impl TypeAlloc {
                     }
                 }
             }
-            ComponentDefinedType::List(ty) | ComponentDefinedType::Option(ty) => {
+            ComponentDefinedType::List(ty)
+            | ComponentDefinedType::FixedSizeList(ty, _)
+            | ComponentDefinedType::Option(ty) => {
                 self.free_variables_valtype(ty, set);
             }
             ComponentDefinedType::Result { ok, err } => {
@@ -2127,9 +2108,9 @@ impl TypeAlloc {
                         .map(|t| self.type_named_valtype(t, set))
                         .unwrap_or(true)
             }
-            ComponentDefinedType::List(ty) | ComponentDefinedType::Option(ty) => {
-                self.type_named_valtype(ty, set)
-            }
+            ComponentDefinedType::List(ty)
+            | ComponentDefinedType::FixedSizeList(ty, _)
+            | ComponentDefinedType::Option(ty) => self.type_named_valtype(ty, set),
 
             // own/borrow themselves don't have to be named, but the resource
             // they refer to must be named.
@@ -2175,6 +2156,9 @@ where
 {
     /// Pushes a new anonymous type within this object, returning an identifier
     /// which can be used to refer to it.
+    ///
+    /// For internal use only!
+    #[doc(hidden)]
     fn push_ty<T>(&mut self, ty: T) -> T::Id
     where
         T: TypeData;
@@ -2314,7 +2298,9 @@ where
                     }
                 }
             }
-            ComponentDefinedType::List(ty) | ComponentDefinedType::Option(ty) => {
+            ComponentDefinedType::List(ty)
+            | ComponentDefinedType::FixedSizeList(ty, _)
+            | ComponentDefinedType::Option(ty) => {
                 any_changed |= self.remap_valtype(ty, map);
             }
             ComponentDefinedType::Result { ok, err } => {
@@ -2519,7 +2505,13 @@ macro_rules! limits_match {
 
 impl<'a> SubtypeCx<'a> {
     /// Create a new instance with the specified type lists
+    ///
+    /// # Panics
+    ///
+    /// Panics if the two given `TypesRef`s are not associated with the same
+    /// `Validator`.
     pub fn new_with_refs(a: TypesRef<'a>, b: TypesRef<'a>) -> SubtypeCx<'a> {
+        assert_eq!(a.id(), b.id());
         Self::new(a.list, b.list)
     }
 
@@ -3203,6 +3195,14 @@ impl<'a> SubtypeCx<'a> {
             (Variant(_), b) => bail!(offset, "expected {}, found variant", b.desc()),
             (List(a), List(b)) | (Option(a), Option(b)) => self.component_val_type(a, b, offset),
             (List(_), b) => bail!(offset, "expected {}, found list", b.desc()),
+            (FixedSizeList(a, asize), FixedSizeList(b, bsize)) => {
+                if asize != bsize {
+                    bail!(offset, "expected fixed size {bsize}, found size {asize}")
+                } else {
+                    self.component_val_type(a, b, offset)
+                }
+            }
+            (FixedSizeList(_, _), b) => bail!(offset, "expected {}, found list", b.desc()),
             (Option(_), b) => bail!(offset, "expected {}, found option", b.desc()),
             (Tuple(a), Tuple(b)) => {
                 if a.types.len() != b.types.len() {
@@ -3379,6 +3379,10 @@ impl Remap for SubtypeArena<'_> {
     where
         T: TypeData,
     {
+        assert!(
+            !T::IS_CORE_SUB_TYPE,
+            "cannot push core sub types into `SubtypeArena`s, that would break type canonicalization"
+        );
         let index = T::Id::list(&self.list).len() + T::Id::list(self.types).len();
         let index = u32::try_from(index).unwrap();
         self.list.push(ty);

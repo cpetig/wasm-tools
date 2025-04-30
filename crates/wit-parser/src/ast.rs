@@ -486,7 +486,7 @@ impl<'a> ExternKind<'a> {
         // If neither a function nor an interface appears here though then the
         // clone is thrown away and the original token stream is parsed for an
         // interface. This will redo the original ID parse and the original
-        // colon parse, but that shouldn't be too too bad perf-wise.
+        // colon parse, but that shouldn't be too bad perf-wise.
         let mut clone = tokens.clone();
         let id = parse_id(&mut clone)?;
         if clone.eat(Token::Colon)? {
@@ -754,6 +754,7 @@ enum Type<'a> {
     String(Span),
     Name(Id<'a>),
     List(List<'a>),
+    FixedSizeList(FixedSizeList<'a>),
     Handle(Handle<'a>),
     Resource(Resource<'a>),
     Record(Record<'a>),
@@ -903,6 +904,12 @@ struct Option_<'a> {
 struct List<'a> {
     span: Span,
     ty: Box<Type<'a>>,
+}
+
+struct FixedSizeList<'a> {
+    span: Span,
+    ty: Box<Type<'a>>,
+    size: u32,
 }
 
 struct Future<'a> {
@@ -1363,14 +1370,34 @@ impl<'a> Type<'a> {
             Some((span, Token::String_)) => Ok(Type::String(span)),
 
             // list<T>
+            // list<T, N>
             Some((span, Token::List)) => {
                 tokens.expect(Token::LessThan)?;
                 let ty = Type::parse(tokens)?;
+                let size = if tokens.eat(Token::Comma)? {
+                    let number = tokens.next()?;
+                    if let Some((span, Token::Integer)) = number {
+                        let size: u32 = tokens.get_span(span).parse()?;
+                        Some(size)
+                    } else {
+                        return Err(err_expected(tokens, "fixed size", number).into());
+                    }
+                } else {
+                    None
+                };
                 tokens.expect(Token::GreaterThan)?;
-                Ok(Type::List(List {
-                    span,
-                    ty: Box::new(ty),
-                }))
+                if let Some(size) = size {
+                    Ok(Type::FixedSizeList(FixedSizeList {
+                        span,
+                        ty: Box::new(ty),
+                        size,
+                    }))
+                } else {
+                    Ok(Type::List(List {
+                        span,
+                        ty: Box::new(ty),
+                    }))
+                }
             }
 
             // option<T>
@@ -1483,6 +1510,7 @@ impl<'a> Type<'a> {
             | Type::ErrorContext(span) => *span,
             Type::Name(id) => id.span,
             Type::List(l) => l.span,
+            Type::FixedSizeList(l) => l.span,
             Type::Handle(h) => h.span(),
             Type::Resource(r) => r.span,
             Type::Record(r) => r.span,
@@ -1546,10 +1574,7 @@ fn err_expected(
             span,
             format!("expected {}, found {}", expected, token.describe()),
         ),
-        None => Error::new(
-            tokens.eof_span(),
-            format!("expected {}, found eof", expected),
-        ),
+        None => Error::new(tokens.eof_span(), format!("expected {expected}, found eof")),
     }
 }
 

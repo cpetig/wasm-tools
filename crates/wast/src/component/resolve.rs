@@ -327,7 +327,7 @@ impl<'a> Resolver<'a> {
         if depth as usize >= self.stack.len() {
             return Err(Error::new(
                 span,
-                format!("outer count of `{}` is too large", depth),
+                format!("outer count of `{depth}` is too large"),
             ));
         }
 
@@ -486,6 +486,7 @@ impl<'a> Resolver<'a> {
                 CanonOpt::Realloc(r) | CanonOpt::PostReturn(r) | CanonOpt::Callback(r) => {
                     self.core_item_ref(r)?
                 }
+                CanonOpt::CoreType(t) => self.core_item_ref(t)?,
             }
         }
 
@@ -547,8 +548,12 @@ impl<'a> Resolver<'a> {
                     }
                 }
             }
-            ComponentDefinedType::List(l) => {
-                self.component_val_type(&mut l.element)?;
+            ComponentDefinedType::List(List { element: t })
+            | ComponentDefinedType::FixedSizeList(FixedSizeList {
+                element: t,
+                elements: _,
+            }) => {
+                self.component_val_type(t)?;
             }
             ComponentDefinedType::Tuple(t) => {
                 for field in t.fields.iter_mut() {

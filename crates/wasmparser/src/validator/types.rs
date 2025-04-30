@@ -46,11 +46,14 @@ pub trait TypeIdentifier: core::fmt::Debug + Copy + Eq + Sized + 'static {
 
 /// A trait shared by all types within a `Types`.
 ///
-/// This is the data that can be retreived by indexing with the associated
+/// This is the data that can be retrieved by indexing with the associated
 /// [`TypeIdentifier`].
 pub trait TypeData: core::fmt::Debug {
     /// The identifier for this type data.
     type Id: TypeIdentifier<Data = Self>;
+
+    /// Is this type a core sub type (or rec group of sub types)?
+    const IS_CORE_SUB_TYPE: bool;
 
     /// Get the info for this type.
     #[doc(hidden)]
@@ -134,7 +137,7 @@ impl TypeIdentifier for CoreTypeId {
 
 impl TypeData for SubType {
     type Id = CoreTypeId;
-
+    const IS_CORE_SUB_TYPE: bool = true;
     fn type_info(&self, _types: &TypeList) -> TypeInfo {
         // TODO(#1036): calculate actual size for func, array, struct.
         let size = 1 + match &self.composite_type.inner {
@@ -156,7 +159,7 @@ define_type_id!(
 
 impl TypeData for Range<CoreTypeId> {
     type Id = RecGroupId;
-
+    const IS_CORE_SUB_TYPE: bool = true;
     fn type_info(&self, _types: &TypeList) -> TypeInfo {
         let size = self.end.index() - self.start.index();
         TypeInfo::core(u32::try_from(size).unwrap())
@@ -570,9 +573,7 @@ impl<'a> TypesRef<'a> {
                 ExternalKind::Global => {
                     EntityType::Global(*module.globals.get(export.index as usize)?)
                 }
-                ExternalKind::Tag => EntityType::Tag(
-                    module.types[*module.functions.get(export.index as usize)? as usize],
-                ),
+                ExternalKind::Tag => EntityType::Tag(*module.tags.get(export.index as usize)?),
             }),
             #[cfg(feature = "component-model")]
             TypesRefKind::Component(_) => None,
@@ -780,7 +781,13 @@ impl<T> Index<usize> for SnapshotList<T> {
 
     #[inline]
     fn index(&self, index: usize) -> &T {
-        self.get(index).unwrap()
+        match self.get(index) {
+            Some(x) => x,
+            None => panic!(
+                "out-of-bounds indexing into `SnapshotList`: index is {index}, but length is {}",
+                self.len()
+            ),
+        }
     }
 }
 
@@ -947,7 +954,7 @@ impl TypeList {
     /// [`Self::intern_canonical_rec_group`].
     pub fn intern_sub_type(&mut self, sub_ty: SubType, offset: usize) -> CoreTypeId {
         let (_is_new, group_id) =
-            self.intern_canonical_rec_group(false, RecGroup::implicit(offset, sub_ty));
+            self.intern_canonical_rec_group(true, RecGroup::implicit(offset, sub_ty));
         self[group_id].start
     }
 
