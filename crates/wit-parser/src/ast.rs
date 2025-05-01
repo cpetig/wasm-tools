@@ -2051,6 +2051,7 @@ fn type_string<'a>(ty: &Type<'a>, name: &str) -> Option<String> {
         Type::Future(_) => todo!(),
         Type::Stream(_) => todo!(),
         Type::ErrorContext(_) => todo!(),
+        Type::FixedSizeList(_) => todo!(),
     }
 }
 
