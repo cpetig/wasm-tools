@@ -160,6 +160,15 @@ pub struct NewOpts {
     /// removal of the old scheme in the future.
     #[clap(long)]
     reject_legacy_names: bool,
+
+    /// Strip out duplicate function imports, which are illegal in components.
+    ///
+    /// Because this rewrites the top of the module and thus changes offsets, it
+    /// conservatively strips any custom sections not known to be immune to this
+    /// rewriting. At present, it retains the producers section, name section,
+    /// and target features section.
+    #[clap(long)]
+    deduplicate_imports: bool,
 }
 
 impl NewOpts {
@@ -172,7 +181,8 @@ impl NewOpts {
         let wasm = self.io.get_input_wasm()?;
         let mut encoder = ComponentEncoder::default()
             .validate(!self.skip_validation)
-            .reject_legacy_names(self.reject_legacy_names);
+            .reject_legacy_names(self.reject_legacy_names)
+            .deduplicate_imports(self.deduplicate_imports);
 
         if let Some(merge) = self.merge_imports_based_on_semver {
             encoder = encoder.merge_imports_based_on_semver(merge);
@@ -1263,12 +1273,12 @@ struct ModuleExtractor<'a> {
 impl Reencode for ModuleExtractor<'_> {
     type Error = std::convert::Infallible;
 
-    fn type_index(&mut self, index: u32) -> u32 {
-        if self.depth == 0 {
+    fn type_index(&mut self, index: u32) -> Result<u32, Error<Self::Error>> {
+        Ok(if self.depth == 0 {
             index + self.extra_core_types
         } else {
             index
-        }
+        })
     }
 }
 
@@ -1281,12 +1291,12 @@ impl ReencodeComponent for ModuleExtractor<'_> {
         }
     }
 
-    fn outer_type_index(&mut self, count: u32, index: u32) -> u32 {
-        if self.depth == count {
+    fn outer_type_index(&mut self, count: u32, index: u32) -> Result<u32, Error<Self::Error>> {
+        Ok(if self.depth == count {
             index + self.extra_core_types
         } else {
             index
-        }
+        })
     }
 
     fn outer_module_index(&mut self, count: u32, index: u32) -> u32 {
