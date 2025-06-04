@@ -1,6 +1,6 @@
 [package]
 name = "wasm-tools"
-version = "1.230.0"
+version = "1.233.0"
 authors = ["The Wasmtime Project Developers"]
 edition.workspace = true
 description = "CLI tools for interoperating with WebAssembly files"
@@ -85,9 +85,23 @@ allow_attributes_without_reason = 'warn'
 [workspace.package]
 edition = '2021'
 license = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
-version = "0.230.0"
-# Current policy for wasm-tools is the same as Wasmtime which is that this
-# number can be no larger than the current stable release of Rust minus 2.
+version = "0.233.0"
+# Current thinking for wasm-tools is that the minimum supported Rust version
+# (MSRV), or this number here, is no larger than the current stable release of
+# Rust minus 10. This is more conservative than Wasmtime's policy which is
+# stable minus two and is due to the nature of this repository and how the
+# crates are expected to be used in more situations and places than Wasmtime.
+#
+# Note that this number is not proactively updated whenever a new release of
+# Rust comes out. Instead if you run into this, for example a PR on CI is
+# failing due to needing a newer feature of Rust, you're welcome to update this
+# at any time so longer that it's no greater than the current release of Rust
+# minus 10.
+#
+# If this window is too restrictive please leave a comment on your PR or send a
+# message to wasm-tools maintainers to discuss. In some cases it's possible to
+# add version detection to build scripts but in other cases this may not be
+# reasonable to expect.
 #
 # NB: if this number increases to 1.81-or-later delete
 # `crates/wasmparser/build.rs` and `crates/wasm-encoder/build.rs` scripts
@@ -128,20 +142,20 @@ termcolor = "1.2.0"
 url = "2.0.0"
 wasmtime = { version = "29.0.1", default-features = false, features = ['cranelift', 'component-model', 'runtime', 'gc-drc'] }
 
-wasm-compose = { version = "0.230.0", path = "crates/wasm-compose" }
-wasm-encoder = { version = "0.230.0", path = "crates/wasm-encoder", default-features = false }
-wasm-metadata = { version = "0.230.0", path = "crates/wasm-metadata", default-features = false }
-wasm-mutate = { version = "0.230.0", path = "crates/wasm-mutate" }
-wasm-shrink = { version = "0.230.0", path = "crates/wasm-shrink" }
-wasm-smith = { version = "0.230.0", path = "crates/wasm-smith" }
-wasmparser = { version = "0.230.0", path = "crates/wasmparser", default-features = false, features = ['simd'] }
-wasmprinter = { version = "0.230.0", path = "crates/wasmprinter", default-features = false }
-wast = { version = "230.0.0", path = "crates/wast", default-features = false }
-wat = { version = "1.230.0", path = "crates/wat", default-features = false }
-wit-component = { version = "0.230.0", path = "crates/wit-component" }
-wit-encoder = { version = "0.230.0", path = "crates/wit-encoder" }
-wit-parser = { version = "0.230.0", path = "crates/wit-parser" }
-wit-smith = { version = "0.230.0", path = "crates/wit-smith" }
+wasm-compose = { version = "0.233.0", path = "crates/wasm-compose" }
+wasm-encoder = { version = "0.233.0", path = "crates/wasm-encoder", default-features = false }
+wasm-metadata = { version = "0.233.0", path = "crates/wasm-metadata", default-features = false }
+wasm-mutate = { version = "0.233.0", path = "crates/wasm-mutate" }
+wasm-shrink = { version = "0.233.0", path = "crates/wasm-shrink" }
+wasm-smith = { version = "0.233.0", path = "crates/wasm-smith" }
+wasmparser = { version = "0.233.0", path = "crates/wasmparser", default-features = false, features = ['simd'] }
+wasmprinter = { version = "0.233.0", path = "crates/wasmprinter", default-features = false }
+wast = { version = "233.0.0", path = "crates/wast", default-features = false }
+wat = { version = "1.233.0", path = "crates/wat", default-features = false }
+wit-component = { version = "0.233.0", path = "crates/wit-component" }
+wit-encoder = { version = "0.233.0", path = "crates/wit-encoder" }
+wit-parser = { version = "0.233.0", path = "crates/wit-parser" }
+wit-smith = { version = "0.233.0", path = "crates/wit-smith" }
 
 [dependencies]
 anyhow = { workspace = true }

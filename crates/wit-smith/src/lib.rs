@@ -19,8 +19,10 @@ mod generate;
 pub fn smith(config: &Config, u: &mut Unstructured<'_>) -> Result<Vec<u8>> {
     let pkgs = generate::Generator::new(config.clone()).generate(u)?;
     let mut resolve = Resolve::default();
+    resolve.all_features = true;
     let mut last = None;
     for pkg in pkgs {
+        log::trace!("appending package {:?}", pkg.name);
         let group = pkg.sources.parse().unwrap();
         let id = match resolve.push_group(group) {
             Ok(id) => id,
@@ -28,7 +30,9 @@ pub fn smith(config: &Config, u: &mut Unstructured<'_>) -> Result<Vec<u8>> {
                 if e.is::<InvalidTransitiveDependency>() {
                     return Err(arbitrary::Error::IncorrectFormat);
                 }
-                if e.to_string().contains("shadows previously") {
+                let err = e.to_string();
+                if err.contains("shadows previously") || err.contains("mismatch in stability") {
+                    log::error!("{e}");
                     return Err(arbitrary::Error::IncorrectFormat);
                 }
                 panic!("bad wit parse: {e:?}")

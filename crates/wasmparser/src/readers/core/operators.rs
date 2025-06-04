@@ -337,7 +337,6 @@ crate::for_each_operator!(define_operator);
 pub struct OperatorsReader<'a> {
     reader: BinaryReader<'a>,
     blocks: Vec<FrameKind>,
-    data_index_occurred: Option<usize>,
 }
 
 impl<'a> OperatorsReader<'a> {
@@ -346,7 +345,6 @@ impl<'a> OperatorsReader<'a> {
         OperatorsReader {
             reader,
             blocks: vec![FrameKind::Block],
-            data_index_occurred: None,
         }
     }
 
@@ -547,7 +545,7 @@ impl<'a> OperatorsReader<'a> {
             0x10 => visitor.visit_call(self.reader.read_var_u32()?),
             0x11 => {
                 let index = self.reader.read_var_u32()?;
-                let table = self.read_table_index_or_zero_if_not_reference_types()?;
+                let table = self.read_call_indirect_table_immediate()?;
                 visitor.visit_call_indirect(index, table)
             }
             0x12 => visitor.visit_return_call(self.reader.read_var_u32()?),
@@ -857,8 +855,6 @@ impl<'a> OperatorsReader<'a> {
                 visitor.visit_array_new_fixed(type_index, n)
             }
             0x09 => {
-                self.data_index_occurred
-                    .get_or_insert(self.original_position());
                 let type_index = self.reader.read_var_u32()?;
                 let data_index = self.reader.read_var_u32()?;
                 visitor.visit_array_new_data(type_index, data_index)
@@ -895,8 +891,6 @@ impl<'a> OperatorsReader<'a> {
                 visitor.visit_array_copy(type_index_dst, type_index_src)
             }
             0x12 => {
-                self.data_index_occurred
-                    .get_or_insert(self.original_position());
                 let type_index = self.reader.read_var_u32()?;
                 let data_index = self.reader.read_var_u32()?;
                 visitor.visit_array_init_data(type_index, data_index)
@@ -988,15 +982,11 @@ impl<'a> OperatorsReader<'a> {
             0x07 => visitor.visit_i64_trunc_sat_f64_u(),
 
             0x08 => {
-                self.data_index_occurred
-                    .get_or_insert(self.original_position());
                 let segment = self.reader.read_var_u32()?;
                 let mem = self.reader.read_var_u32()?;
                 visitor.visit_memory_init(segment, mem)
             }
             0x09 => {
-                self.data_index_occurred
-                    .get_or_insert(self.original_position());
                 let segment = self.reader.read_var_u32()?;
                 visitor.visit_data_drop(segment)
             }
@@ -1677,16 +1667,19 @@ impl<'a> OperatorsReader<'a> {
         }
     }
 
-    fn read_table_index_or_zero_if_not_reference_types(&mut self) -> Result<u32> {
-        if self.reader.reference_types() {
-            self.reader.read_var_u32()
-        } else {
-            // Before reference types this byte was required to be a single zero
-            // byte, not a LEB-encoded zero, so require a precise zero byte.
-            match self.reader.read_u8()? {
-                0 => Ok(0),
-                _ => bail!(self.original_position() - 1, "zero byte expected"),
-            }
+    fn read_call_indirect_table_immediate(&mut self) -> Result<u32> {
+        // If the `call_indirect_overlong` feature is enabled, then read this
+        // immediate as a LEB. This feature is enabled as part of the
+        // `reference_types` feature or the `lime1` feature.
+        if self.reader.call_indirect_overlong() {
+            return self.reader.read_var_u32();
+        }
+
+        // Before reference types this byte was required to be a single zero
+        // byte, not a LEB-encoded zero, so require a precise zero byte.
+        match self.reader.read_u8()? {
+            0 => Ok(0),
+            _ => bail!(self.original_position() - 1, "zero byte expected"),
         }
     }
 }

@@ -208,6 +208,24 @@ impl ExternKind {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum StringEncoding {
+    #[default]
+    Utf8,
+    Utf16,
+    CompactUtf16,
+}
+
+impl core::fmt::Display for StringEncoding {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Utf8 => "utf8",
+            Self::Utf16 => "utf16",
+            Self::CompactUtf16 => "latin1-utf16",
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Concurrency {
     /// Synchronous.
     #[default]
@@ -234,11 +252,13 @@ impl Concurrency {
 }
 
 pub(crate) struct CanonicalOptions {
+    pub(crate) string_encoding: StringEncoding,
     pub(crate) memory: Option<u32>,
     pub(crate) realloc: Option<u32>,
     pub(crate) post_return: Option<u32>,
     pub(crate) concurrency: Concurrency,
     pub(crate) core_type: Option<CoreTypeId>,
+    pub(crate) gc: bool,
 }
 
 impl CanonicalOptions {
@@ -302,6 +322,13 @@ impl CanonicalOptions {
                 offset,
                 "canonical option `callback` cannot be specified for lowerings"
             );
+        }
+
+        if self.gc && self.core_type.is_none() {
+            bail!(
+                offset,
+                "cannot specify `gc` without also specifying a `core-type` for lowerings"
+            )
         }
 
         Ok(self)
@@ -1229,7 +1256,7 @@ impl ComponentState {
         options.check_lift(types, self, core_ty, offset)?;
         let func_ty = ty.lower(types, &options, Abi::Lift, offset)?;
         debug_assert!(options.core_type.is_none());
-        let lowered_core_ty_id = types.intern_func_type(func_ty, offset);
+        let lowered_core_ty_id = func_ty.intern(types, offset);
 
         if core_ty_id == lowered_core_ty_id {
             self.funcs
@@ -1285,7 +1312,7 @@ impl ComponentState {
         let options = self.check_options(types, options, offset)?;
         options.check_lower(offset)?;
         let func_ty = ty.lower(types, &options, Abi::Lower, offset)?;
-        let ty_id = options.check_core_type(types, func_ty, offset)?;
+        let ty_id = func_ty.intern(types, offset);
 
         self.core_funcs.push(ty_id);
         Ok(())
@@ -1392,8 +1419,7 @@ impl ComponentState {
         options.require_sync(offset, "task.return")?;
 
         let func_ty = func_ty.lower(types, &options, Abi::Lower, offset)?;
-        assert!(func_ty.results().is_empty());
-        let ty_id = options.check_core_type(types, func_ty, offset)?;
+        let ty_id = func_ty.intern(types, offset);
 
         self.core_funcs.push(ty_id);
         Ok(())
@@ -2334,7 +2360,8 @@ impl ComponentState {
                 CanonicalOption::PostReturn(_) => "post-return",
                 CanonicalOption::Async => "async",
                 CanonicalOption::Callback(_) => "callback",
-                CanonicalOption::CoreType(_) => "core type",
+                CanonicalOption::CoreType(_) => "core-type",
+                CanonicalOption::Gc => "gc",
             }
         }
 
@@ -2345,6 +2372,7 @@ impl ComponentState {
         let mut is_async = false;
         let mut callback = None;
         let mut core_type = None;
+        let mut gc = false;
 
         for option in options {
             match option {
@@ -2353,12 +2381,18 @@ impl ComponentState {
                         Some(existing) => {
                             bail!(
                                 offset,
-                                "canonical encoding option `{}` conflicts with option `{}`",
-                                display(existing),
+                                "canonical encoding option `{existing}` conflicts with option `{}`",
                                 display(*option),
                             )
                         }
-                        None => encoding = Some(*option),
+                        None => {
+                            encoding = Some(match option {
+                                CanonicalOption::UTF8 => StringEncoding::Utf8,
+                                CanonicalOption::UTF16 => StringEncoding::Utf16,
+                                CanonicalOption::CompactUTF16 => StringEncoding::CompactUtf16,
+                                _ => unreachable!(),
+                            });
+                        }
                     }
                 }
                 CanonicalOption::Memory(idx) => {
@@ -2475,8 +2509,25 @@ impl ComponentState {
                         }
                     };
                 }
+                CanonicalOption::Gc => {
+                    if gc {
+                        return Err(BinaryReaderError::new(
+                            "canonical option `gc` is specified more than once",
+                            offset,
+                        ));
+                    }
+                    if !self.features.cm_gc() {
+                        return Err(BinaryReaderError::new(
+                            "canonical option `gc` requires the `cm-gc` feature",
+                            offset,
+                        ));
+                    }
+                    gc = true;
+                }
             }
         }
+
+        let string_encoding = encoding.unwrap_or_default();
 
         let concurrency = match (is_async, callback, post_return.is_some()) {
             (false, Some(_), _) => {
@@ -2489,12 +2540,18 @@ impl ComponentState {
             (true, callback, false) => Concurrency::Async { callback },
         };
 
+        if !gc && core_type.is_some() {
+            bail!(offset, "cannot specify `core-type` without `gc`")
+        }
+
         Ok(CanonicalOptions {
+            string_encoding,
             memory,
             realloc,
             post_return,
             concurrency,
             core_type,
+            gc,
         })
     }
 
