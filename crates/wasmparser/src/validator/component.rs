@@ -7,8 +7,8 @@ use super::{
         ComponentCoreModuleTypeId, ComponentCoreTypeId, ComponentDefinedType,
         ComponentDefinedTypeId, ComponentEntityType, ComponentFuncType, ComponentFuncTypeId,
         ComponentInstanceType, ComponentInstanceTypeId, ComponentType, ComponentTypeId,
-        ComponentValType, Context, CoreInstanceTypeKind, InstanceType, LoweredFuncType, ModuleType,
-        RecordType, Remap, Remapping, ResourceId, SubtypeCx, TupleType, VariantCase, VariantType,
+        ComponentValType, Context, CoreInstanceTypeKind, InstanceType, ModuleType, RecordType,
+        Remap, Remapping, ResourceId, SubtypeCx, TupleType, VariantCase, VariantType,
     },
     core::{InternRecGroup, Module},
     types::{CoreTypeId, EntityType, TypeAlloc, TypeInfo, TypeList},
@@ -23,7 +23,6 @@ use crate::{
     ExternalKind, FuncType, GlobalType, InstantiationArgKind, MemoryType, PackedIndex, RefType,
     Result, SubType, TableType, TypeBounds, ValType, WasmFeatures,
 };
-use core::iter;
 use core::mem;
 
 fn to_kebab_str<'a>(s: &'a str, desc: &str, offset: usize) -> Result<&'a KebabStr> {
@@ -337,15 +336,23 @@ impl CanonicalOptions {
     }
 
     pub(crate) fn check_lift(
-        &self,
+        &mut self,
         types: &TypeList,
         state: &ComponentState,
-        core_ty: &FuncType,
+        core_ty_id: CoreTypeId,
         offset: usize,
     ) -> Result<&Self> {
+        debug_assert!(matches!(
+            types[core_ty_id].composite_type.inner,
+            CompositeInnerType::Func(_)
+        ));
+
         if let Some(idx) = self.post_return {
-            let func_ty = types[state.core_function_at(idx, offset)?].unwrap_func();
-            if func_ty.params() != core_ty.results() || !func_ty.results().is_empty() {
+            let post_return_func_ty = types[state.core_function_at(idx, offset)?].unwrap_func();
+            let core_ty = types[core_ty_id].unwrap_func();
+            if post_return_func_ty.params() != core_ty.results()
+                || !post_return_func_ty.results().is_empty()
+            {
                 bail!(
                     offset,
                     "canonical option `post-return` uses a core function with an incorrect signature"
@@ -380,6 +387,7 @@ impl CanonicalOptions {
                 "canonical option `core-type` is not allowed in `canon lift`"
             )
         }
+        self.core_type = Some(core_ty_id);
 
         Ok(self)
     }
@@ -1253,14 +1261,12 @@ impl ComponentState {
     ) -> Result<()> {
         let ty = self.function_type_at(type_index, types, offset)?;
         let core_ty_id = self.core_function_at(core_func_index, offset)?;
-        let core_ty = types[core_ty_id].unwrap_func();
 
         // Lifting a function is for an export, so match the expected canonical ABI
         // export signature
-        let options = self.check_options(types, options, offset)?;
-        options.check_lift(types, self, core_ty, offset)?;
+        let mut options = self.check_options(types, options, offset)?;
+        options.check_lift(types, self, core_ty_id, offset)?;
         let func_ty = ty.lower(types, &options, Abi::Lift, offset)?;
-        debug_assert!(options.core_type.is_none());
         let lowered_core_ty_id = func_ty.intern(types, offset);
 
         if core_ty_id == lowered_core_ty_id {
@@ -1758,10 +1764,7 @@ impl ComponentState {
             .check_lower(offset)?
             .check_core_type(
                 types,
-                FuncType::new(
-                    iter::repeat(ValType::I32).take(if elem_ty.is_some() { 2 } else { 1 }),
-                    [ValType::I32],
-                ),
+                FuncType::new([ValType::I32; 2], [ValType::I32]),
                 offset,
             )?;
 
@@ -1788,44 +1791,14 @@ impl ComponentState {
             bail!(offset, "`future.write` requires a future type")
         };
 
-        let options = self.check_options(types, &options, offset)?;
-        options.check_lower(offset)?;
-
-        let LoweredFuncType::New(func_ty) = ComponentFuncType {
-            info: TypeInfo::new(),
-            params: if let Some(elem_ty) = elem_ty {
-                Box::new([(KebabString::new("p").unwrap(), *elem_ty)])
-            } else {
-                Box::new([])
-            },
-            result: None,
-        }
-        .lower(
-            types,
-            &CanonicalOptions {
-                concurrency: Concurrency::Async { callback: None },
-                ..options
-            },
-            Abi::Lower,
-            offset,
-        )?
-        else {
-            // As of this writing, `ComponentFuncType::lower` returns
-            // `LoweredFuncType::New(_)` unless `options.gc` is true.
-            bail!(
+        let ty_id = self
+            .check_options(types, &options, offset)?
+            .require_memory_if(offset, || elem_ty.is_some())?
+            .check_core_type(
+                types,
+                FuncType::new([ValType::I32; 2], [ValType::I32]),
                 offset,
-                "todo: `future.write` with `gc` option not yet supported"
-            )
-        };
-
-        let ty_id = options.check_core_type(
-            types,
-            FuncType::new(
-                iter::once(ValType::I32).chain(func_ty.params().iter().copied()),
-                [ValType::I32],
-            ),
-            offset,
-        )?;
+            )?;
 
         self.core_funcs.push(ty_id);
         Ok(())
