@@ -245,11 +245,11 @@ impl Resolve {
                 // return a pointer they wrote into.
                 if retptr {
                     results.cur = 0;
-                    match variant {
-                        AbiVariant::GuestImport => {
+                    match (variant, symmetric) {
+                        (AbiVariant::GuestImport, _) | (AbiVariant::GuestExport, true)  => {
                             assert!(params.push(WasmType::Pointer));
                         }
-                        AbiVariant::GuestExport => {
+                        (AbiVariant::GuestExport, false) => {
                             assert!(results.push(WasmType::Pointer));
                         }
                         _ => unreachable!(),
