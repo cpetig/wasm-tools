@@ -235,7 +235,7 @@ impl Resolve {
         match variant {
             AbiVariant::GuestImport | AbiVariant::GuestExport => {
                 if let Some(ty) = &func.result {
-                    self.push_flat(ty, &mut results, symmetric);
+                    self.push_flat_symmetric(ty, &mut results, symmetric);
                 }
                 retptr = results.overflow;
 
@@ -293,12 +293,20 @@ impl Resolve {
         result: &mut FlatTypes<'_>,
         symmetric: bool,
     ) -> bool {
-        list.all(|ty| self.push_flat(ty, result, symmetric))
+        list.all(|ty| self.push_flat_symmetric(ty, result, symmetric))
     }
 
     /// Appends the flat wasm types representing `ty` onto the `result`
     /// list provided.
-    pub fn push_flat(&self, ty: &Type, result: &mut FlatTypes<'_>, symmetric: bool) -> bool {
+    pub fn push_flat(&self, ty: &Type, result: &mut FlatTypes<'_>) -> bool {
+        self.push_flat_symmetric(ty, result, false)
+    }
+    pub fn push_flat_symmetric(
+        &self,
+        ty: &Type,
+        result: &mut FlatTypes<'_>,
+        symmetric: bool,
+    ) -> bool {
         match ty {
             Type::Bool
             | Type::S8
@@ -316,7 +324,7 @@ impl Resolve {
             Type::String => result.push(WasmType::Pointer) && result.push(WasmType::Length),
 
             Type::Id(id) => match &self.types[*id].kind {
-                TypeDefKind::Type(t) => self.push_flat(t, result, symmetric),
+                TypeDefKind::Type(t) => self.push_flat_symmetric(t, result, symmetric),
 
                 TypeDefKind::Handle(Handle::Own(_) | Handle::Borrow(_)) => {
                     result.push(if symmetric {
@@ -402,7 +410,7 @@ impl Resolve {
         // `i32` might be the `f32` bitcasted.
         for ty in tys {
             if let Some(ty) = ty {
-                if !self.push_flat(ty, &mut temp, symmetric) {
+                if !self.push_flat_symmetric(ty, &mut temp, symmetric) {
                     result.overflow = true;
                     return false;
                 }
