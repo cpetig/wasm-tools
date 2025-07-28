@@ -201,7 +201,13 @@ impl Resolve {
             | AbiVariant::GuestExport
             | AbiVariant::GuestExportAsync
             | AbiVariant::GuestExportAsyncStackful => Self::MAX_FLAT_PARAMS,
-            AbiVariant::GuestImportAsync => Self::MAX_FLAT_ASYNC_PARAMS,
+            AbiVariant::GuestImportAsync => {
+                if symmetric {
+                    Self::MAX_FLAT_PARAMS
+                } else {
+                    Self::MAX_FLAT_ASYNC_PARAMS
+                }
+            }
         };
 
         let indirect_params = !ok || params.cur > max;
@@ -248,7 +254,7 @@ impl Resolve {
                 if retptr {
                     results.cur = 0;
                     match (variant, symmetric) {
-                        (AbiVariant::GuestImport, _) | (AbiVariant::GuestExport, true)  => {
+                        (AbiVariant::GuestImport, _) | (AbiVariant::GuestExport, true) => {
                             assert!(params.push(WasmType::Pointer));
                         }
                         (AbiVariant::GuestExport, false) => {
@@ -267,14 +273,22 @@ impl Resolve {
                 }
 
                 // The result of this function is a status code.
-                assert!(results.push(WasmType::I32));
+                assert!(results.push(if symmetric {
+                    WasmType::Pointer
+                } else {
+                    WasmType::I32
+                }));
             }
             AbiVariant::GuestExportAsync => {
                 // The result of this function is a status code. Note that the
                 // function results are entirely ignored here as they aren't
                 // part of the ABI and are handled in the `task.return`
                 // intrinsic.
-                assert!(results.push(WasmType::I32));
+                assert!(results.push(if symmetric {
+                    WasmType::Pointer
+                } else {
+                    WasmType::I32
+                }));
             }
             AbiVariant::GuestExportAsyncStackful => {
                 // No status code, and like async exports no result handling.
