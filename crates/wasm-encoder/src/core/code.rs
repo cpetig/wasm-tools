@@ -302,6 +302,11 @@ impl Encode for Function {
 pub struct Ieee32(pub(crate) u32);
 
 impl Ieee32 {
+    /// Creates a new Ieee32
+    pub fn new(bits: u32) -> Self {
+        Ieee32(bits)
+    }
+
     /// Gets the underlying bits of the 32-bit float.
     pub fn bits(self) -> u32 {
         self.0
@@ -310,9 +315,7 @@ impl Ieee32 {
 
 impl From<f32> for Ieee32 {
     fn from(value: f32) -> Self {
-        Ieee32 {
-            0: u32::from_le_bytes(value.to_le_bytes()),
-        }
+        Ieee32(u32::from_le_bytes(value.to_le_bytes()))
     }
 }
 
@@ -337,6 +340,11 @@ impl Encode for Ieee32 {
 pub struct Ieee64(pub(crate) u64);
 
 impl Ieee64 {
+    /// Creates a new Ieee64
+    pub fn new(bits: u64) -> Self {
+        Ieee64(bits)
+    }
+
     /// Gets the underlying bits of the 64-bit float.
     pub fn bits(self) -> u64 {
         self.0
@@ -345,9 +353,7 @@ impl Ieee64 {
 
 impl From<f64> for Ieee64 {
     fn from(value: f64) -> Self {
-        Ieee64 {
-            0: u64::from_le_bytes(value.to_le_bytes()),
-        }
+        Ieee64(u64::from_le_bytes(value.to_le_bytes()))
     }
 }
 
