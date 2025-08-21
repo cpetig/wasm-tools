@@ -280,6 +280,10 @@ impl Resolve {
                 }));
             }
             AbiVariant::GuestExportAsync => {
+                if symmetric && func.result.is_some() {
+                    assert!(params.push(WasmType::Pointer));
+                    retptr = true;
+                }
                 // The result of this function is a status code. Note that the
                 // function results are entirely ignored here as they aren't
                 // part of the ABI and are handled in the `task.return`
