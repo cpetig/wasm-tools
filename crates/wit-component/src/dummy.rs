@@ -374,12 +374,14 @@ fn push_root_async_intrinsics(dst: &mut String) {
         r#"
 (import "[export]$root" "[task-cancel]" (func))
 (import "$root" "[backpressure-set]" (func (param i32)))
+(import "$root" "[backpressure-inc]" (func))
+(import "$root" "[backpressure-dec]" (func))
 (import "$root" "[waitable-set-new]" (func (result i32)))
 (import "$root" "[waitable-set-wait]" (func (param i32 i32) (result i32)))
 (import "$root" "[waitable-set-poll]" (func (param i32 i32) (result i32)))
 (import "$root" "[waitable-set-drop]" (func (param i32)))
 (import "$root" "[waitable-join]" (func (param i32 i32)))
-(import "$root" "[yield]" (func (result i32)))
+(import "$root" "[thread-yield]" (func (result i32)))
 (import "$root" "[subtask-drop]" (func (param i32)))
 (import "$root" "[subtask-cancel]" (func (param i32) (result i32)))
 (import "$root" "[error-context-new-utf8]" (func (param i32 i32) (result i32)))
@@ -392,10 +394,12 @@ fn push_root_async_intrinsics(dst: &mut String) {
 (import "$root" "[context-get-0]" (func (result i32)))
 (import "$root" "[context-set-0]" (func (param i32)))
 
-;; deferred behind 🚝 or 🚟 upstream
-;;(import "$root" "[async-lower][waitable-set-wait]" (func (param i32 i32) (result i32)))
-;;(import "$root" "[async-lower][waitable-set-poll]" (func (param i32 i32) (result i32)))
-;;(import "$root" "[async-lower][yield]" (func (result i32)))
+;; deferred behind 🧵 upstream
+;;(import "$root" "[cancellable][waitable-set-wait]" (func (param i32 i32) (result i32)))
+;;(import "$root" "[cancellable][waitable-set-poll]" (func (param i32 i32) (result i32)))
+;;(import "$root" "[cancellable][thread-yield]" (func (result i32)))
+;;(import "$root" "[context-get-1]" (func (result i32)))
+;;(import "$root" "[context-set-1]" (func (param i32)))
 "#,
     );
 }

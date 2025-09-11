@@ -1,11 +1,11 @@
 (component
   (core module $m (;0;)
-    (type (;0;) (func (result i32)))
-    (import "" "yield" (func $yield (;0;) (type 0)))
+    (type (;0;) (func (param i32)))
+    (import "" "waitable-set.drop" (func (;0;) (type 0)))
   )
-  (core func $yield (;0;) (canon yield async))
+  (core func $waitable-set-drop (;0;) (canon waitable-set.drop))
   (core instance (;0;)
-    (export "yield" (func $yield))
+    (export "waitable-set.drop" (func $waitable-set-drop))
   )
   (core instance $i (;1;) (instantiate $m
       (with "" (instance 0))

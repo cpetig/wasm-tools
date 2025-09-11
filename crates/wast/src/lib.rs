@@ -561,9 +561,11 @@ pub mod kw {
     custom_keyword!(thread_spawn_indirect = "thread.spawn_indirect");
     custom_keyword!(thread_available_parallelism = "thread.available_parallelism");
     custom_keyword!(backpressure_set = "backpressure.set");
+    custom_keyword!(backpressure_inc = "backpressure.inc");
+    custom_keyword!(backpressure_dec = "backpressure.dec");
     custom_keyword!(task_return = "task.return");
     custom_keyword!(task_cancel = "task.cancel");
-    custom_keyword!(yield_ = "yield");
+    custom_keyword!(thread_yield = "thread.yield");
     custom_keyword!(subtask_drop = "subtask.drop");
     custom_keyword!(subtask_cancel = "subtask.cancel");
     custom_keyword!(stream_new = "stream.new");
@@ -597,6 +599,13 @@ pub mod kw {
     custom_keyword!(waitable_join = "waitable.join");
     custom_keyword!(context_get = "context.get");
     custom_keyword!(context_set = "context.set");
+    custom_keyword!(thread_index = "thread.index");
+    custom_keyword!(thread_new_indirect = "thread.new_indirect");
+    custom_keyword!(thread_switch_to = "thread.switch-to");
+    custom_keyword!(thread_suspend = "thread.suspend");
+    custom_keyword!(thread_resume_later = "thread.resume-later");
+    custom_keyword!(thread_yield_to = "thread.yield-to");
+    custom_keyword!(cancellable);
 }
 
 /// Common annotations used to parse WebAssembly text files.

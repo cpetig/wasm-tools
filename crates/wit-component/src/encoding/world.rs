@@ -416,18 +416,26 @@ impl<'a> ComponentWorld<'a> {
                 | Import::ContextGet(_)
                 | Import::ContextSet(_)
                 | Import::BackpressureSet
+                | Import::BackpressureInc
+                | Import::BackpressureDec
                 | Import::WaitableSetNew
                 | Import::WaitableSetWait { .. }
                 | Import::WaitableSetPoll { .. }
                 | Import::WaitableSetDrop
                 | Import::WaitableJoin
-                | Import::Yield { .. }
+                | Import::ThreadYield { .. }
                 | Import::SubtaskDrop
                 | Import::SubtaskCancel { .. }
                 | Import::ErrorContextNew { .. }
                 | Import::ErrorContextDebugMessage { .. }
                 | Import::ErrorContextDrop
-                | Import::ExportedTaskCancel => {}
+                | Import::ExportedTaskCancel
+                | Import::ThreadIndex
+                | Import::ThreadNewIndirect { .. }
+                | Import::ThreadSwitchTo { .. }
+                | Import::ThreadSuspend { .. }
+                | Import::ThreadResumeLater
+                | Import::ThreadYieldTo { .. } => {}
             }
         }
     }

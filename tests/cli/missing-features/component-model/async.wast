@@ -42,6 +42,30 @@
   "`backpressure.set` requires the component model async feature"
 )
 
+;; backpressure.inc
+(assert_invalid
+  (component
+    (core module $m
+      (import "" "backpressure.inc" (func $backpressure-inc (param i32)))
+    )
+    (core func $backpressure.inc (canon backpressure.inc))
+    (core instance $i (instantiate $m (with "" (instance (export "backpressure.inc" (func $backpressure.inc))))))
+  )
+  "`backpressure.inc` requires the component model async feature"
+)
+
+;; backpressure.dec
+(assert_invalid
+  (component
+    (core module $m
+      (import "" "backpressure.dec" (func $backpressure-dec (param i32)))
+    )
+    (core func $backpressure.dec (canon backpressure.dec))
+    (core instance $i (instantiate $m (with "" (instance (export "backpressure.dec" (func $backpressure.dec))))))
+  )
+  "`backpressure.dec` requires the component model async feature"
+)
+
 ;; task.return
 (assert_invalid
   (component
@@ -80,7 +104,7 @@
     (core module $m
       (import "" "waitable-set.wait" (func $waitable-set-wait (param i32) (result i32)))
     )
-    (core func $waitable-set-wait (canon waitable-set.wait async (memory $libc "memory")))
+    (core func $waitable-set-wait (canon waitable-set.wait (memory $libc "memory")))
     (core instance $i (instantiate $m (with "" (instance (export "waitable-set.wait" (func $waitable-set-wait))))))
   )
   "`waitable-set.wait` requires the component model async feature"
@@ -94,7 +118,7 @@
     (core module $m
       (import "" "waitable-set.poll" (func $waitable-set-poll (param i32) (result i32)))
     )
-    (core func $waitable-set-poll (canon waitable-set.poll async (memory $libc "memory")))
+    (core func $waitable-set-poll (canon waitable-set.poll (memory $libc "memory")))
     (core instance $i (instantiate $m (with "" (instance (export "waitable-set.poll" (func $waitable-set-poll))))))
   )
   "`waitable-set.poll` requires the component model async feature"
@@ -110,18 +134,6 @@
 (assert_invalid
   (component (core func (canon waitable.join)))
   "`waitable.join` requires the component model async feature"
-)
-
-;; yield
-(assert_invalid
-  (component
-    (core module $m
-      (import "" "yield" (func $yield))
-    )
-    (core func $yield (canon yield async))
-    (core instance $i (instantiate $m (with "" (instance (export "yield" (func $yield))))))
-  )
-  "`yield` requires the component model async feature"
 )
 
 ;; subtask.drop
