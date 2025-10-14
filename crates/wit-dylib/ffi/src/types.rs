@@ -2,12 +2,34 @@ use crate::Call;
 use crate::ffi;
 use std::ffi::{CStr, c_char};
 use std::fmt;
+use std::hash::{Hash, Hasher};
+
+macro_rules! impl_extra_traits {
+    ($name:ident) => {
+        impl Hash for $name {
+            fn hash<H: Hasher>(&self, hasher: &mut H) {
+                std::ptr::hash(self.ptr, hasher)
+            }
+        }
+        impl PartialEq for $name {
+            fn eq(&self, other: &$name) -> bool {
+                std::ptr::eq(self.ptr, other.ptr)
+            }
+        }
+        impl Eq for $name {}
+
+        unsafe impl Send for $name {}
+        unsafe impl Sync for $name {}
+    };
+}
 
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct Wit {
     ptr: &'static ffi::wit_t,
 }
+
+impl_extra_traits!(Wit);
 
 impl Wit {
     pub(crate) unsafe fn from_raw(ptr: *const ffi::wit_t) -> Wit {
@@ -30,7 +52,7 @@ impl Wit {
         }
     }
 
-    pub fn iter_funcs(&self) -> impl ExactSizeIterator<Item = Function> + '_ {
+    pub fn iter_funcs(&self) -> impl ExactSizeIterator<Item = Function> + Clone + '_ {
         self.raw_funcs().iter().map(|func| Function {
             wit: *self,
             ptr: func,
@@ -38,9 +60,9 @@ impl Wit {
     }
 
     pub fn get_import(&self, interface: Option<&str>, name: &str) -> Option<Function> {
-        let mut funcs = self.iter_funcs().filter(|f| {
-            f.interface() == interface && f.name() == name && f.import_impl().is_some()
-        });
+        let mut funcs = self
+            .iter_funcs()
+            .filter(|f| f.interface() == interface && f.name() == name && f.is_import());
         let func = funcs.next()?;
         assert!(funcs.next().is_none());
         Some(func)
@@ -67,7 +89,7 @@ impl Wit {
         }
     }
 
-    pub fn iter_records(&self) -> impl ExactSizeIterator<Item = Record> + '_ {
+    pub fn iter_records(&self) -> impl ExactSizeIterator<Item = Record> + Clone + '_ {
         self.raw_records().iter().map(|record| Record {
             wit: *self,
             ptr: record,
@@ -84,7 +106,7 @@ impl Wit {
         }
     }
 
-    pub fn iter_resources(&self) -> impl ExactSizeIterator<Item = Resource> + '_ {
+    pub fn iter_resources(&self) -> impl ExactSizeIterator<Item = Resource> + Clone + '_ {
         self.raw_resources()
             .iter()
             .map(|resource| Resource { ptr: resource })
@@ -100,7 +122,7 @@ impl Wit {
         }
     }
 
-    pub fn iter_flags(&self) -> impl ExactSizeIterator<Item = Flags> + '_ {
+    pub fn iter_flags(&self) -> impl ExactSizeIterator<Item = Flags> + Clone + '_ {
         self.raw_flags().iter().map(|flags| Flags { ptr: flags })
     }
 
@@ -115,7 +137,7 @@ impl Wit {
         }
     }
 
-    pub fn iter_tuples(&self) -> impl ExactSizeIterator<Item = Tuple> + '_ {
+    pub fn iter_tuples(&self) -> impl ExactSizeIterator<Item = Tuple> + Clone + '_ {
         self.raw_tuples().iter().map(|tuple| Tuple {
             wit: *self,
             ptr: tuple,
@@ -133,7 +155,7 @@ impl Wit {
         }
     }
 
-    pub fn iter_variants(&self) -> impl ExactSizeIterator<Item = Variant> + '_ {
+    pub fn iter_variants(&self) -> impl ExactSizeIterator<Item = Variant> + Clone + '_ {
         self.raw_variants().iter().map(|variant| Variant {
             wit: *self,
             ptr: variant,
@@ -150,7 +172,7 @@ impl Wit {
         }
     }
 
-    pub fn iter_enums(&self) -> impl ExactSizeIterator<Item = Enum> + '_ {
+    pub fn iter_enums(&self) -> impl ExactSizeIterator<Item = Enum> + Clone + '_ {
         self.raw_enums().iter().map(|e| Enum { ptr: e })
     }
 
@@ -165,7 +187,7 @@ impl Wit {
         }
     }
 
-    pub fn iter_options(&self) -> impl ExactSizeIterator<Item = WitOption> + '_ {
+    pub fn iter_options(&self) -> impl ExactSizeIterator<Item = WitOption> + Clone + '_ {
         self.raw_options()
             .iter()
             .map(|e| WitOption { wit: *self, ptr: e })
@@ -182,7 +204,7 @@ impl Wit {
         }
     }
 
-    pub fn iter_results(&self) -> impl ExactSizeIterator<Item = WitResult> + '_ {
+    pub fn iter_results(&self) -> impl ExactSizeIterator<Item = WitResult> + Clone + '_ {
         self.raw_results()
             .iter()
             .map(|e| WitResult { wit: *self, ptr: e })
@@ -199,7 +221,7 @@ impl Wit {
         }
     }
 
-    pub fn iter_lists(&self) -> impl ExactSizeIterator<Item = List> + '_ {
+    pub fn iter_lists(&self) -> impl ExactSizeIterator<Item = List> + Clone + '_ {
         self.raw_lists().iter().map(|e| List { wit: *self, ptr: e })
     }
 
@@ -214,7 +236,9 @@ impl Wit {
         }
     }
 
-    pub fn iter_fixed_size_lists(&self) -> impl ExactSizeIterator<Item = FixedSizeList> + '_ {
+    pub fn iter_fixed_size_lists(
+        &self,
+    ) -> impl ExactSizeIterator<Item = FixedSizeList> + Clone + '_ {
         self.raw_fixed_size_lists()
             .iter()
             .map(|e| FixedSizeList { wit: *self, ptr: e })
@@ -231,7 +255,7 @@ impl Wit {
         }
     }
 
-    pub fn iter_futures(&self) -> impl ExactSizeIterator<Item = Future> + '_ {
+    pub fn iter_futures(&self) -> impl ExactSizeIterator<Item = Future> + Clone + '_ {
         self.raw_futures()
             .iter()
             .map(|e| Future { wit: *self, ptr: e })
@@ -248,7 +272,7 @@ impl Wit {
         }
     }
 
-    pub fn iter_streams(&self) -> impl ExactSizeIterator<Item = Stream> + '_ {
+    pub fn iter_streams(&self) -> impl ExactSizeIterator<Item = Stream> + Clone + '_ {
         self.raw_streams()
             .iter()
             .map(|e| Stream { wit: *self, ptr: e })
@@ -265,7 +289,7 @@ impl Wit {
         }
     }
 
-    pub fn iter_aliases(&self) -> impl ExactSizeIterator<Item = Alias> + '_ {
+    pub fn iter_aliases(&self) -> impl ExactSizeIterator<Item = Alias> + Clone + '_ {
         self.raw_aliases()
             .iter()
             .map(|e| Alias { wit: *self, ptr: e })
@@ -286,6 +310,8 @@ pub struct Function {
     ptr: &'static ffi::wit_func_t,
 }
 
+impl_extra_traits!(Function);
+
 impl Function {
     pub fn interface(&self) -> Option<&'static str> {
         unsafe { opt_str(self.ptr.interface) }
@@ -295,11 +321,27 @@ impl Function {
         unsafe { to_str(self.ptr.name) }
     }
 
-    pub fn import_impl(&self) -> ffi::wit_import_fn_t {
+    pub fn sync_import_impl(&self) -> ffi::wit_import_fn_t {
         self.ptr.impl_
     }
 
-    pub fn params(&self) -> impl ExactSizeIterator<Item = Type> + '_ {
+    pub fn async_import_impl(&self) -> ffi::wit_import_async_fn_t {
+        self.ptr.async_impl
+    }
+
+    pub fn task_return(&self) -> ffi::wit_export_task_return_fn_t {
+        self.ptr.task_return
+    }
+
+    pub fn is_import(&self) -> bool {
+        self.ptr.impl_.is_some() || self.ptr.async_impl.is_some()
+    }
+
+    pub fn is_async_import(&self) -> bool {
+        self.ptr.async_impl.is_some()
+    }
+
+    pub fn params(&self) -> impl ExactSizeIterator<Item = Type> + DoubleEndedIterator + Clone + '_ {
         self.raw_params()
             .iter()
             .map(|param| Type::from_raw(self.wit, *param))
@@ -313,11 +355,57 @@ impl Function {
         Type::from_raw_opt(self.wit, self.ptr.result)
     }
 
-    pub fn call_import(&self, cx: &mut impl Call) {
-        let import_impl = self.import_impl().unwrap();
+    pub fn call_import_sync(&self, cx: &mut impl Call) {
+        let import_impl = self.sync_import_impl().unwrap();
         unsafe {
             let cx: *mut _ = cx;
             import_impl(cx.cast());
+        }
+    }
+
+    #[cfg(feature = "async")]
+    pub async fn call_import_async(&self, cx: &mut impl Call) {
+        use core::alloc::Layout;
+        use wit_bindgen::rt::async_support::Subtask;
+
+        return DylibSubtask { ptr: self.ptr, cx }.call(()).await;
+
+        struct DylibSubtask<C> {
+            ptr: &'static ffi::wit_func_t,
+            cx: *mut C,
+        }
+
+        unsafe impl<C> Subtask for DylibSubtask<C> {
+            type Params = ();
+            type ParamsLower = ();
+            type Results = ();
+
+            fn abi_layout(&self) -> Layout {
+                Layout::from_size_align(self.ptr.async_abi_area_size, self.ptr.async_abi_area_align)
+                    .unwrap()
+            }
+
+            fn results_offset(&self) -> usize {
+                0
+            }
+
+            unsafe fn params_lower(&self, (): (), _: *mut u8) {}
+            unsafe fn params_dealloc_lists(&self, (): ()) {}
+            unsafe fn params_dealloc_lists_and_own(&self, (): ()) {}
+
+            unsafe fn call_import(&self, (): (), ptr: *mut u8) -> u32 {
+                unsafe {
+                    let cx: *mut _ = self.cx;
+                    self.ptr.async_impl.unwrap()(cx.cast(), ptr.cast())
+                }
+            }
+
+            unsafe fn results_lift(&self, ptr: *mut u8) {
+                unsafe {
+                    let cx: *mut _ = self.cx;
+                    self.ptr.async_lift_impl.unwrap()(cx.cast(), ptr.cast());
+                }
+            }
         }
     }
 }
@@ -333,12 +421,6 @@ impl fmt::Debug for Function {
     }
 }
 
-impl PartialEq for Function {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.ptr, other.ptr)
-    }
-}
-
 unsafe fn opt_str(s: *const c_char) -> Option<&'static str> {
     if s.is_null() {
         None
@@ -351,7 +433,7 @@ unsafe fn to_str(s: *const c_char) -> &'static str {
     unsafe { CStr::from_ptr(s).to_str().unwrap() }
 }
 
-#[derive(PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Debug, Clone, Copy, Hash, Eq)]
 pub enum Type {
     U8,
     U16,
@@ -434,6 +516,8 @@ pub struct Record {
     ptr: &'static ffi::wit_record_t,
 }
 
+impl_extra_traits!(Record);
+
 impl Record {
     pub fn interface(&self) -> Option<&'static str> {
         unsafe { opt_str(self.ptr.interface) }
@@ -443,7 +527,10 @@ impl Record {
         unsafe { to_str(self.ptr.name) }
     }
 
-    pub fn fields(&self) -> impl ExactSizeIterator<Item = (&'static str, Type)> + '_ {
+    pub fn fields(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&'static str, Type)> + DoubleEndedIterator + Clone + '_
+    {
         unsafe {
             slice(self.ptr.fields, self.ptr.nfields)
                 .iter()
@@ -462,16 +549,12 @@ impl fmt::Debug for Record {
     }
 }
 
-impl PartialEq for Record {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.ptr, other.ptr)
-    }
-}
-
 #[derive(Copy, Clone)]
 pub struct Resource {
     ptr: &'static ffi::wit_resource_t,
 }
+
+impl_extra_traits!(Resource);
 
 impl Resource {
     pub fn interface(&self) -> Option<&'static str> {
@@ -504,16 +587,12 @@ impl fmt::Debug for Resource {
     }
 }
 
-impl PartialEq for Resource {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.ptr, other.ptr)
-    }
-}
-
 #[derive(Copy, Clone)]
 pub struct Flags {
     ptr: &'static ffi::wit_flags_t,
 }
+
+impl_extra_traits!(Flags);
 
 impl Flags {
     pub fn interface(&self) -> Option<&'static str> {
@@ -524,7 +603,9 @@ impl Flags {
         unsafe { to_str(self.ptr.name) }
     }
 
-    pub fn names(&self) -> impl ExactSizeIterator<Item = &'static str> {
+    pub fn names(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &'static str> + DoubleEndedIterator + Clone {
         unsafe {
             slice(self.ptr.names, self.ptr.nnames)
                 .iter()
@@ -543,17 +624,13 @@ impl fmt::Debug for Flags {
     }
 }
 
-impl PartialEq for Flags {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.ptr, other.ptr)
-    }
-}
-
 #[derive(Copy, Clone)]
 pub struct Tuple {
     wit: Wit,
     ptr: &'static ffi::wit_tuple_t,
 }
+
+impl_extra_traits!(Tuple);
 
 impl Tuple {
     pub fn interface(&self) -> Option<&'static str> {
@@ -564,7 +641,7 @@ impl Tuple {
         unsafe { opt_str(self.ptr.name) }
     }
 
-    pub fn types(&self) -> impl ExactSizeIterator<Item = Type> + '_ {
+    pub fn types(&self) -> impl ExactSizeIterator<Item = Type> + DoubleEndedIterator + Clone + '_ {
         unsafe {
             slice(self.ptr.types, self.ptr.ntypes)
                 .iter()
@@ -583,17 +660,13 @@ impl fmt::Debug for Tuple {
     }
 }
 
-impl PartialEq for Tuple {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.ptr, other.ptr)
-    }
-}
-
 #[derive(Copy, Clone)]
 pub struct Variant {
     wit: Wit,
     ptr: &'static ffi::wit_variant_t,
 }
+
+impl_extra_traits!(Variant);
 
 impl Variant {
     pub fn interface(&self) -> Option<&'static str> {
@@ -604,7 +677,10 @@ impl Variant {
         unsafe { to_str(self.ptr.name) }
     }
 
-    pub fn cases(&self) -> impl ExactSizeIterator<Item = (&'static str, Option<Type>)> + '_ {
+    pub fn cases(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&'static str, Option<Type>)> + DoubleEndedIterator + Clone + '_
+    {
         unsafe {
             slice(self.ptr.cases, self.ptr.ncases)
                 .iter()
@@ -623,16 +699,12 @@ impl fmt::Debug for Variant {
     }
 }
 
-impl PartialEq for Variant {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.ptr, other.ptr)
-    }
-}
-
 #[derive(Copy, Clone)]
 pub struct Enum {
     ptr: &'static ffi::wit_enum_t,
 }
+
+impl_extra_traits!(Enum);
 
 impl Enum {
     pub fn interface(&self) -> Option<&'static str> {
@@ -643,7 +715,9 @@ impl Enum {
         unsafe { to_str(self.ptr.name) }
     }
 
-    pub fn names(&self) -> impl ExactSizeIterator<Item = &'static str> + '_ {
+    pub fn names(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &'static str> + DoubleEndedIterator + Clone + '_ {
         unsafe {
             slice(self.ptr.names, self.ptr.nnames)
                 .iter()
@@ -662,17 +736,13 @@ impl fmt::Debug for Enum {
     }
 }
 
-impl PartialEq for Enum {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.ptr, other.ptr)
-    }
-}
-
 #[derive(Copy, Clone)]
 pub struct WitOption {
     wit: Wit,
     ptr: &'static ffi::wit_option_t,
 }
+
+impl_extra_traits!(WitOption);
 
 impl WitOption {
     pub fn interface(&self) -> Option<&'static str> {
@@ -698,17 +768,13 @@ impl fmt::Debug for WitOption {
     }
 }
 
-impl PartialEq for WitOption {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.ptr, other.ptr)
-    }
-}
-
 #[derive(Copy, Clone)]
 pub struct WitResult {
     wit: Wit,
     ptr: &'static ffi::wit_result_t,
 }
+
+impl_extra_traits!(WitResult);
 
 impl WitResult {
     pub fn interface(&self) -> Option<&'static str> {
@@ -739,17 +805,13 @@ impl fmt::Debug for WitResult {
     }
 }
 
-impl PartialEq for WitResult {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.ptr, other.ptr)
-    }
-}
-
 #[derive(Copy, Clone)]
 pub struct List {
     wit: Wit,
     ptr: &'static ffi::wit_list_t,
 }
+
+impl_extra_traits!(List);
 
 impl List {
     pub fn interface(&self) -> Option<&'static str> {
@@ -775,17 +837,13 @@ impl fmt::Debug for List {
     }
 }
 
-impl PartialEq for List {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.ptr, other.ptr)
-    }
-}
-
 #[derive(Copy, Clone)]
 pub struct FixedSizeList {
     wit: Wit,
     ptr: &'static ffi::wit_fixed_size_list_t,
 }
+
+impl_extra_traits!(FixedSizeList);
 
 impl FixedSizeList {
     pub fn interface(&self) -> Option<&'static str> {
@@ -816,17 +874,13 @@ impl fmt::Debug for FixedSizeList {
     }
 }
 
-impl PartialEq for FixedSizeList {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.ptr, other.ptr)
-    }
-}
-
 #[derive(Copy, Clone)]
 pub struct Future {
     wit: Wit,
     ptr: &'static ffi::wit_future_t,
 }
+
+impl_extra_traits!(Future);
 
 impl Future {
     pub fn interface(&self) -> Option<&'static str> {
@@ -852,17 +906,13 @@ impl fmt::Debug for Future {
     }
 }
 
-impl PartialEq for Future {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.ptr, other.ptr)
-    }
-}
-
 #[derive(Copy, Clone)]
 pub struct Stream {
     wit: Wit,
     ptr: &'static ffi::wit_stream_t,
 }
+
+impl_extra_traits!(Stream);
 
 impl Stream {
     pub fn interface(&self) -> Option<&'static str> {
@@ -888,17 +938,13 @@ impl fmt::Debug for Stream {
     }
 }
 
-impl PartialEq for Stream {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.ptr, other.ptr)
-    }
-}
-
 #[derive(Copy, Clone)]
 pub struct Alias {
     wit: Wit,
     ptr: &'static ffi::wit_alias_t,
 }
+
+impl_extra_traits!(Alias);
 
 impl Alias {
     pub fn interface(&self) -> Option<&'static str> {
@@ -921,11 +967,5 @@ impl fmt::Debug for Alias {
             .field("name", &self.name())
             .field("ty", &self.ty())
             .finish()
-    }
-}
-
-impl PartialEq for Alias {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.ptr, other.ptr)
     }
 }

@@ -57,32 +57,6 @@ impl Opts {
     }
 }
 
-fn parse_optionally_name_file(s: &str) -> (&str, &str) {
-    let mut parts = s.splitn(2, '=');
-    let name_or_path = parts.next().unwrap();
-    match parts.next() {
-        Some(path) => (name_or_path, path),
-        None => {
-            let name = Path::new(name_or_path)
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap();
-            let name = match name.find('.') {
-                Some(i) => &name[..i],
-                None => name,
-            };
-            (name, name_or_path)
-        }
-    }
-}
-
-fn parse_adapter(s: &str) -> Result<(String, Vec<u8>)> {
-    let (name, path) = parse_optionally_name_file(s);
-    let wasm = wat::parse_file(path)?;
-    Ok((name.to_string(), wasm))
-}
-
 fn parse_import_name(s: &str) -> Result<(String, String)> {
     s.split_once('=')
         .map(|(old, new)| (old.to_string(), new.to_string()))
@@ -101,21 +75,48 @@ fn parse_import_name(s: &str) -> Result<(String, String)> {
 /// used during compilation of the core wasm module and will produce a component
 /// with all of this type information resolved.
 #[derive(Parser)]
+#[clap(after_help = "\
+Examples:
+
+    # Supposing foo.wasm contains a binary core module,
+    # create a component using the adapter in the
+    # file `wasi_snapshot_preview1.reactor.wasm`, and save the binary
+    # component to the file foo.component.wasm.
+    $ wasm-tools component new foo.wasm --adapt wasi_snapshot_preview1.reactor.wasm \
+        -o foo.component.wasm
+
+    # Supporting foo.wasm contains a binary core module,
+    # create a component using the adapter in the
+    # file some_adapter.wasm, which must implement the import module
+    # \"wasi_snapshot_preview1\", and save the binary component to the file
+    # foo.component.wasm.
+    $ wasm-tools component new foo.wasm --adapt wasi_snapshot_preview1=some_adapter.wasm \
+        -o foo.component.wasm
+
+    # In the output component, replace any imports of \"wasi:io/error@0.2.0\" with
+    # an import of \"unlocked-dep=<wasi:io/error>\". This has the effect of changing
+    # the dependency on `wasi:io/error` from an exact version to one of a set of
+    # possible versions of this dependency.
+    # (For more on locked vs. unlocked dependencies, see
+    # https://github.com/WebAssembly/component-model/blob/main/design/mvp/Explainer.md#import-and-export-definitions)
+    # Also use the adapter contained in the file `wasm_snapshot_preview1.wasm`
+    # in the current directory, and save the output to the file foo.component.wasm.
+    $ wasm-tools component new foo.wasm --import-name \"wasi:io/error@0.2.0=unlocked-dep=<wasi:io/error>\" \
+        --adapt wasi_snapshot_preview1.wasm -o foo.component.wasm
+
+    # Create a component and print it to stdout in in text format, skipping validation of
+    # the output component.
+    $ wasm-tools component new foo.wasm -t --skip-validation
+
+    # Create a component, using memory.grow to reallocate memory.
+    # This can be useful if `cabi_realloc` cannot be called before the host runtime
+    # is initialized.
+    $ wasm-tools component new foo.wasm --realloc-via-memory-grow \
+        --adapt wasi_snapshot_preview1.reactor.wasm -o foo.component.wasm
+")]
 pub struct NewOpts {
-    /// The path to an adapter module to satisfy imports not otherwise bound to
-    /// WIT interfaces.
-    ///
-    /// An adapter module can be used to translate the `wasi_snapshot_preview1`
-    /// ABI, for example, to one that uses the component model. The first
-    /// `[NAME=]` specified in the argument is inferred from the name of file
-    /// specified by `MODULE` if not present and is the name of the import
-    /// module that's being implemented (e.g. `wasi_snapshot_preview1.wasm`).
-    ///
-    /// The second part of this argument, optionally specified, is the interface
-    /// that this adapter module imports. If not specified then the interface
-    /// imported is inferred from the adapter module itself.
-    #[clap(long = "adapt", value_name = "[NAME=]MODULE", value_parser = parse_adapter)]
-    adapters: Vec<(String, Vec<u8>)>,
+    #[clap(flatten)]
+    adapters: wasm_tools::AdaptersArg,
 
     /// Rename an instance import in the output component.
     ///
@@ -126,7 +127,7 @@ pub struct NewOpts {
     /// name.
     ///
     /// If the old import name is not found, it is ignored.
-    #[clap(long = "import-name", value_name = "[OLD]=NEW", value_parser = parse_import_name)]
+    #[clap(long = "import-name", value_name = "OLD=NEW", value_parser = parse_import_name)]
     import_names: Vec<(String, String)>,
 
     #[clap(flatten)]
@@ -151,7 +152,7 @@ pub struct NewOpts {
     /// semver ranges.
     ///
     /// This is enabled by default.
-    #[clap(long, value_name = "MERGE")]
+    #[clap(long, value_name = "<true|false>")]
     merge_imports_based_on_semver: Option<bool>,
 
     /// Reject usage of the "legacy" naming scheme of `wit-component` and
@@ -183,7 +184,7 @@ impl NewOpts {
         }
         encoder = encoder.module(&wasm)?;
 
-        for (name, wasm) in self.adapters.iter() {
+        for (name, wasm) in self.adapters.adapters.iter() {
             encoder = encoder.adapter(name, wasm)?;
         }
 
@@ -216,6 +217,67 @@ impl NewOpts {
 /// for you. This is primarily intended for one-off testing or for developers
 /// working with text format wasm.
 #[derive(Parser)]
+#[clap(after_help = "\
+Examples:
+
+    # Embed the WIT in world.wit in the binary core module contained in the
+    # file foo.wasm and print the textual representation of the result
+    # to stdout.
+    $ wasm-tools component embed world.wit foo.wasm -t
+
+    # Embed the WIT in world.wit in the binary core module contained in the
+    # file foo.wasm and save the resulting binary module to out.wasm.
+    $ wasm-tools component embed world.wit foo.wasm -o out.wasm
+
+Supposing feature.wit is as follows:
+package a:b;
+
+@unstable(feature = foo)
+interface foo {
+  @unstable(feature = foo)
+  type t = u32;
+}
+    # Embed the WIT for feature.wit in the binary core module contained
+    # in the file foo.wasm, without hiding the unstable \"foo\" feature,
+    # and print the textual representation of the result to stdout.
+    $ wasm-tools component embed feature.wit --features foo foo.wasm -t
+
+    # Supposing that the current directory contains several WIT files
+    # that each define various worlds, embed the world \"adder\" in
+    # the output and print its textual representation to stdout.
+    $ wasm-tools component embed . --world adder foo.wasm -t
+
+Note: without the --world flag in this case, wasm-tools would print an
+error message that looks like:
+error: There are multiple worlds in `docs:calculator@0.1.0`; one must be explicitly chosen:
+  docs:calculator/adder@0.1.0
+  docs:calculator/calculator@0.1.0
+  docs:calculator/subtracter@0.1.0
+
+    # Generate a template core module with the same imports and exports
+    # as the WIT world \"calculator\" that appears in a file in the current
+    # directory, and print a textual representation of the result to stdout.
+    $ wasm-tools component embed . --world calculator --dummy -t
+
+    # Generate only the custom section; note that this does not require
+    # a .wasm or .wat file as an argument.
+    $ wasm-tools component embed --world foo foo.wit --only-custom -o foo.wasm
+    * using --only-custom
+
+    # Embed the WIT in world.wit in the binary core module contained in the
+    # file foo.wasm and print the textual representation of the result
+    # to stdout, lowering imports using the async ABI and lifting exports
+    # with the async-with-callback ABI.
+    $ wasm-tools component embed world.wit foo.wasm --async-callback --dummy-names legacy -t
+
+    # Embed the WIT in world.wit in the binary core module contained in the
+    # file foo.wasm and print the textual representation of the result
+    # to stdout, lowering imports using the async ABI and lifting exports
+    # with the async-without-callback ABI.
+    $ wasm-tools component embed world.wit foo.wasm --async-stackful --dummy-names legacy -t
+
+")]
+
 pub struct EmbedOpts {
     #[clap(flatten)]
     resolve: WitResolve,
@@ -417,20 +479,8 @@ pub struct LinkOpts {
     #[clap(long, value_name = "[NAME=]MODULE", value_parser = parse_library)]
     dl_openable: Vec<(String, Vec<u8>)>,
 
-    /// The path to an adapter module to satisfy imports not otherwise bound to
-    /// WIT interfaces.
-    ///
-    /// An adapter module can be used to translate the `wasi_snapshot_preview1`
-    /// ABI, for example, to one that uses the component model. The first
-    /// `[NAME=]` specified in the argument is inferred from the name of file
-    /// specified by `MODULE` if not present and is the name of the import
-    /// module that's being implemented (e.g. `wasi_snapshot_preview1.wasm`).
-    ///
-    /// The second part of this argument, optionally specified, is the interface
-    /// that this adapter module imports. If not specified then the interface
-    /// imported is inferred from the adapter module itself.
-    #[clap(long = "adapt", value_name = "[NAME=]MODULE", value_parser = parse_adapter)]
-    adapters: Vec<(String, Vec<u8>)>,
+    #[clap(flatten)]
+    adapters: wasm_tools::AdaptersArg,
 
     /// Size of stack (in bytes) to allocate in the synthesized main module
     #[clap(long)]
@@ -516,7 +566,7 @@ impl LinkOpts {
             linker = linker.library(name, wasm, true)?;
         }
 
-        for (name, wasm) in &self.adapters {
+        for (name, wasm) in &self.adapters.adapters {
             linker = linker.adapter(name, wasm)?;
         }
 
@@ -538,6 +588,108 @@ impl LinkOpts {
 /// back to text, and a WIT document can be extracted from a component binary to
 /// inspect its interfaces.
 #[derive(Parser)]
+#[clap(after_help = "\
+Examples:
+
+    # Parse the current directory as a WIT package and print the resulting
+    # package, supposing a directory that contains three WIT files,
+    # one defining an
+    # `adder` world; one defining a `subtracter` world; and one defining a
+    # `calculator` world.
+    $ wasm-tools component wit .
+package docs:calculator@0.1.0;
+
+interface add {
+  add: func(x: u32, y: u32) -> u32;
+}
+
+interface evaluate {
+  evaluate: func(x: u32, y: u32) -> u32;
+}
+
+interface subtract {
+  subtract: func(x: u32, y: u32) -> u32;
+}
+
+world adder {
+  export add;
+}
+world calculator {
+  import add;
+  import subtract;
+
+  export evaluate;
+}
+world subtracter {
+  export subtract;
+}
+
+   # Supposing the same directory contents as above, print the package to
+   # a file in the `out` subdirectory.
+   $ wasm-tools component wit . --out-dir out
+
+   # Supposing the same directory contents above, print the WIT for a world
+   # that imports the exports of the `calculator` world.
+   # In the output, the `calculator` world is replaced with:
+   # world calculator-importized {
+   #     import evaluate;
+   # }
+   $ wasm-tools component wit . --importize-world calculator
+
+   # Supposing foo.wasm is a binary component, extract the interface
+   # from the component and print it to stdout.
+   $ wasm-tools component wit foo.wasm
+
+   # Supposing foo.wasm is a binary component that depends on several
+   # WASI interfaces, extract the interface from the component and save it
+   # as WIT, along with WIT files containing all the dependencies, to
+   # the `out` subdirectory.
+   $ wasm-tools component wit foo.wasm --out-dir out
+Writing: out/deps/io.wit
+Writing: out/deps/cli.wit
+Writing: out/deps/clocks.wit
+Writing: out/deps/filesystem.wit
+Writing: out/deps/adder.wit
+Writing: out/component.wit
+
+   # With the same foo.wasm file, print a textual WAT representation
+   # of the interface to stdout, skipping validation of the WAT code.
+   $ wasm-tools component wit foo.wasm -t --skip-validation
+
+   # With the same foo.wasm file, print a JSON representation
+   # of the interface to stdout.
+   $ wasm-tools component wit foo.wasm --json
+
+   # With the same foo.wasm file, print the WIT for a world that
+   # imports the component's exports to stdout.
+   $ wasm-tools component wit foo.wasm --importize
+
+Supposing feature.wit is as follows:
+package a:b;
+
+@unstable(feature = foo)
+interface foo {
+  @unstable(feature = foo)
+  type t = u32;
+}
+
+   # Print the WIT for feature.wit without hiding the unstable
+   # \"foo\" feature.
+   $ wasm-tools component wit feature.wit --features foo
+package a:b;
+
+@unstable(feature = foo)
+interface foo {
+  @unstable(feature = foo)
+  type t = u32;
+}
+
+   # Print the WIT for feature.wit, hiding the unstable
+   # \"foo\" feature.
+   $ wasm-tools component wit feature.wit
+package a:b;
+
+")]
 pub struct WitOpts {
     #[clap(flatten)]
     general: wasm_tools::GeneralOpts,

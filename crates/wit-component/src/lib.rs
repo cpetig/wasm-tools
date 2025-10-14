@@ -1,7 +1,7 @@
 //! The WebAssembly component tooling.
 
 #![deny(missing_docs)]
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 use std::str::FromStr;
 use std::{borrow::Cow, fmt::Display};
@@ -21,6 +21,7 @@ pub use encoding::{ComponentEncoder, LibraryInfo, encode};
 pub use linking::Linker;
 pub use printing::*;
 pub use targets::*;
+pub use validation::AdapterModuleDidNotExport;
 pub use wit_parser::decoding::{DecodedWasm, decode, decode_reader};
 
 pub mod metadata;
