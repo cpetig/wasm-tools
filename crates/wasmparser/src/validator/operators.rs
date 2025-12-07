@@ -1902,6 +1902,7 @@ macro_rules! validate_proposal {
     (desc legacy_exceptions) => ("legacy exceptions");
     (desc stack_switching) => ("stack switching");
     (desc wide_arithmetic) => ("wide arithmetic");
+    (desc custom_descriptors) => ("custom descriptors operations");
 }
 
 impl<'a, T> VisitOperator<'a> for WasmProposalValidator<'_, '_, T>
@@ -3219,11 +3220,16 @@ where
         }
 
         let index = UnpackedIndex::Id(type_id);
-        let ty = ValType::Ref(
-            RefType::new(false, HeapType::Concrete(index)).ok_or_else(|| {
-                BinaryReaderError::new("implementation limit: type index too large", self.offset)
-            })?,
-        );
+        let hty = if self.features.custom_descriptors()
+            && self.resources.has_function_exact_type(function_index)
+        {
+            HeapType::Exact(index)
+        } else {
+            HeapType::Concrete(index)
+        };
+        let ty = ValType::Ref(RefType::new(false, hty).ok_or_else(|| {
+            BinaryReaderError::new("implementation limit: type index too large", self.offset)
+        })?);
         self.push_operand(ty)?;
         Ok(())
     }
@@ -3432,14 +3438,17 @@ where
         Ok(())
     }
     fn visit_struct_new(&mut self, struct_type_index: u32) -> Self::Output {
-        if let Some(descriptor_idx) = self
+        if let Some(_) = self
             .sub_type_at(struct_type_index)?
             .composite_type
             .descriptor_idx
         {
-            let ty = ValType::Ref(RefType::exact(true, descriptor_idx));
-            self.pop_operand(Some(ty))?;
+            bail!(
+                self.offset,
+                "type with descriptor requires descriptor allocation: `struct.new` with type {struct_type_index}"
+            );
         }
+
         let struct_ty = self.struct_type_at(struct_type_index)?;
         for ty in struct_ty.fields.iter().rev() {
             self.pop_operand(Some(ty.element_type.unpack()))?;
@@ -3448,9 +3457,56 @@ where
         Ok(())
     }
     fn visit_struct_new_default(&mut self, type_index: u32) -> Self::Output {
+        if let Some(_) = self.sub_type_at(type_index)?.composite_type.descriptor_idx {
+            bail!(
+                self.offset,
+                "type with descriptor requires descriptor allocation: `struct.new_default` with type {type_index}"
+            );
+        }
+
+        let ty = self.struct_type_at(type_index)?;
+        for field in ty.fields.iter() {
+            let val_ty = field.element_type.unpack();
+            if !val_ty.is_defaultable() {
+                bail!(
+                    self.offset,
+                    "invalid `struct.new_default`: {val_ty} field is not defaultable"
+                );
+            }
+        }
+        self.push_exact_ref_if_available(false, type_index)?;
+        Ok(())
+    }
+    fn visit_struct_new_desc(&mut self, struct_type_index: u32) -> Self::Output {
+        if let Some(descriptor_idx) = self
+            .sub_type_at(struct_type_index)?
+            .composite_type
+            .descriptor_idx
+        {
+            let ty = ValType::Ref(RefType::exact(true, descriptor_idx));
+            self.pop_operand(Some(ty))?;
+        } else {
+            bail!(
+                self.offset,
+                "invalid `struct.new_desc`: type {struct_type_index} is not described"
+            );
+        }
+        let struct_ty = self.struct_type_at(struct_type_index)?;
+        for ty in struct_ty.fields.iter().rev() {
+            self.pop_operand(Some(ty.element_type.unpack()))?;
+        }
+        self.push_exact_ref_if_available(false, struct_type_index)?;
+        Ok(())
+    }
+    fn visit_struct_new_default_desc(&mut self, type_index: u32) -> Self::Output {
         if let Some(descriptor_idx) = self.sub_type_at(type_index)?.composite_type.descriptor_idx {
             let ty = ValType::Ref(RefType::exact(true, descriptor_idx));
             self.pop_operand(Some(ty))?;
+        } else {
+            bail!(
+                self.offset,
+                "invalid `struct.new_default_desc`: type {type_index} is not described"
+            );
         }
         let ty = self.struct_type_at(type_index)?;
         for field in ty.fields.iter() {
