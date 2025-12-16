@@ -81,7 +81,8 @@ uninlined_format_args = 'warn'
 unnecessary_mut_passed = 'warn'
 unnecessary_fallible_conversions = 'warn'
 unnecessary_cast = 'warn'
-allow_attributes_without_reason = 'warn'
+# TODO: find time to re-enable this
+# allow_attributes_without_reason = 'warn'
 
 [workspace.package]
 edition = '2021'
@@ -103,11 +104,7 @@ version = "0.243.0"
 # message to wasm-tools maintainers to discuss. In some cases it's possible to
 # add version detection to build scripts but in other cases this may not be
 # reasonable to expect.
-#
-# NB: if this number increases to 1.81-or-later delete
-# `crates/wasmparser/build.rs` and `crates/wasm-encoder/build.rs` scripts
-# as they are no longer necessary.
-rust-version = "1.76.0"
+rust-version = "1.81.0"
 
 [workspace.dependencies]
 ahash = { version = "0.8.11", default-features = false }
@@ -142,7 +139,7 @@ spdx = "0.10.1"
 termcolor = "1.2.0"
 url = "2.0.0"
 wasmtime = { version = "34.0.1", default-features = false, features = ['cranelift', 'component-model', 'runtime', 'gc-drc'] }
-thiserror = "2.0.12"
+thiserror = { version = "2.0.12", default-features = false }
 tempfile = "3.2.0"
 wit-bindgen = { git = 'https://github.com/bytecodealliance/wit-bindgen', default-features = false }
 
