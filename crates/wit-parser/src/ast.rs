@@ -2080,6 +2080,7 @@ fn type_string<'a>(ty: &Type<'a>, name: &str) -> Option<String> {
         Type::Stream(_) => todo!(),
         Type::ErrorContext(_) => todo!(),
         Type::FixedSizeList(_) => todo!(),
+        Type::Map(_) => todo!(),
     }
 }
 
