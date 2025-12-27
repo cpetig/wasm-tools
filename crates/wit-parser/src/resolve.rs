@@ -574,6 +574,7 @@ package {name} is defined in two different locations:\n\
 
             Type::Id(id) => match &self.types[*id].kind {
                 TypeDefKind::List(_)
+                | TypeDefKind::Map(_, _)
                 | TypeDefKind::Variant(_)
                 | TypeDefKind::Enum(_)
                 | TypeDefKind::Option(_)
@@ -3090,19 +3091,19 @@ impl Remap {
         let mut world_to_package = HashMap::new();
         let mut interface_to_package = HashMap::new();
         for (i, (pkg_name, worlds_or_ifaces)) in unresolved.foreign_deps.iter().enumerate() {
-            for (name, item) in worlds_or_ifaces {
+            for (name, (item, stabilities)) in worlds_or_ifaces {
                 match item {
                     AstItem::Interface(unresolved_interface_id) => {
                         let prev = interface_to_package.insert(
                             *unresolved_interface_id,
-                            (pkg_name, name, unresolved.foreign_dep_spans[i]),
+                            (pkg_name, name, unresolved.foreign_dep_spans[i], stabilities),
                         );
                         assert!(prev.is_none());
                     }
                     AstItem::World(unresolved_world_id) => {
                         let prev = world_to_package.insert(
                             *unresolved_world_id,
-                            (pkg_name, name, unresolved.foreign_dep_spans[i]),
+                            (pkg_name, name, unresolved.foreign_dep_spans[i], stabilities),
                         );
                         assert!(prev.is_none());
                     }
@@ -3113,12 +3114,12 @@ impl Remap {
         // Connect all interfaces referred to in `interface_to_package`, which
         // are at the front of `unresolved.interfaces`, to interfaces already
         // contained within `resolve`.
-        self.process_foreign_interfaces(unresolved, &interface_to_package, resolve)?;
+        self.process_foreign_interfaces(unresolved, &interface_to_package, resolve, &pkgid)?;
 
         // Connect all worlds referred to in `world_to_package`, which
         // are at the front of `unresolved.worlds`, to worlds already
         // contained within `resolve`.
-        self.process_foreign_worlds(unresolved, &world_to_package, resolve)?;
+        self.process_foreign_worlds(unresolved, &world_to_package, resolve, &pkgid)?;
 
         // Finally, iterate over all foreign-defined types and determine
         // what they map to.
@@ -3153,17 +3154,20 @@ impl Remap {
     fn process_foreign_interfaces(
         &mut self,
         unresolved: &UnresolvedPackage,
-        interface_to_package: &HashMap<InterfaceId, (&PackageName, &String, Span)>,
+        interface_to_package: &HashMap<InterfaceId, (&PackageName, &String, Span, &Vec<Stability>)>,
         resolve: &mut Resolve,
+        parent_pkg_id: &PackageId,
     ) -> Result<(), anyhow::Error> {
         for (unresolved_iface_id, unresolved_iface) in unresolved.interfaces.iter() {
-            let (pkg_name, interface, span) = match interface_to_package.get(&unresolved_iface_id) {
-                Some(items) => *items,
-                // All foreign interfaces are defined first, so the first one
-                // which is defined in a non-foreign document means that all
-                // further interfaces will be non-foreign as well.
-                None => break,
-            };
+            let (pkg_name, interface, span, stabilities) =
+                match interface_to_package.get(&unresolved_iface_id) {
+                    Some(items) => *items,
+                    // All foreign interfaces are defined first, so the first one
+                    // which is defined in a non-foreign document means that all
+                    // further interfaces will be non-foreign as well.
+                    None => break,
+                };
+
             let pkgid = resolve
                 .package_names
                 .get(pkg_name)
@@ -3181,6 +3185,20 @@ impl Remap {
 
             let pkg = &resolve.packages[pkgid];
             let span = &unresolved.interface_spans[unresolved_iface_id.index()];
+
+            let mut enabled = false;
+            for stability in stabilities {
+                if resolve.include_stability(stability, parent_pkg_id, Some(span.span))? {
+                    enabled = true;
+                    break;
+                }
+            }
+
+            if !enabled {
+                self.interfaces.push(None);
+                continue;
+            }
+
             let iface_id = pkg
                 .interfaces
                 .get(interface)
@@ -3201,16 +3219,18 @@ impl Remap {
     fn process_foreign_worlds(
         &mut self,
         unresolved: &UnresolvedPackage,
-        world_to_package: &HashMap<WorldId, (&PackageName, &String, Span)>,
+        world_to_package: &HashMap<WorldId, (&PackageName, &String, Span, &Vec<Stability>)>,
         resolve: &mut Resolve,
+        parent_pkg_id: &PackageId,
     ) -> Result<(), anyhow::Error> {
         for (unresolved_world_id, _) in unresolved.worlds.iter() {
-            let (pkg_name, world, span) = match world_to_package.get(&unresolved_world_id) {
-                Some(items) => *items,
-                // Same as above, all worlds are foreign until we find a
-                // non-foreign one.
-                None => break,
-            };
+            let (pkg_name, world, span, stabilities) =
+                match world_to_package.get(&unresolved_world_id) {
+                    Some(items) => *items,
+                    // Same as above, all worlds are foreign until we find a
+                    // non-foreign one.
+                    None => break,
+                };
 
             let pkgid = resolve
                 .package_names
@@ -3219,6 +3239,20 @@ impl Remap {
                 .ok_or_else(|| Error::new(span, "package not found"))?;
             let pkg = &resolve.packages[pkgid];
             let span = &unresolved.world_spans[unresolved_world_id.index()];
+
+            let mut enabled = false;
+            for stability in stabilities {
+                if resolve.include_stability(stability, parent_pkg_id, Some(span.span))? {
+                    enabled = true;
+                    break;
+                }
+            }
+
+            if !enabled {
+                self.worlds.push(None);
+                continue;
+            }
+
             let world_id = pkg
                 .worlds
                 .get(world)
@@ -3318,6 +3352,10 @@ impl Remap {
             }
             Option(t) | List(t, ..) | FixedSizeList(t, ..) | Future(Some(t)) | Stream(Some(t)) => {
                 self.update_ty(resolve, t, span)?
+            }
+            Map(k, v) => {
+                self.update_ty(resolve, k, span)?;
+                self.update_ty(resolve, v, span)?;
             }
             Result(r) => {
                 if let Some(ty) = &mut r.ok {
@@ -3813,6 +3851,9 @@ impl Remap {
             | TypeDefKind::Future(Some(ty))
             | TypeDefKind::Stream(Some(ty))
             | TypeDefKind::Option(ty) => self.type_has_borrow(resolve, ty),
+            TypeDefKind::Map(k, v) => {
+                self.type_has_borrow(resolve, k) || self.type_has_borrow(resolve, v)
+            }
             TypeDefKind::Result(r) => [&r.ok, &r.err]
                 .iter()
                 .filter_map(|t| t.as_ref())

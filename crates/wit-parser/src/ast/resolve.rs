@@ -46,8 +46,10 @@ pub struct Resolver<'a> {
     /// Metadata about foreign dependencies which are not defined in this
     /// package. This map is keyed by the name of the package being imported
     /// from. The next level of key is the name of the interface being imported
-    /// from, and the final value is the assigned ID of the interface.
-    foreign_deps: IndexMap<PackageName, IndexMap<&'a str, AstItem>>,
+    /// from, and the final value is a tuple containing the assigned ID of the
+    /// dependency, and a Vector of the Stability attributes associated with each
+    /// of its imports.
+    foreign_deps: IndexMap<PackageName, IndexMap<&'a str, (AstItem, Vec<Stability>)>>,
 
     /// All interfaces that are present within `self.foreign_deps`.
     foreign_interfaces: HashSet<InterfaceId>,
@@ -92,6 +94,7 @@ enum Key {
     Tuple(Vec<Type>),
     Enum(Vec<String>),
     List(Type),
+    Map(Type, Type),
     FixedSizeList(Type, u32),
     Option(Type),
     Result(Option<Type>, Option<Type>),
@@ -233,7 +236,9 @@ impl<'a> Resolver<'a> {
                     (
                         name.clone(),
                         deps.iter()
-                            .map(|(name, id)| (name.to_string(), *id))
+                            .map(|(name, (id, stabilities))| {
+                                (name.to_string(), (*id, stabilities.clone()))
+                            })
                             .collect(),
                     )
                 })
@@ -257,18 +262,20 @@ impl<'a> Resolver<'a> {
         let mut foreign_worlds = mem::take(&mut self.foreign_worlds);
         for decl_list in decl_lists {
             decl_list
-                .for_each_path(&mut |_, _attrs, path, _names, world_or_iface| {
+                .for_each_path(&mut |_, attrs, path, _names, world_or_iface| {
                     let (id, name) = match path {
                         ast::UsePath::Package { id, name } => (id, name),
                         _ => return Ok(()),
                     };
 
+                    let stability = self.stability(attrs)?;
+
                     let deps = foreign_deps.entry(id.package_name()).or_insert_with(|| {
                         self.foreign_dep_spans.push(id.span);
                         IndexMap::new()
                     });
-                    let id = *deps.entry(name.name).or_insert_with(|| {
-                        match world_or_iface {
+                    let (id, stabilities) = deps.entry(name.name).or_insert_with(|| {
+                        let id = match world_or_iface {
                             WorldOrInterface::World => {
                                 log::trace!(
                                     "creating a world for foreign dep: {}/{}",
@@ -287,10 +294,13 @@ impl<'a> Resolver<'a> {
                                 );
                                 AstItem::Interface(self.alloc_interface(name.span))
                             }
-                        }
+                        };
+                        (id, Vec::new())
                     });
 
-                    let _ = match id {
+                    stabilities.push(stability);
+
+                    let _ = match *id {
                         AstItem::Interface(id) => foreign_interfaces.insert(id),
                         AstItem::World(id) => foreign_worlds.insert(id),
                     };
@@ -520,7 +530,7 @@ impl<'a> Resolver<'a> {
                                 )
                             })?,
                             ast::UsePath::Package { id, name } => {
-                                self.foreign_deps[&id.package_name()][name.name]
+                                self.foreign_deps[&id.package_name()][name.name].0
                             }
                         };
                         (name.name, item)
@@ -1104,7 +1114,7 @@ impl<'a> Resolver<'a> {
                 }
             }
             ast::UsePath::Package { id, name } => Ok((
-                self.foreign_deps[&id.package_name()][name.name],
+                self.foreign_deps[&id.package_name()][name.name].0,
                 name.name.into(),
                 name.span,
             )),
@@ -1179,6 +1189,32 @@ impl<'a> Resolver<'a> {
             ast::Type::List(list) => {
                 let ty = self.resolve_type(&list.ty, stability)?;
                 TypeDefKind::List(ty)
+            }
+            ast::Type::Map(map) => {
+                let key_ty = self.resolve_type(&map.key, stability)?;
+                let value_ty = self.resolve_type(&map.value, stability)?;
+
+                match key_ty {
+                    Type::Bool
+                    | Type::U8
+                    | Type::U16
+                    | Type::U32
+                    | Type::U64
+                    | Type::S8
+                    | Type::S16
+                    | Type::S32
+                    | Type::S64
+                    | Type::Char
+                    | Type::String => {}
+                    _ => {
+                        bail!(Error::new(
+                            map.span,
+                            "invalid map key type: map keys must be bool, u8, u16, u32, u64, s8, s16, s32, s64, char, or string",
+                        ))
+                    }
+                }
+
+                TypeDefKind::Map(key_ty, value_ty)
             }
             ast::Type::FixedSizeList(list) => {
                 let ty = self.resolve_type(&list.ty, stability)?;
@@ -1367,6 +1403,9 @@ impl<'a> Resolver<'a> {
                 TypeDefKind::List(ty)
                 | TypeDefKind::FixedSizeList(ty, _)
                 | TypeDefKind::Option(ty) => find_in_type(types, *ty),
+                TypeDefKind::Map(k, v) => {
+                    find_in_type(types, *k).or_else(|| find_in_type(types, *v))
+                }
                 TypeDefKind::Future(ty) | TypeDefKind::Stream(ty) => {
                     ty.as_ref().and_then(|ty| find_in_type(types, *ty))
                 }
@@ -1458,6 +1497,7 @@ impl<'a> Resolver<'a> {
                 Key::Enum(r.cases.iter().map(|f| f.name.clone()).collect::<Vec<_>>())
             }
             TypeDefKind::List(ty) => Key::List(*ty),
+            TypeDefKind::Map(k, v) => Key::Map(*k, *v),
             TypeDefKind::FixedSizeList(ty, size) => Key::FixedSizeList(*ty, *size),
             TypeDefKind::Option(t) => Key::Option(*t),
             TypeDefKind::Result(r) => Key::Result(r.ok, r.err),
@@ -1747,6 +1787,10 @@ fn collect_deps<'a>(ty: &ast::Type<'a>, deps: &mut Vec<ast::Id<'a>>) {
         ast::Type::Option(ast::Option_ { ty, .. })
         | ast::Type::List(ast::List { ty, .. })
         | ast::Type::FixedSizeList(ast::FixedSizeList { ty, .. }) => collect_deps(ty, deps),
+        ast::Type::Map(ast::Map { key, value, .. }) => {
+            collect_deps(key, deps);
+            collect_deps(value, deps);
+        }
         ast::Type::Result(r) => {
             if let Some(ty) = &r.ok {
                 collect_deps(ty, deps);

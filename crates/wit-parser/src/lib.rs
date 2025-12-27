@@ -103,7 +103,7 @@ pub struct UnresolvedPackage {
     /// interface name followed by the identifier within `self.interfaces`. The
     /// fields of `self.interfaces` describes the required types that are from
     /// each foreign interface.
-    pub foreign_deps: IndexMap<PackageName, IndexMap<String, AstItem>>,
+    pub foreign_deps: IndexMap<PackageName, IndexMap<String, (AstItem, Vec<Stability>)>>,
 
     /// Doc comments for this package.
     pub docs: Docs,
@@ -596,6 +596,7 @@ pub enum TypeDefKind {
     Option(Type),
     Result(Result_),
     List(Type),
+    Map(Type, Type),
     FixedSizeList(Type, u32),
     Future(Option<Type>),
     Stream(Option<Type>),
@@ -625,6 +626,7 @@ impl TypeDefKind {
             TypeDefKind::Option(_) => "option",
             TypeDefKind::Result(_) => "result",
             TypeDefKind::List(_) => "list",
+            TypeDefKind::Map(_, _) => "map",
             TypeDefKind::FixedSizeList(..) => "fixed size list",
             TypeDefKind::Future(_) => "future",
             TypeDefKind::Stream(_) => "stream",
@@ -1255,6 +1257,10 @@ fn find_futures_and_streams(resolve: &Resolve, ty: Type, results: &mut Vec<TypeI
         | TypeDefKind::FixedSizeList(ty, ..)
         | TypeDefKind::Type(ty) => {
             find_futures_and_streams(resolve, *ty, results);
+        }
+        TypeDefKind::Map(k, v) => {
+            find_futures_and_streams(resolve, *k, results);
+            find_futures_and_streams(resolve, *v, results);
         }
         TypeDefKind::Result(r) => {
             if let Some(ty) = r.ok {
