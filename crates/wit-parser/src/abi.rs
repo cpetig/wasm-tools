@@ -1,4 +1,5 @@
 use crate::{Function, Handle, Int, Resolve, Type, TypeDefKind};
+use alloc::vec::Vec;
 
 /// A core WebAssembly signature with params and results.
 #[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord)]
@@ -387,7 +388,7 @@ impl Resolve {
                     result.push(WasmType::Pointer) && result.push(WasmType::Length)
                 }
 
-                TypeDefKind::FixedSizeList(ty, size) => {
+                TypeDefKind::FixedLengthList(ty, size) => {
                     self.push_flat_list((0..*size).map(|_| ty), result, symmetric)
                 }
 

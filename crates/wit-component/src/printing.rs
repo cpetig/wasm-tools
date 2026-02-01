@@ -6,9 +6,6 @@ use std::mem;
 use std::ops::Deref;
 use wit_parser::*;
 
-// NB: keep in sync with `crates/wit-parser/src/ast/lex.rs`
-const PRINT_F32_F64_DEFAULT: bool = true;
-
 /// A utility for printing WebAssembly interface definitions to a string.
 pub struct WitPrinter<O: Output = OutputToString> {
     /// Visitor that holds the WIT document being printed.
@@ -20,8 +17,6 @@ pub struct WitPrinter<O: Output = OutputToString> {
 
     // Whether to print doc comments.
     emit_docs: bool,
-
-    print_f32_f64: bool,
 }
 
 impl Default for WitPrinter {
@@ -37,10 +32,6 @@ impl<O: Output> WitPrinter<O> {
             output,
             any_items: false,
             emit_docs: true,
-            print_f32_f64: match std::env::var("WIT_REQUIRE_F32_F64") {
-                Ok(s) => s == "1",
-                Err(_) => PRINT_F32_F64_DEFAULT,
-            },
         }
     }
 
@@ -543,20 +534,8 @@ impl<O: Output> WitPrinter<O> {
             Type::S16 => self.output.ty("s16", TypeKind::BuiltIn),
             Type::S32 => self.output.ty("s32", TypeKind::BuiltIn),
             Type::S64 => self.output.ty("s64", TypeKind::BuiltIn),
-            Type::F32 => {
-                if self.print_f32_f64 {
-                    self.output.ty("f32", TypeKind::BuiltIn)
-                } else {
-                    self.output.ty("f32", TypeKind::BuiltIn)
-                }
-            }
-            Type::F64 => {
-                if self.print_f32_f64 {
-                    self.output.ty("f64", TypeKind::BuiltIn)
-                } else {
-                    self.output.ty("f64", TypeKind::BuiltIn)
-                }
-            }
+            Type::F32 => self.output.ty("f32", TypeKind::BuiltIn),
+            Type::F64 => self.output.ty("f64", TypeKind::BuiltIn),
             Type::Char => self.output.ty("char", TypeKind::BuiltIn),
             Type::String => self.output.ty("string", TypeKind::BuiltIn),
             Type::ErrorContext => self.output.ty("error-context", TypeKind::BuiltIn),
@@ -610,7 +589,7 @@ impl<O: Output> WitPrinter<O> {
                         self.print_type_name(resolve, value_ty)?;
                         self.output.generic_args_end();
                     }
-                    TypeDefKind::FixedSizeList(ty, size) => {
+                    TypeDefKind::FixedLengthList(ty, size) => {
                         self.output.ty("list", TypeKind::BuiltIn);
                         self.output.generic_args_start();
                         self.print_type_name(resolve, ty)?;
@@ -794,8 +773,8 @@ impl<O: Output> WitPrinter<O> {
                     TypeDefKind::Map(key, value) => {
                         self.declare_map(resolve, ty.name.as_deref(), key, value)?
                     }
-                    TypeDefKind::FixedSizeList(inner, size) => {
-                        self.declare_fixed_size_list(resolve, ty.name.as_deref(), inner, *size)?
+                    TypeDefKind::FixedLengthList(inner, size) => {
+                        self.declare_fixed_length_list(resolve, ty.name.as_deref(), inner, *size)?
                     }
                     TypeDefKind::Type(inner) => match ty.name.as_deref() {
                         Some(name) => {
@@ -1035,7 +1014,7 @@ impl<O: Output> WitPrinter<O> {
         Ok(())
     }
 
-    fn declare_fixed_size_list(
+    fn declare_fixed_length_list(
         &mut self,
         resolve: &Resolve,
         name: Option<&str>,
@@ -1229,6 +1208,7 @@ fn is_keyword(name: &str) -> bool {
             | "constructor"
             | "error-context"
             | "async"
+            | "map"
     )
 }
 

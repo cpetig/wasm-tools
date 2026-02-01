@@ -1,11 +1,16 @@
 use crate::{Error, PackageNotFoundError, UnresolvedPackageGroup};
+use alloc::borrow::Cow;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use anyhow::{Context, Result, bail};
+use core::fmt;
+use core::mem;
 use lex::{Span, Token, Tokenizer};
 use semver::Version;
-use std::borrow::Cow;
-use std::fmt;
-use std::mem;
-use std::path::{Path, PathBuf};
+#[cfg(feature = "std")]
+use std::path::Path;
 
 pub mod lex;
 
@@ -755,7 +760,7 @@ enum Type<'a> {
     Name(Id<'a>),
     List(List<'a>),
     Map(Map<'a>),
-    FixedSizeList(FixedSizeList<'a>),
+    FixedLengthList(FixedLengthList<'a>),
     Handle(Handle<'a>),
     Resource(Resource<'a>),
     Record(Record<'a>),
@@ -919,7 +924,7 @@ struct Map<'a> {
     value: Box<Type<'a>>,
 }
 
-struct FixedSizeList<'a> {
+struct FixedLengthList<'a> {
     span: Span,
     ty: Box<Type<'a>>,
     size: u32,
@@ -1393,14 +1398,14 @@ impl<'a> Type<'a> {
                         let size: u32 = tokens.get_span(span).parse()?;
                         Some(size)
                     } else {
-                        return Err(err_expected(tokens, "fixed size", number).into());
+                        return Err(err_expected(tokens, "fixed-length", number).into());
                     }
                 } else {
                     None
                 };
                 tokens.expect(Token::GreaterThan)?;
                 if let Some(size) = size {
-                    Ok(Type::FixedSizeList(FixedSizeList {
+                    Ok(Type::FixedLengthList(FixedLengthList {
                         span,
                         ty: Box::new(ty),
                         size,
@@ -1538,7 +1543,7 @@ impl<'a> Type<'a> {
             Type::Name(id) => id.span,
             Type::List(l) => l.span,
             Type::Map(m) => m.span,
-            Type::FixedSizeList(l) => l.span,
+            Type::FixedLengthList(l) => l.span,
             Type::Handle(h) => h.span(),
             Type::Resource(r) => r.span,
             Type::Record(r) => r.span,
@@ -1688,13 +1693,12 @@ fn eat_id(tokens: &mut Tokenizer<'_>, expected: &str) -> Result<Span> {
 pub struct SourceMap {
     sources: Vec<Source>,
     offset: u32,
-    require_f32_f64: Option<bool>,
 }
 
 #[derive(Clone)]
 struct Source {
     offset: u32,
-    path: PathBuf,
+    path: String,
     contents: String,
 }
 
@@ -1704,13 +1708,9 @@ impl SourceMap {
         SourceMap::default()
     }
 
-    #[doc(hidden)] // NB: only here for a transitionary period
-    pub fn set_require_f32_f64(&mut self, enable: bool) {
-        self.require_f32_f64 = Some(enable);
-    }
-
     /// Reads the file `path` on the filesystem and appends its contents to this
     /// [`SourceMap`].
+    #[cfg(feature = "std")]
     pub fn push_file(&mut self, path: &Path) -> Result<()> {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read file {path:?}"))?;
@@ -1725,7 +1725,19 @@ impl SourceMap {
     /// used to create the final parsed package namely by unioning all the
     /// interfaces and worlds defined together. Note that each file has its own
     /// personal namespace, however, for top-level `use` and such.
+    #[cfg(feature = "std")]
     pub fn push(&mut self, path: &Path, contents: impl Into<String>) {
+        self.push_str(&path.display().to_string(), contents);
+    }
+
+    /// Appends the given contents with the given source name into this source map.
+    ///
+    /// The `path` provided is not read from the filesystem and is instead only
+    /// used during error messages. Each file added to a [`SourceMap`] is
+    /// used to create the final parsed package namely by unioning all the
+    /// interfaces and worlds defined together. Note that each file has its own
+    /// personal namespace, however, for top-level `use` and such.
+    pub fn push_str(&mut self, path: &str, contents: impl Into<String>) {
         let mut contents = contents.into();
         // Guarantee that there's at least one character in these contents by
         // appending a single newline to the end. This is excluded from
@@ -1736,7 +1748,7 @@ impl SourceMap {
         let new_offset = self.offset + u32::try_from(contents.len()).unwrap();
         self.sources.push(Source {
             offset: self.offset,
-            path: path.to_path_buf(),
+            path: path.to_string(),
             contents,
         });
         self.offset = new_offset;
@@ -1760,9 +1772,8 @@ impl SourceMap {
                     // passing through the source to get tokenized.
                     &src.contents[..src.contents.len() - 1],
                     src.offset,
-                    self.require_f32_f64,
                 )
-                .with_context(|| format!("failed to tokenize path: {}", src.path.display()))?;
+                .with_context(|| format!("failed to tokenize path: {}", src.path))?;
                 let mut file = PackageFile::parse(&mut tokens)?;
 
                 // Filter out any nested packages and resolve them separately.
@@ -1778,10 +1789,7 @@ impl SourceMap {
                         AstItem::Package(nested_pkg) => {
                             let mut resolve = Resolver::default();
                             resolve.push(nested_pkg).with_context(|| {
-                                format!(
-                                    "failed to handle nested package in: {}",
-                                    src.path.display()
-                                )
+                                format!("failed to handle nested package in: {}", src.path)
                             })?;
 
                             nested.push(resolve.resolve()?);
@@ -1792,9 +1800,9 @@ impl SourceMap {
 
                 // With nested packages handled push this file into the
                 // resolver.
-                resolver.push(file).with_context(|| {
-                    format!("failed to start resolving path: {}", src.path.display())
-                })?;
+                resolver
+                    .push(file)
+                    .with_context(|| format!("failed to start resolving path: {}", src.path))?;
             }
             Ok(resolver.resolve()?)
         })?;
@@ -1877,7 +1885,7 @@ impl SourceMap {
  {line:4} | {snippet}
       | {marker:>0$}",
             col + 1,
-            file = src.path.display(),
+            file = src.path,
             line = line + 1,
             col = col + 1,
             marker = "^",
@@ -1898,7 +1906,7 @@ impl SourceMap {
         let (line, col) = src.linecol(start);
         format!(
             "{file}:{line}:{col}",
-            file = src.path.display(),
+            file = src.path,
             line = line + 1,
             col = col + 1,
         )
@@ -1913,8 +1921,14 @@ impl SourceMap {
     }
 
     /// Returns an iterator over all filenames added to this source map.
+    #[cfg(feature = "std")]
     pub fn source_files(&self) -> impl Iterator<Item = &Path> {
-        self.sources.iter().map(|src| src.path.as_path())
+        self.sources.iter().map(|src| Path::new(&src.path))
+    }
+
+    /// Returns an iterator over all source names added to this source map.
+    pub fn source_names(&self) -> impl Iterator<Item = &str> {
+        self.sources.iter().map(|src| src.path.as_str())
     }
 }
 
@@ -1944,7 +1958,7 @@ pub enum ParsedUsePath {
 }
 
 pub fn parse_use_path(s: &str) -> Result<ParsedUsePath> {
-    let mut tokens = Tokenizer::new(s, 0, None)?;
+    let mut tokens = Tokenizer::new(s, 0)?;
     let path = UsePath::parse(&mut tokens)?;
     if tokens.next()?.is_some() {
         bail!("trailing tokens in path specifier");

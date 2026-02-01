@@ -1,8 +1,7 @@
 use crate::{
-    Function, FunctionKind, InterfaceId, Resolve, Type, TypeDef, TypeDefKind, TypeId, WorldId,
-    WorldItem,
+    Function, FunctionKind, IndexSet, InterfaceId, Resolve, Type, TypeDef, TypeDefKind, TypeId,
+    WorldId, WorldItem,
 };
-use indexmap::IndexSet;
 
 #[derive(Default)]
 pub struct LiveTypes {
@@ -136,7 +135,7 @@ pub trait TypeIdVisitor {
         match &ty.kind {
             TypeDefKind::Type(t)
             | TypeDefKind::List(t)
-            | TypeDefKind::FixedSizeList(t, ..)
+            | TypeDefKind::FixedLengthList(t, ..)
             | TypeDefKind::Option(t)
             | TypeDefKind::Future(Some(t))
             | TypeDefKind::Stream(Some(t)) => self.visit_type(resolve, t),
@@ -193,6 +192,8 @@ pub trait TypeIdVisitor {
 #[cfg(test)]
 mod tests {
     use super::{LiveTypes, Resolve};
+    use alloc::string::String;
+    use alloc::vec::Vec;
 
     fn live(wit: &str, ty: &str) -> Vec<String> {
         let mut resolve = Resolve::default();
