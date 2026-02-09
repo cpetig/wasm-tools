@@ -1196,9 +1196,7 @@ impl ComponentState {
             CanonicalFunction::TaskCancel => self.task_cancel(types, offset),
             CanonicalFunction::ContextGet(i) => self.context_get(i, types, offset),
             CanonicalFunction::ContextSet(i) => self.context_set(i, types, offset),
-            CanonicalFunction::ThreadYield { cancellable } => {
-                self.thread_yield(cancellable, types, offset)
-            }
+            CanonicalFunction::ThreadYield { cancellable: _ } => self.thread_yield(types, offset),
             CanonicalFunction::SubtaskDrop => self.subtask_drop(types, offset),
             CanonicalFunction::SubtaskCancel { async_ } => {
                 self.subtask_cancel(async_, types, offset)
@@ -1250,13 +1248,13 @@ impl ComponentState {
             CanonicalFunction::ErrorContextDrop => self.error_context_drop(types, offset),
             CanonicalFunction::WaitableSetNew => self.waitable_set_new(types, offset),
             CanonicalFunction::WaitableSetWait {
-                cancellable,
+                cancellable: _,
                 memory,
-            } => self.waitable_set_wait(cancellable, memory, types, offset),
+            } => self.waitable_set_wait(memory, types, offset),
             CanonicalFunction::WaitableSetPoll {
-                cancellable,
+                cancellable: _,
                 memory,
-            } => self.waitable_set_poll(cancellable, memory, types, offset),
+            } => self.waitable_set_poll(memory, types, offset),
             CanonicalFunction::WaitableSetDrop => self.waitable_set_drop(types, offset),
             CanonicalFunction::WaitableJoin => self.waitable_join(types, offset),
             CanonicalFunction::ThreadIndex => self.thread_index(types, offset),
@@ -1535,22 +1533,11 @@ impl ComponentState {
         Ok(())
     }
 
-    fn thread_yield(
-        &mut self,
-        cancellable: bool,
-        types: &mut TypeAlloc,
-        offset: usize,
-    ) -> Result<()> {
+    fn thread_yield(&mut self, types: &mut TypeAlloc, offset: usize) -> Result<()> {
         if !self.features.cm_async() {
             bail!(
                 offset,
                 "`thread.yield` requires the component model async feature"
-            )
-        }
-        if cancellable && !self.features.cm_async_stackful() {
-            bail!(
-                offset,
-                "cancellable `thread.yield` requires the component model async stackful feature"
             )
         }
 
@@ -2053,7 +2040,6 @@ impl ComponentState {
 
     fn waitable_set_wait(
         &mut self,
-        cancellable: bool,
         memory: u32,
         types: &mut TypeAlloc,
         offset: usize,
@@ -2062,12 +2048,6 @@ impl ComponentState {
             bail!(
                 offset,
                 "`waitable-set.wait` requires the component model async feature"
-            )
-        }
-        if cancellable && !self.features.cm_async_stackful() {
-            bail!(
-                offset,
-                "cancellable `waitable-set.wait` requires the component model async stackful feature"
             )
         }
 
@@ -2080,7 +2060,6 @@ impl ComponentState {
 
     fn waitable_set_poll(
         &mut self,
-        cancellable: bool,
         memory: u32,
         types: &mut TypeAlloc,
         offset: usize,
@@ -2089,12 +2068,6 @@ impl ComponentState {
             bail!(
                 offset,
                 "`waitable-set.poll` requires the component model async feature"
-            )
-        }
-        if cancellable && !self.features.cm_async_stackful() {
-            bail!(
-                offset,
-                "cancellable `waitable-set.poll` requires the component model async stackful feature"
             )
         }
 
@@ -3992,10 +3965,25 @@ impl ComponentState {
                         "`stream` requires the component model async feature"
                     )
                 }
-                Ok(ComponentDefinedType::Stream(
-                    ty.map(|ty| self.create_component_val_type(ty, offset))
-                        .transpose()?,
-                ))
+                let ty = ty
+                    .map(|ty| self.create_component_val_type(ty, offset))
+                    .transpose()?;
+                let prim = match ty {
+                    Some(ComponentValType::Primitive(p)) => Some(p),
+                    Some(ComponentValType::Type(id)) => match types[id] {
+                        ComponentDefinedType::Primitive(p) => Some(p),
+                        _ => None,
+                    },
+                    None => None,
+                };
+                if prim == Some(crate::PrimitiveValType::Char) {
+                    bail!(
+                        offset,
+                        "`stream<char>` is not valid at this time, use `stream<u8>` \
+                         with a defined by encoding instead for now"
+                    )
+                }
+                Ok(ComponentDefinedType::Stream(ty))
             }
         }
     }
@@ -4058,16 +4046,7 @@ impl ComponentState {
             ));
         }
 
-        for (i, case) in cases.iter().enumerate() {
-            if let Some(refines) = case.refines {
-                if refines >= i as u32 {
-                    return Err(BinaryReaderError::new(
-                        "variant case can only refine a previously defined case",
-                        offset,
-                    ));
-                }
-            }
-
+        for case in cases {
             let name = to_kebab_str(case.name, "variant case", offset)?;
 
             let ty = case
@@ -4086,15 +4065,7 @@ impl ComponentState {
                     if let Some(ty) = ty {
                         info.combine(ty.info(types), offset)?;
                     }
-
-                    // Safety: the use of `KebabStr::new_unchecked` here is safe because the string
-                    // was already verified to be kebab case.
-                    e.insert(VariantCase {
-                        ty,
-                        refines: case
-                            .refines
-                            .map(|i| KebabStr::new_unchecked(cases[i as usize].name).to_owned()),
-                    });
+                    e.insert(VariantCase { ty });
                 }
             }
         }

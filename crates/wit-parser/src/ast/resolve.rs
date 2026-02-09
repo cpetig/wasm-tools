@@ -68,16 +68,6 @@ pub struct Resolver<'a> {
     /// pointing to it if the item isn't actually defined.
     unknown_type_spans: Vec<Span>,
 
-    /// Spans for each world in `self.worlds`
-    world_spans: Vec<WorldSpan>,
-
-    /// Spans for each type in `self.types`
-    type_spans: Vec<Span>,
-
-    /// The span of each interface's definition which is used for error
-    /// reporting during the final `Resolve` phase.
-    interface_spans: Vec<InterfaceSpan>,
-
     /// Spans per entry in `self.foreign_deps` for where the dependency was
     /// introduced to print an error message if necessary.
     foreign_dep_spans: Vec<Span>,
@@ -246,9 +236,6 @@ impl<'a> Resolver<'a> {
                 })
                 .collect(),
             unknown_type_spans: mem::take(&mut self.unknown_type_spans),
-            interface_spans: mem::take(&mut self.interface_spans),
-            world_spans: mem::take(&mut self.world_spans),
-            type_spans: mem::take(&mut self.type_spans),
             foreign_dep_spans: mem::take(&mut self.foreign_dep_spans),
             required_resource_types: mem::take(&mut self.required_resource_types),
         })
@@ -318,10 +305,6 @@ impl<'a> Resolver<'a> {
 
     fn alloc_interface(&mut self, span: Span) -> InterfaceId {
         self.interface_types.push(IndexMap::default());
-        self.interface_spans.push(InterfaceSpan {
-            span,
-            funcs: Vec::new(),
-        });
         self.interfaces.alloc(Interface {
             name: None,
             types: IndexMap::default(),
@@ -329,16 +312,11 @@ impl<'a> Resolver<'a> {
             stability: Default::default(),
             functions: IndexMap::default(),
             package: None,
+            span,
         })
     }
 
     fn alloc_world(&mut self, span: Span) -> WorldId {
-        self.world_spans.push(WorldSpan {
-            span,
-            imports: Vec::new(),
-            exports: Vec::new(),
-            includes: Vec::new(),
-        });
         self.worlds.alloc(World {
             name: String::new(),
             docs: Docs::default(),
@@ -346,8 +324,8 @@ impl<'a> Resolver<'a> {
             imports: IndexMap::default(),
             package: None,
             includes: Default::default(),
-            include_names: Default::default(),
             stability: Default::default(),
+            span,
         })
     }
 
@@ -599,9 +577,9 @@ impl<'a> Resolver<'a> {
                         kind: TypeDefKind::Unknown,
                         name: Some(name.name.name.to_string()),
                         owner: TypeOwner::Interface(iface),
+                        span: name.name.span,
                     });
                     self.unknown_type_spans.push(name.name.span);
-                    self.type_spans.push(name.name.span);
                     lookup.insert(name.name.name, (TypeOrItem::Type(id), name.name.span));
                     self.interfaces[iface]
                         .types
@@ -640,21 +618,19 @@ impl<'a> Resolver<'a> {
             self.resolve_include(world_id, include)?;
         }
 
-        let mut export_spans = Vec::new();
-        let mut import_spans = Vec::new();
         for (name, (item, span)) in self.type_lookup.iter() {
             match *item {
                 TypeOrItem::Type(id) => {
-                    let prev = self.worlds[world_id]
-                        .imports
-                        .insert(WorldKey::Name(name.to_string()), WorldItem::Type(id));
+                    let prev = self.worlds[world_id].imports.insert(
+                        WorldKey::Name(name.to_string()),
+                        WorldItem::Type { id, span: *span },
+                    );
                     if prev.is_some() {
                         bail!(Error::new(
                             *span,
                             format!("import `{name}` conflicts with prior import of same name"),
                         ))
                     }
-                    import_spans.push(*span);
                 }
                 TypeOrItem::Item(_) => unreachable!(),
             }
@@ -663,13 +639,12 @@ impl<'a> Resolver<'a> {
         let mut imported_interfaces = HashSet::new();
         let mut exported_interfaces = HashSet::new();
         for item in world.items.iter() {
-            let (docs, attrs, kind, desc, spans, interfaces) = match item {
+            let (docs, attrs, kind, desc, interfaces) = match item {
                 ast::WorldItem::Import(import) => (
                     &import.docs,
                     &import.attributes,
                     &import.kind,
                     "import",
-                    &mut import_spans,
                     &mut imported_interfaces,
                 ),
                 ast::WorldItem::Export(export) => (
@@ -677,7 +652,6 @@ impl<'a> Resolver<'a> {
                     &export.attributes,
                     &export.kind,
                     "export",
-                    &mut export_spans,
                     &mut exported_interfaces,
                 ),
 
@@ -687,7 +661,6 @@ impl<'a> Resolver<'a> {
                     ..
                 }) => {
                     for func in r.funcs.iter() {
-                        import_spans.push(func.named_func().name.span);
                         let func = self.resolve_resource_func(func, name)?;
                         let prev = self.worlds[world_id]
                             .imports
@@ -746,7 +719,7 @@ impl<'a> Resolver<'a> {
                 let prev = match prev {
                     WorldItem::Interface { .. } => "interface",
                     WorldItem::Function(..) => "func",
-                    WorldItem::Type(..) => "type",
+                    WorldItem::Type { .. } => "type",
                 };
                 let name = match key {
                     WorldKey::Name(name) => name,
@@ -757,10 +730,7 @@ impl<'a> Resolver<'a> {
                     format!("{desc} `{name}` conflicts with prior {prev} of same name",),
                 ))
             }
-            spans.push(kind.span());
         }
-        self.world_spans[world_id.index()].imports = import_spans;
-        self.world_spans[world_id.index()].exports = export_spans;
         self.type_lookup.clear();
 
         Ok(world_id)
@@ -779,19 +749,28 @@ impl<'a> Resolver<'a> {
                 self.resolve_interface(id, items, docs, attrs)?;
                 self.type_lookup = prev;
                 let stability = self.interfaces[id].stability.clone();
-                Ok(WorldItem::Interface { id, stability })
+                Ok(WorldItem::Interface {
+                    id,
+                    stability,
+                    span: name.span,
+                })
             }
             ast::ExternKind::Path(path) => {
                 let stability = self.stability(attrs)?;
-                let (item, name, span) = self.resolve_ast_item_path(path)?;
-                let id = self.extract_iface_from_item(&item, &name, span)?;
-                Ok(WorldItem::Interface { id, stability })
+                let (item, name, item_span) = self.resolve_ast_item_path(path)?;
+                let id = self.extract_iface_from_item(&item, &name, item_span)?;
+                Ok(WorldItem::Interface {
+                    id,
+                    stability,
+                    span: item_span,
+                })
             }
             ast::ExternKind::Func(name, func) => {
                 let func = self.resolve_function(
                     docs,
                     attrs,
                     &name.name,
+                    name.span,
                     func,
                     if func.async_ {
                         FunctionKind::AsyncFreestanding
@@ -847,6 +826,7 @@ impl<'a> Resolver<'a> {
                         &f.docs,
                         &f.attributes,
                         &f.name.name,
+                        f.name.span,
                         &f.func,
                         if f.func.async_ {
                             FunctionKind::AsyncFreestanding
@@ -854,9 +834,6 @@ impl<'a> Resolver<'a> {
                             FunctionKind::Freestanding
                         },
                     )?);
-                    self.interface_spans[interface_id.index()]
-                        .funcs
-                        .push(f.name.span);
                 }
                 ast::InterfaceItem::Use(_) => {}
                 ast::InterfaceItem::TypeDef(ast::TypeDef {
@@ -866,9 +843,6 @@ impl<'a> Resolver<'a> {
                 }) => {
                     for func in r.funcs.iter() {
                         funcs.push(self.resolve_resource_func(func, name)?);
-                        self.interface_spans[interface_id.index()]
-                            .funcs
-                            .push(func.named_func().name.span);
                     }
                 }
                 ast::InterfaceItem::TypeDef(_) => {}
@@ -951,8 +925,8 @@ impl<'a> Resolver<'a> {
                 kind,
                 name: Some(def.name.name.to_string()),
                 owner,
+                span: def.name.span,
             });
-            self.type_spans.push(def.name.span);
             self.define_interface_name(&def.name, TypeOrItem::Type(id))?;
         }
         return Ok(());
@@ -998,7 +972,7 @@ impl<'a> Resolver<'a> {
                     format!("name `{}` is not defined", name.name.name),
                 )),
             };
-            self.type_spans.push(name.name.span);
+            let span = name.name.span;
             let name = name.as_.as_ref().unwrap_or(&name.name);
             let id = self.types.alloc(TypeDef {
                 docs: Docs::default(),
@@ -1006,6 +980,7 @@ impl<'a> Resolver<'a> {
                 kind: TypeDefKind::Type(Type::Id(id)),
                 name: Some(name.name.to_string()),
                 owner,
+                span,
             });
             self.define_interface_name(name, TypeOrItem::Type(id))?;
         }
@@ -1017,19 +992,19 @@ impl<'a> Resolver<'a> {
         let stability = self.stability(&i.attributes)?;
         let (item, name, span) = self.resolve_ast_item_path(&i.from)?;
         let include_from = self.extract_world_from_item(&item, &name, span)?;
-        self.worlds[world_id]
-            .includes
-            .push((stability, include_from));
-        self.worlds[world_id].include_names.push(
-            i.names
+        self.worlds[world_id].includes.push(WorldInclude {
+            stability,
+            id: include_from,
+            names: i
+                .names
                 .iter()
                 .map(|n| IncludeName {
                     name: n.name.name.to_string(),
                     as_: n.as_.name.to_string(),
                 })
                 .collect(),
-        );
-        self.world_spans[world_id.index()].includes.push(span);
+            span,
+        });
         Ok(())
     }
 
@@ -1072,6 +1047,7 @@ impl<'a> Resolver<'a> {
             &named_func.docs,
             &named_func.attributes,
             &name,
+            named_func.name.span,
             &named_func.func,
             kind,
         )
@@ -1082,6 +1058,7 @@ impl<'a> Resolver<'a> {
         docs: &ast::Docs<'_>,
         attrs: &[ast::Attribute<'_>],
         name: &str,
+        name_span: Span,
         func: &ast::Func,
         kind: FunctionKind,
     ) -> Result<Function> {
@@ -1096,6 +1073,7 @@ impl<'a> Resolver<'a> {
             kind,
             params,
             result,
+            span: name_span,
         })
     }
 
@@ -1263,6 +1241,7 @@ impl<'a> Resolver<'a> {
                             docs: self.docs(&field.docs),
                             name: field.name.name.to_string(),
                             ty: self.resolve_type(&field.ty, stability)?,
+                            span: field.name.span,
                         })
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -1275,6 +1254,7 @@ impl<'a> Resolver<'a> {
                     .map(|flag| Flag {
                         docs: self.docs(&flag.docs),
                         name: flag.name.name.to_string(),
+                        span: flag.name.span,
                     })
                     .collect::<Vec<_>>();
                 TypeDefKind::Flags(Flags { flags })
@@ -1299,6 +1279,7 @@ impl<'a> Resolver<'a> {
                             docs: self.docs(&case.docs),
                             name: case.name.name.to_string(),
                             ty: self.resolve_optional_type(case.ty.as_ref(), stability)?,
+                            span: case.name.span,
                         })
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -1315,6 +1296,7 @@ impl<'a> Resolver<'a> {
                         Ok(EnumCase {
                             docs: self.docs(&case.docs),
                             name: case.name.name.to_string(),
+                            span: case.name.span,
                         })
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -1446,16 +1428,14 @@ impl<'a> Resolver<'a> {
         }
         let kind = self.resolve_type_def(ty, stability)?;
         let stability = self.find_stability(&kind, stability);
-        Ok(self.anon_type_def(
-            TypeDef {
-                kind,
-                name: None,
-                docs: Docs::default(),
-                stability,
-                owner: TypeOwner::None,
-            },
-            ty.span(),
-        ))
+        Ok(self.anon_type_def(TypeDef {
+            kind,
+            name: None,
+            docs: Docs::default(),
+            stability,
+            owner: TypeOwner::None,
+            span: ty.span(),
+        }))
     }
 
     fn resolve_optional_type(
@@ -1469,7 +1449,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn anon_type_def(&mut self, ty: TypeDef, span: Span) -> Type {
+    fn anon_type_def(&mut self, ty: TypeDef) -> Type {
         let key = match &ty.kind {
             TypeDefKind::Type(t) => return *t,
             TypeDefKind::Variant(v) => Key::Variant(
@@ -1507,10 +1487,10 @@ impl<'a> Resolver<'a> {
             TypeDefKind::Stream(ty) => Key::Stream(*ty),
             TypeDefKind::Unknown => unreachable!(),
         };
-        let id = self.anon_types.entry(key).or_insert_with(|| {
-            self.type_spans.push(span);
-            self.types.alloc(ty)
-        });
+        let id = self
+            .anon_types
+            .entry(key)
+            .or_insert_with(|| self.types.alloc(ty));
         Type::Id(*id)
     }
 
@@ -1647,16 +1627,14 @@ impl<'a> Resolver<'a> {
             FunctionKind::Method(id) | FunctionKind::AsyncMethod(id) => {
                 let kind = TypeDefKind::Handle(Handle::Borrow(id));
                 let stability = self.find_stability(&kind, &Stability::Unknown);
-                let shared = self.anon_type_def(
-                    TypeDef {
-                        docs: Docs::default(),
-                        stability,
-                        kind,
-                        name: None,
-                        owner: TypeOwner::None,
-                    },
+                let shared = self.anon_type_def(TypeDef {
+                    docs: Docs::default(),
+                    stability,
+                    kind,
+                    name: None,
+                    owner: TypeOwner::None,
                     span,
-                );
+                });
                 ret.insert("self".to_string(), shared);
             }
         }
