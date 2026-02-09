@@ -1974,13 +1974,17 @@ pub fn parse_use_path(s: &str) -> Result<ParsedUsePath> {
     })
 }
 
+#[cfg(feature = "std")]
 fn print_docs<'a>(docs: &Docs<'a>, prefix: &str) {
+    use std::print;
     for i in docs.docs.iter() {
         print!("{prefix}{i}");
     }
 }
 
+#[cfg(feature = "std")]
 fn print_args<'a>(args: &Vec<(Id<'a>, Type<'a>)>) {
+    use std::print;
     for (n, (i, t)) in args.iter().enumerate() {
         if n != 0 {
             print!(", ");
@@ -1989,7 +1993,9 @@ fn print_args<'a>(args: &Vec<(Id<'a>, Type<'a>)>) {
     }
 }
 
+#[cfg(feature = "std")]
 fn print_func_signature<'a>(func: &Func<'a>) {
+    use std::print;
     print!("(");
     print_args(&func.params);
     print!(")");
@@ -1998,7 +2004,9 @@ fn print_func_signature<'a>(func: &Func<'a>) {
     }
 }
 
+#[cfg(feature = "std")]
 fn type_string<'a>(ty: &Type<'a>, name: &str) -> Option<String> {
+    use std::{print, println};
     match ty {
         Type::Bool(_) => Some("bool".into()),
         Type::U8(_) => Some("u8".into()),
@@ -2096,15 +2104,17 @@ fn type_string<'a>(ty: &Type<'a>, name: &str) -> Option<String> {
         Type::Future(_) => todo!(),
         Type::Stream(_) => todo!(),
         Type::ErrorContext(_) => todo!(),
-        Type::FixedSizeList(_) => todo!(),
+        Type::FixedLengthList(_) => todo!(),
         Type::Map(_) => todo!(),
     }
 }
 
+#[cfg(feature = "std")]
 pub fn pretty_print(path: impl AsRef<Path> + Clone) {
+    use std::{dbg, print, println};
     let contents = std::fs::read_to_string(path.clone());
     match contents {
-        Ok(c) => match lex::Tokenizer::new(&c, 0, Some(true)) {
+        Ok(c) => match lex::Tokenizer::new(&c, 0) {
             Ok(mut token) => {
                 let pkgfile = PackageFile::parse(&mut token);
                 match pkgfile {
