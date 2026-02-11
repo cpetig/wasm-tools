@@ -85,8 +85,8 @@ use std::mem;
 use wasm_encoder::*;
 use wasmparser::{Validator, WasmFeatures};
 use wit_parser::{
-    Function, FunctionKind, InterfaceId, LiveTypes, Resolve, Stability, Type, TypeDefKind, TypeId,
-    TypeOwner, WorldItem, WorldKey,
+    Function, FunctionKind, InterfaceId, LiveTypes, Param, Resolve, Stability, Type, TypeDefKind,
+    TypeId, TypeOwner, WorldItem, WorldKey,
     abi::{AbiVariant, WasmSignature, WasmType},
 };
 
@@ -167,7 +167,7 @@ impl RequiredOptions {
         // Lift the params and lower the results for imports
         ret.add_lift(TypeContents::for_types(
             resolve,
-            func.params.iter().map(|(_, t)| t),
+            func.params.iter().map(|p| &p.ty),
         ));
         ret.add_lower(TypeContents::for_types(resolve, &func.result));
 
@@ -188,7 +188,7 @@ impl RequiredOptions {
         // Lower the params and lift the results for exports
         ret.add_lower(TypeContents::for_types(
             resolve,
-            func.params.iter().map(|(_, t)| t),
+            func.params.iter().map(|p| &p.ty),
         ));
         ret.add_lift(TypeContents::for_types(resolve, &func.result));
 
@@ -1997,20 +1997,24 @@ impl<'a> EncodingState<'a> {
                     func_ty: FuncType::new([ValType::I32], []),
                 },
             )),
-            Import::ThreadSwitchTo { cancellable } => {
-                let index = self.component.thread_switch_to(*cancellable);
+            Import::ThreadSuspendToSuspended { cancellable } => {
+                let index = self.component.thread_suspend_to_suspended(*cancellable);
                 Ok((ExportKind::Func, index))
             }
             Import::ThreadSuspend { cancellable } => {
                 let index = self.component.thread_suspend(*cancellable);
                 Ok((ExportKind::Func, index))
             }
-            Import::ThreadResumeLater => {
-                let index = self.component.thread_resume_later();
+            Import::ThreadSuspendTo { cancellable } => {
+                let index = self.component.thread_suspend_to(*cancellable);
                 Ok((ExportKind::Func, index))
             }
-            Import::ThreadYieldTo { cancellable } => {
-                let index = self.component.thread_yield_to(*cancellable);
+            Import::ThreadUnsuspend => {
+                let index = self.component.thread_unsuspend();
+                Ok((ExportKind::Func, index))
+            }
+            Import::ThreadYieldToSuspended { cancellable } => {
+                let index = self.component.thread_yield_to_suspended(*cancellable);
                 Ok((ExportKind::Func, index))
             }
         }
@@ -2625,10 +2629,11 @@ impl<'a> Shims<'a> {
                 | Import::ContextGet(_)
                 | Import::ContextSet(_)
                 | Import::ThreadIndex
-                | Import::ThreadSwitchTo { .. }
+                | Import::ThreadSuspendToSuspended { .. }
                 | Import::ThreadSuspend { .. }
-                | Import::ThreadResumeLater
-                | Import::ThreadYieldTo { .. } => {}
+                | Import::ThreadSuspendTo { .. }
+                | Import::ThreadUnsuspend
+                | Import::ThreadYieldToSuspended { .. } => {}
 
                 // If `task.return` needs to be indirect then generate a shim
                 // for it, otherwise skip the shim and let it get materialized
@@ -2926,7 +2931,11 @@ impl<'a> Shims<'a> {
                         name: String::new(),
                         kind: FunctionKind::Freestanding,
                         params: match wit_param {
-                            Some(ty) => vec![("a".to_string(), ty)],
+                            Some(ty) => vec![Param {
+                                name: "a".to_string(),
+                                ty,
+                                span: Default::default(),
+                            }],
                             None => Vec::new(),
                         },
                         result: wit_result,
@@ -3024,7 +3033,11 @@ fn task_return_options_and_type(
         name: String::new(),
         kind: FunctionKind::Freestanding,
         params: match ty {
-            Some(ty) => vec![("a".to_string(), ty)],
+            Some(ty) => vec![Param {
+                name: "a".to_string(),
+                ty,
+                span: Default::default(),
+            }],
             None => Vec::new(),
         },
         result: None,

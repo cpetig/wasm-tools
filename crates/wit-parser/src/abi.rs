@@ -201,11 +201,7 @@ impl Resolve {
         // is needed down below for imports.
         let mut storage = [WasmType::I32; Self::MAX_FLAT_PARAMS + 1];
         let mut params = FlatTypes::new(&mut storage);
-        let ok = self.push_flat_list(
-            func.params.iter().map(|(_, param)| param),
-            &mut params,
-            symmetric,
-        );
+        let ok = self.push_flat_list(func.params.iter().map(|p| &p.ty), &mut params, symmetric);
         assert_eq!(ok, !params.overflow);
 
         let max = match variant {

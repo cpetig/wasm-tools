@@ -912,6 +912,7 @@ impl WitPackageDecoder<'_> {
                     package: None,
                     stability: Default::default(),
                     span: Default::default(),
+                    clone_of: None,
                 })
             });
 
@@ -968,6 +969,7 @@ impl WitPackageDecoder<'_> {
             package: None,
             stability: Default::default(),
             span: Default::default(),
+            clone_of: None,
         };
 
         let owner = TypeOwner::Interface(self.resolve.interfaces.next_id());
@@ -1207,7 +1209,13 @@ impl WitPackageDecoder<'_> {
         let params = ty
             .params
             .iter()
-            .map(|(name, ty)| Ok((name.to_string(), self.convert_valtype(ty)?)))
+            .map(|(name, ty)| {
+                Ok(Param {
+                    name: name.to_string(),
+                    ty: self.convert_valtype(ty)?,
+                    span: Default::default(),
+                })
+            })
             .collect::<Result<Vec<_>>>()
             .context("failed to convert params")?;
         let result = match &ty.result {

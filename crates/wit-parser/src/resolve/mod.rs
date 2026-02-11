@@ -832,13 +832,16 @@ package {name} is defined in two different locations:\n\
         // Cloning is no trivial task, however, so cloning is delegated to a
         // submodule to perform a "deep" clone and copy items into new arena
         // entries as necessary.
-        let mut cloner = clone::Cloner::new(self, TypeOwner::World(from), TypeOwner::World(into));
+        let mut cloner = clone::Cloner::new(
+            self,
+            clone_maps,
+            TypeOwner::World(from),
+            TypeOwner::World(into),
+        );
         cloner.register_world_type_overlap(from, into);
         for (name, item) in new_imports.iter_mut().chain(&mut new_exports) {
-            cloner.world_item(name, item, clone_maps);
+            cloner.world_item(name, item);
         }
-
-        clone_maps.types.extend(cloner.types);
 
         // Insert any new imports and new exports found first.
         let into_world = &mut self.worlds[into];
@@ -1515,7 +1518,14 @@ package {name} is defined in two different locations:\n\
         for (id, iface) in self.interfaces.iter() {
             assert!(self.packages.get(iface.package.unwrap()).is_some());
             if iface.name.is_some() {
-                assert!(package_interfaces[iface.package.unwrap().index()].contains(&id));
+                match iface.clone_of {
+                    Some(other) => {
+                        assert_eq!(iface.name, self.interfaces[other].name);
+                    }
+                    None => {
+                        assert!(package_interfaces[iface.package.unwrap().index()].contains(&id));
+                    }
+                }
             }
 
             for (name, ty) in iface.types.iter() {
@@ -2550,6 +2560,130 @@ package {name} is defined in two different locations:\n\
             },
         }
     }
+
+    /// This method will rewrite the `world` provided to ensure that, where
+    /// necessary, all types in interfaces referred to by the `world` have
+    /// nominal type ids for bindings generation.
+    ///
+    /// The need for this method primarily arises from bindings generators
+    /// generating types in a programming language. Bindings generators try to
+    /// generate a type-per-WIT-type but this becomes problematic in situations
+    /// such as when an `interface` is both imported and exported. For example:
+    ///
+    /// ```wit
+    /// interface x {
+    ///    resource r;
+    /// }
+    ///
+    /// world foo {
+    ///     import x;
+    ///     export x;
+    /// }
+    /// ```
+    ///
+    /// Here the `r` resource, before this method, exists once within this
+    /// [`Resolve`]. This is a problem for bindings generators because guest
+    /// languages typically want to represent this world with two types: one
+    /// for the import and one for the export. This matches component model
+    /// semantics where `r` is a different type between the import and the
+    /// export.
+    ///
+    /// The purpose of this method is to ensure that languages with nominal
+    /// types, where type identity is unique based on definition not structure,
+    /// will have an easier time generating bindings. This method will
+    /// duplicate the interface `x`, for example, and everything it contains.
+    /// This means that the `world foo` above will have a different
+    /// `InterfaceId` for the import and the export of `x`, despite them using
+    /// the same interface in WIT. This is intended to make bindings generators'
+    /// jobs much easier because now Id-uniqueness matches the semantic meaning
+    /// of the world as well.
+    ///
+    /// This function will rewrite exported interfaces, as appropriate, to all
+    /// have unique ids if they would otherwise overlap with the imports.
+    pub fn generate_nominal_type_ids(&mut self, world: WorldId) {
+        let mut imports = HashSet::new();
+
+        // Build up a list of all imported interfaces, they're not changing and
+        // this is used to test for overlap between imports/exports.
+        for import in self.worlds[world].imports.values() {
+            if let WorldItem::Interface { id, .. } = import {
+                imports.insert(*id);
+            }
+        }
+
+        let mut to_clone = IndexMap::default();
+        for (i, export) in self.worlds[world].exports.values().enumerate() {
+            let id = match export {
+                WorldItem::Interface { id, .. } => *id,
+
+                // Functions can only refer to imported types so there's no need
+                // to rewrite anything as imports always stay as-is.
+                WorldItem::Function(_) => continue,
+
+                WorldItem::Type { .. } => unreachable!(),
+            };
+
+            // If this interface itself is both imported and exported, or if any
+            // dependency of this interface is rewritten, then the interface
+            // itself needs to be rewritten. Otherwise continue onwards.
+            let imported_and_exported = imports.contains(&id);
+            let any_dep_rewritten = self
+                .interface_direct_deps(id)
+                .any(|dep| to_clone.contains_key(&dep));
+            if !(imported_and_exported || any_dep_rewritten) {
+                continue;
+            }
+
+            to_clone.insert(id, i);
+        }
+
+        let mut maps = CloneMaps::default();
+        let mut cloner = clone::Cloner::new(
+            self,
+            &mut maps,
+            TypeOwner::World(world),
+            TypeOwner::World(world),
+        );
+        for (id, i) in to_clone {
+            // First, clone the interface. This'll make a `new_id`, and then we
+            // need to update the world to point to this new id. Note that the
+            // clones happen topologically here (due to iterating in-order
+            // above) and the `CloneMaps` are shared amongst interfaces. This
+            // means that future clones will use the types produced here too.
+            let mut new_id = id;
+            cloner.interface(&mut new_id);
+
+            // Load up the previous `key` and go ahead and mutate the
+            // `WorldItem` in place which is guaranteed to be an `Interface`
+            // because of the loop above.
+            let exports = &mut cloner.resolve.worlds[world].exports;
+            let (key, prev) = exports.get_index_mut(i).unwrap();
+            match prev {
+                WorldItem::Interface { id, .. } => *id = new_id,
+                _ => unreachable!(),
+            }
+
+            match key {
+                // If the key for this is an `Interface` then that means we
+                // need to update the key as well. Here that's replaced by-index
+                // in the `IndexMap` to preserve the same ordering as before,
+                // and this operation should always succeed since `new_id` is
+                // fresh, hence the `unwrap()`.
+                WorldKey::Interface(_) => {
+                    exports
+                        .replace_index(i, WorldKey::Interface(new_id))
+                        .unwrap();
+                }
+
+                // Name-based keys don't need updating as they only contain a
+                // string, no ids.
+                WorldKey::Name(_) => {}
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        self.assert_valid();
+    }
 }
 
 /// Possible imports that can be passed to [`Resolve::wasm_import_name`].
@@ -3320,8 +3454,8 @@ impl Remap {
         if let Some(id) = func.kind.resource_mut() {
             self.update_type_id(id, span)?;
         }
-        for (_, ty) in func.params.iter_mut() {
-            self.update_ty(resolve, ty, span)?;
+        for param in func.params.iter_mut() {
+            self.update_ty(resolve, &mut param.ty, span)?;
         }
         if let Some(ty) = &mut func.result {
             self.update_ty(resolve, ty, span)?;
@@ -3518,8 +3652,10 @@ impl Remap {
             ));
         }
 
+        let mut maps = Default::default();
         let mut cloner = clone::Cloner::new(
             resolve,
+            &mut maps,
             TypeOwner::World(if is_external_include {
                 include_world_id
             } else {
@@ -3581,7 +3717,7 @@ impl Remap {
                 // in the function itself.
                 let mut new_item = item.1.clone();
                 let key = WorldKey::Name(n.clone());
-                cloner.world_item(&key, &mut new_item, &mut CloneMaps::default());
+                cloner.world_item(&key, &mut new_item);
                 match &mut new_item {
                     WorldItem::Function(f) => f.name = n.clone(),
                     WorldItem::Type { id, .. } => cloner.resolve.types[*id].name = Some(n.clone()),
@@ -3904,14 +4040,21 @@ impl<'a> MergeMap<'a> {
         if from_func.params.len() != into_func.params.len() {
             bail!("different number of function parameters");
         }
-        for ((from_name, from_ty), (into_name, into_ty)) in
-            from_func.params.iter().zip(&into_func.params)
-        {
-            if from_name != into_name {
-                bail!("different function parameter names: {from_name} != {into_name}");
+        for (from_param, into_param) in from_func.params.iter().zip(&into_func.params) {
+            if from_param.name != into_param.name {
+                bail!(
+                    "different function parameter names: {} != {}",
+                    from_param.name,
+                    into_param.name
+                );
             }
-            self.build_type(from_ty, into_ty)
-                .with_context(|| format!("different function parameter types for `{from_name}`"))?;
+            self.build_type(&from_param.ty, &into_param.ty)
+                .with_context(|| {
+                    format!(
+                        "different function parameter types for `{}`",
+                        from_param.name
+                    )
+                })?;
         }
         match (&from_func.result, &into_func.result) {
             (Some(from_ty), Some(into_ty)) => {
@@ -4980,6 +5123,78 @@ interface second-iface {
             variant.cases[0].span.is_known(),
             "case should have span after merge"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn param_spans_point_to_names() -> Result<()> {
+        let source = "\
+package foo:bar;
+
+interface iface {
+    my-func: func(a: u32, b: string);
+}
+";
+        let mut resolve = Resolve::default();
+        let pkg = resolve.push_str("test.wit", source)?;
+
+        let iface_id = resolve.packages[pkg].interfaces["iface"];
+        let func = &resolve.interfaces[iface_id].functions["my-func"];
+        assert_eq!(func.params.len(), 2);
+        for param in &func.params {
+            let start = param.span.start() as usize;
+            let end = param.span.end() as usize;
+            let snippet = &source[start..end];
+            assert_eq!(
+                snippet, param.name,
+                "param `{}` span points to {:?}",
+                param.name, snippet
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn param_spans_preserved_through_merge() -> Result<()> {
+        let mut resolve1 = Resolve::default();
+        resolve1.push_str(
+            "test1.wit",
+            r#"
+                package foo:bar;
+
+                interface iface1 {
+                    f1: func(x: u32);
+                }
+            "#,
+        )?;
+
+        let mut resolve2 = Resolve::default();
+        let pkg2 = resolve2.push_str(
+            "test2.wit",
+            r#"
+                package foo:baz;
+
+                interface iface2 {
+                    f2: func(y: string, z: bool);
+                }
+            "#,
+        )?;
+
+        let iface2_old_id = resolve2.packages[pkg2].interfaces["iface2"];
+
+        let remap = resolve1.merge(resolve2)?;
+
+        let iface2_id = remap.interfaces[iface2_old_id.index()].unwrap();
+        let func = &resolve1.interfaces[iface2_id].functions["f2"];
+        for param in &func.params {
+            assert!(
+                param.span.is_known(),
+                "param `{}` should have span after merge",
+                param.name
+            );
+        }
 
         Ok(())
     }
