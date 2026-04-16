@@ -391,14 +391,18 @@ package {name} is defined in two different locations:\n\
         Ok(pkg_id)
     }
 
-    /// Convenience method for combining [`UnresolvedPackageGroup::parse_str`] and
-    /// [`Resolve::push_group`].
+    /// Convenience method for combining [`SourceMap`] and [`Resolve::push_group`].
     ///
     /// The `path` provided is used for error messages but otherwise is not
     /// read. This method does not touch the filesystem. The `contents` provided
     /// are the contents of a WIT package.
     pub fn push_source(&mut self, path: &str, contents: &str) -> Result<PackageId> {
-        self.push_group(UnresolvedPackageGroup::parse_str(path, contents)?)
+        let mut map = SourceMap::default();
+        map.push_str(path, contents);
+        self.push_group(
+            map.parse()
+                .map_err(|(map, e)| anyhow::anyhow!("{}", e.highlight(&map)))?,
+        )
     }
 
     /// Renders a span as a human-readable location string (e.g., "file.wit:10:5").
@@ -1035,6 +1039,28 @@ package {name} is defined in two different locations:\n\
         Some(self.canonicalized_id_of_name(interface.package.unwrap(), interface.name.as_ref()?))
     }
 
+    /// Helper to rename a world and update the package's world map.
+    ///
+    /// Used by both [`Resolve::importize`] and [`Resolve::exportize`] to
+    /// rename the world to avoid confusion with the original world name.
+    fn rename_world(
+        &mut self,
+        world_id: WorldId,
+        out_world_name: Option<String>,
+        default_suffix: &str,
+    ) {
+        let world = &mut self.worlds[world_id];
+        let pkg = &mut self.packages[world.package.unwrap()];
+        pkg.worlds.shift_remove(&world.name);
+        if let Some(name) = out_world_name {
+            world.name = name.clone();
+            pkg.worlds.insert(name, world_id);
+        } else {
+            world.name.push_str(default_suffix);
+            pkg.worlds.insert(world.name.clone(), world_id);
+        }
+    }
+
     /// Convert a world to an "importized" version where the world is updated
     /// in-place to reflect what it would look like to be imported.
     ///
@@ -1051,23 +1077,11 @@ package {name} is defined in two different locations:\n\
     /// is intended to be used as part of language tooling when depending on
     /// other components.
     pub fn importize(&mut self, world_id: WorldId, out_world_name: Option<String>) -> Result<()> {
-        // Rename the world to avoid having it get confused with the original
-        // name of the world. Add `-importized` to it for now. Precisely how
-        // this new world is created may want to be updated over time if this
-        // becomes problematic.
-        let world = &mut self.worlds[world_id];
-        let pkg = &mut self.packages[world.package.unwrap()];
-        pkg.worlds.shift_remove(&world.name);
-        if let Some(name) = out_world_name {
-            world.name = name.clone();
-            pkg.worlds.insert(name, world_id);
-        } else {
-            world.name.push_str("-importized");
-            pkg.worlds.insert(world.name.clone(), world_id);
-        }
+        self.rename_world(world_id, out_world_name, "-importized");
 
         // Trim all non-type definitions from imports. Types can be used by
         // exported functions, for example, so they're preserved.
+        let world = &mut self.worlds[world_id];
         world.imports.retain(|_, item| match item {
             WorldItem::Type { .. } => true,
             _ => false,
@@ -1086,6 +1100,57 @@ package {name} is defined in two different locations:\n\
                 // Exports already don't overlap each other and the only imports
                 // preserved above were types so this shouldn't be reachable.
                 (WorldKey::Interface(_), _) => unreachable!(),
+            }
+        }
+
+        // Fill out any missing transitive interface imports by elaborating this
+        // world which does that for us.
+        self.elaborate_world(world_id)?;
+
+        #[cfg(debug_assertions)]
+        self.assert_valid();
+        Ok(())
+    }
+
+    /// Convert a world to an "exportized" version where the world is updated
+    /// in-place to reflect what it would look like to be exported.
+    ///
+    /// This is the inverse of [`Resolve::importize`]. The general idea is that
+    /// this function will update the `world_id` specified such that it exports
+    /// the functionality that it previously imported. The world will be left
+    /// with no imports (except for transitive interface dependencies which may
+    /// be needed by exported interfaces).
+    ///
+    /// An optional `filter` can be provided to control which imports are moved.
+    /// When `Some`, only imports for which the filter returns `true` are moved
+    /// to exports; remaining imports are left as-is. When `None`, all imports
+    /// are moved.
+    ///
+    /// This world is then suitable for merging into other worlds or generating
+    /// bindings in a context that is exporting the original world. This is
+    /// intended to be used as part of language tooling when implementing
+    /// components.
+    pub fn exportize(
+        &mut self,
+        world_id: WorldId,
+        out_world_name: Option<String>,
+        filter: Option<&dyn Fn(&WorldKey, &WorldItem) -> bool>,
+    ) -> Result<()> {
+        self.rename_world(world_id, out_world_name, "-exportized");
+
+        let world = &mut self.worlds[world_id];
+        world.exports.clear();
+
+        let old_imports = mem::take(&mut world.imports);
+        for (name, import) in old_imports {
+            let should_move = match &filter {
+                Some(f) => f(&name, &import),
+                None => true,
+            };
+            if should_move {
+                world.exports.insert(name, import);
+            } else {
+                world.imports.insert(name, import);
             }
         }
 
@@ -4395,7 +4460,7 @@ fn update_stability(from: &Stability, into: &mut Stability) -> Result<()> {
 
     // Failing all that this means that the two attributes are different so
     // generate an error.
-    bail!("mismatch in stability from '{:?}' to '{:?}'", from, into)
+    bail!("mismatch in stability from '{from:?}' to '{into:?}'")
 }
 
 fn merge_include_stability(
@@ -4443,7 +4508,8 @@ impl core::error::Error for InvalidTransitiveDependency {}
 #[cfg(test)]
 mod tests {
     use crate::alloc::format;
-    use crate::alloc::string::ToString;
+    use crate::alloc::string::{String, ToString};
+    use crate::alloc::vec::Vec;
     use crate::{Resolve, WorldItem, WorldKey};
     use anyhow::Result;
 
@@ -5541,6 +5607,86 @@ interface iface {
                 param.span.is_known(),
                 "param `{}` should have span after merge",
                 param.name
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Demonstrates the round-trip property: starting from a world with only
+    /// exports, `importize` turns them into imports, then `exportize` turns
+    /// them back. The resulting world has the same set of exports (by key)
+    /// as the original.
+    #[test]
+    fn exportize_importize_roundtrip() -> Result<()> {
+        let mut resolve = Resolve::default();
+        let pkg = resolve.push_str(
+            "test.wit",
+            r#"
+                package foo:bar;
+
+                interface types {
+                    type my-type = u32;
+                }
+
+                interface api {
+                    use types.{my-type};
+                    do-something: func(a: my-type) -> my-type;
+                }
+
+                world w {
+                    export api;
+                }
+            "#,
+        )?;
+        let world_id = resolve.packages[pkg].worlds["w"];
+
+        // Snapshot original export keys.
+        let original_export_keys: Vec<String> = resolve.worlds[world_id]
+            .exports
+            .keys()
+            .map(|k| resolve.name_world_key(k))
+            .collect();
+        assert!(!original_export_keys.is_empty());
+        assert!(resolve.worlds[world_id].imports.iter().all(|(_, item)| {
+            // Before importize the only imports should be elaborated
+            // interface deps (all interface items).
+            matches!(item, WorldItem::Interface { .. })
+        }));
+
+        // importize: exports -> imports, no exports remain.
+        resolve.importize(world_id, Some("w-temp".to_string()))?;
+        assert!(
+            resolve.worlds[world_id].exports.is_empty(),
+            "importize should leave no exports"
+        );
+        // The original exports should now appear as imports.
+        for key in &original_export_keys {
+            assert!(
+                resolve.worlds[world_id]
+                    .imports
+                    .keys()
+                    .any(|k| resolve.name_world_key(k) == *key),
+                "expected `{key}` to be an import after importize"
+            );
+        }
+
+        // exportize: imports -> exports, round-tripping back.
+        resolve.exportize(world_id, Some("w-final".to_string()), None)?;
+        assert!(
+            !resolve.worlds[world_id].exports.is_empty(),
+            "exportize should produce exports"
+        );
+        // The original export keys should be present as exports again.
+        let final_export_keys: Vec<String> = resolve.worlds[world_id]
+            .exports
+            .keys()
+            .map(|k| resolve.name_world_key(k))
+            .collect();
+        for key in &original_export_keys {
+            assert!(
+                final_export_keys.contains(key),
+                "expected `{key}` to be an export after round-trip, got exports: {final_export_keys:?}"
             );
         }
 
