@@ -588,8 +588,17 @@ impl ComponentState {
                 }
 
                 // Current MVP restriction of the component model.
-                if rep != ValType::I32 {
-                    bail!(offset, "resources can only be represented by `i32`");
+                if rep == ValType::I64 && !component.features.cm64() {
+                    bail!(
+                        offset,
+                        "resources with `i64` require the `cm64` feature to be enabled"
+                    )
+                }
+                if rep != ValType::I32 && rep != ValType::I64 {
+                    bail!(
+                        offset,
+                        "resources can only be represented by `i32` or `i64`"
+                    );
                 }
 
                 // If specified validate that the destructor is both a valid
@@ -2626,17 +2635,7 @@ impl ComponentState {
                 CanonicalOption::Realloc(idx) => {
                     realloc = match realloc {
                         None => {
-                            let ty_id = self.core_function_at(*idx, offset)?;
-                            let func_ty = types[ty_id].unwrap_func();
-                            if func_ty.params()
-                                != [ValType::I32, ValType::I32, ValType::I32, ValType::I32]
-                                || func_ty.results() != [ValType::I32]
-                            {
-                                return Err(BinaryReaderError::new(
-                                    "canonical option `realloc` uses a core function with an incorrect signature",
-                                    offset,
-                                ));
-                            }
+                            // Validation deferred because it may depend on the memory option.
                             Some(*idx)
                         }
                         Some(_) => {
@@ -2760,6 +2759,29 @@ impl ComponentState {
 
         if !gc && core_type.is_some() {
             bail!(offset, "cannot specify `core-type` without `gc`")
+        }
+
+        // Validate `realloc`
+        if let Some(realloc_idx) = realloc {
+            let addr_type = match memory {
+                // If a memory was specified, `realloc` must match its address type.
+                Some(memory_idx) => match self.memory_at(memory_idx, offset)?.memory64 {
+                    true => ValType::I64,
+                    false => ValType::I32,
+                },
+                // Backwards compatibility: Assume `i32` memory if none was specified.
+                None => ValType::I32,
+            };
+            let ty_id = self.core_function_at(realloc_idx, offset)?;
+            let func_ty = types[ty_id].unwrap_func();
+            if func_ty.params() != [addr_type, addr_type, addr_type, addr_type]
+                || func_ty.results() != [addr_type]
+            {
+                return Err(BinaryReaderError::new(
+                    "canonical option `realloc` uses a core function with an incorrect signature",
+                    offset,
+                ));
+            }
         }
 
         Ok(CanonicalOptions {
@@ -4351,25 +4373,24 @@ impl ComponentState {
     /// Validates that the linear memory at `idx` is valid to use as a canonical
     /// ABI memory.
     ///
-    /// At this time this requires that the memory is a plain 32-bit linear
-    /// memory. Notably this disallows shared memory and 64-bit linear memories.
+    /// At this time this requires that the memory is a plain 32-bit or 64-bit linear
+    /// memory. Notably this disallows shared memory.
     fn cabi_memory_at(&self, idx: u32, offset: usize) -> Result<()> {
         let ty = self.memory_at(idx, offset)?;
-        SubtypeCx::memory_type(
-            ty,
-            &MemoryType {
-                initial: 0,
-                maximum: None,
-                memory64: false,
-                shared: false,
-                page_size_log2: None,
-            },
-            offset,
-        )
-        .map_err(|mut e| {
-            e.add_context("canonical ABI memory is not a 32-bit linear memory".into());
-            e
-        })
+        let valid_memory_type = MemoryType {
+            initial: 0,
+            maximum: None,
+            memory64: ty.memory64,
+            shared: false,
+            page_size_log2: None,
+        };
+        if ty.memory64 && !self.features.cm64() {
+            bail!(
+                offset,
+                "64-bit memories require the `cm64` feature to be enabled"
+            );
+        }
+        SubtypeCx::memory_type(ty, &valid_memory_type, offset)
     }
 
     /// Completes the translation of this component, performing final
