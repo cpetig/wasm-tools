@@ -1203,8 +1203,8 @@ impl ComponentState {
                 self.task_return(&result, &options, types, offset)
             }
             CanonicalFunction::TaskCancel => self.task_cancel(types, offset),
-            CanonicalFunction::ContextGet(i) => self.context_get(i, types, offset),
-            CanonicalFunction::ContextSet(i) => self.context_set(i, types, offset),
+            CanonicalFunction::ContextGet { ty, slot } => self.context_get(ty, slot, types, offset),
+            CanonicalFunction::ContextSet { ty, slot } => self.context_set(ty, slot, types, offset),
             CanonicalFunction::ThreadYield { cancellable: _ } => self.thread_yield(types, offset),
             CanonicalFunction::SubtaskDrop => self.subtask_drop(types, offset),
             CanonicalFunction::SubtaskCancel { async_ } => {
@@ -1234,7 +1234,7 @@ impl ComponentState {
                 self.future_read(ty, &options, types, offset)
             }
             CanonicalFunction::FutureWrite { ty, options } => {
-                self.future_write(ty, options.into_vec(), types, offset)
+                self.future_write(ty, &options, types, offset)
             }
             CanonicalFunction::FutureCancelRead { ty, async_ } => {
                 self.future_cancel_read(ty, async_, types, offset)
@@ -1386,10 +1386,10 @@ impl ComponentState {
         types: &mut TypeAlloc,
         offset: usize,
     ) -> Result<()> {
-        if !self.features.cm_async_builtins() {
+        if !self.features.cm_more_async_builtins() {
             bail!(
                 offset,
-                "`resource.drop` as `async` requires the component model async builtins feature"
+                "`resource.drop` as `async` requires the component model more async builtins feature"
             )
         }
         self.resource_at(resource, types, offset)?;
@@ -1517,32 +1517,62 @@ impl ComponentState {
         Ok(())
     }
 
-    fn context_get(&mut self, i: u32, types: &mut TypeAlloc, offset: usize) -> Result<()> {
+    fn context_get(
+        &mut self,
+        ty: ValType,
+        i: u32,
+        types: &mut TypeAlloc,
+        offset: usize,
+    ) -> Result<()> {
         if !self.features.cm_async() {
             bail!(
                 offset,
                 "`context.get` requires the component model async feature"
             )
         }
+        self.validate_context_type(ty, "context.get", offset)?;
         self.validate_context_immediate(i, "context.get", offset)?;
 
         self.core_funcs
-            .push(types.intern_func_type(FuncType::new([], [ValType::I32]), offset));
+            .push(types.intern_func_type(FuncType::new([], [ty]), offset));
         Ok(())
     }
 
-    fn context_set(&mut self, i: u32, types: &mut TypeAlloc, offset: usize) -> Result<()> {
+    fn context_set(
+        &mut self,
+        ty: ValType,
+        i: u32,
+        types: &mut TypeAlloc,
+        offset: usize,
+    ) -> Result<()> {
         if !self.features.cm_async() {
             bail!(
                 offset,
                 "`context.set` requires the component model async feature"
             )
         }
+        self.validate_context_type(ty, "context.set", offset)?;
         self.validate_context_immediate(i, "context.set", offset)?;
 
         self.core_funcs
-            .push(types.intern_func_type(FuncType::new([ValType::I32], []), offset));
+            .push(types.intern_func_type(FuncType::new([ty], []), offset));
         Ok(())
+    }
+
+    fn validate_context_type(&self, ty: ValType, intrinsic: &str, offset: usize) -> Result<()> {
+        match ty {
+            ValType::I32 => Ok(()),
+            ValType::I64 => {
+                if !self.features.cm64() {
+                    bail!(
+                        offset,
+                        "64-bit `{intrinsic}` requires the component model 64-bit feature"
+                    )
+                }
+                Ok(())
+            }
+            _ => bail!(offset, "`{intrinsic}` only supports `i32` or `i64`"),
+        }
     }
 
     fn thread_yield(&mut self, types: &mut TypeAlloc, offset: usize) -> Result<()> {
@@ -1578,10 +1608,10 @@ impl ComponentState {
                 "`subtask.cancel` requires the component model async feature"
             )
         }
-        if async_ && !self.features.cm_async_builtins() {
+        if async_ && !self.features.cm_more_async_builtins() {
             bail!(
                 offset,
-                "async `subtask.cancel` requires the component model async builtins feature"
+                "async `subtask.cancel` requires the component model more async builtins feature"
             )
         }
 
@@ -1627,8 +1657,14 @@ impl ComponentState {
             bail!(offset, "`stream.read` requires a stream type")
         };
 
-        let ty_id = self
-            .check_options(types, options, offset)?
+        let options = self.check_options(types, options, offset)?;
+        if options.concurrency.is_sync() && !self.features.cm_more_async_builtins() {
+            bail!(
+                offset,
+                "synchronous `stream.read` requires the component model more async builtins feature"
+            );
+        }
+        let ty_id = options
             .require_memory_if(offset, || elem_ty.is_some())?
             .require_realloc_if(offset, || elem_ty.is_some_and(|ty| ty.contains_ptr(types)))?
             .check_lower(offset)?
@@ -1661,8 +1697,14 @@ impl ComponentState {
             bail!(offset, "`stream.write` requires a stream type")
         };
 
-        let ty_id = self
-            .check_options(types, options, offset)?
+        let options = self.check_options(types, options, offset)?;
+        if options.concurrency.is_sync() && !self.features.cm_more_async_builtins() {
+            bail!(
+                offset,
+                "synchronous `stream.write` requires the component model more async builtins feature"
+            );
+        }
+        let ty_id = options
             .require_memory_if(offset, || elem_ty.is_some())?
             .check_lower(offset)?
             .check_core_type(
@@ -1688,10 +1730,10 @@ impl ComponentState {
                 "`stream.cancel-read` requires the component model async feature"
             )
         }
-        if cancellable && !self.features.cm_async_builtins() {
+        if cancellable && !self.features.cm_more_async_builtins() {
             bail!(
                 offset,
-                "async `stream.cancel-read` requires the component model async builtins feature"
+                "async `stream.cancel-read` requires the component model more async builtins feature"
             )
         }
 
@@ -1718,10 +1760,10 @@ impl ComponentState {
                 "`stream.cancel-write` requires the component model async feature"
             )
         }
-        if cancellable && !self.features.cm_async_builtins() {
+        if cancellable && !self.features.cm_more_async_builtins() {
             bail!(
                 offset,
-                "async `stream.cancel-write` requires the component model async builtins feature"
+                "async `stream.cancel-write` requires the component model more async builtins feature"
             )
         }
 
@@ -1818,8 +1860,14 @@ impl ComponentState {
             bail!(offset, "`future.read` requires a future type")
         };
 
-        let ty_id = self
-            .check_options(types, options, offset)?
+        let options = self.check_options(types, options, offset)?;
+        if options.concurrency.is_sync() && !self.features.cm_more_async_builtins() {
+            bail!(
+                offset,
+                "synchronous `future.read` requires the component model more async builtins feature"
+            );
+        }
+        let ty_id = options
             .require_memory_if(offset, || elem_ty.is_some())?
             .require_realloc_if(offset, || elem_ty.is_some_and(|ty| ty.contains_ptr(types)))?
             .check_lower(offset)?
@@ -1836,7 +1884,7 @@ impl ComponentState {
     fn future_write(
         &mut self,
         ty: u32,
-        options: Vec<CanonicalOption>,
+        options: &[CanonicalOption],
         types: &mut TypeAlloc,
         offset: usize,
     ) -> Result<()> {
@@ -1852,8 +1900,14 @@ impl ComponentState {
             bail!(offset, "`future.write` requires a future type")
         };
 
-        let ty_id = self
-            .check_options(types, &options, offset)?
+        let options = self.check_options(types, &options, offset)?;
+        if options.concurrency.is_sync() && !self.features.cm_more_async_builtins() {
+            bail!(
+                offset,
+                "synchronous `future.write` requires the component model more async builtins feature"
+            );
+        }
+        let ty_id = options
             .require_memory_if(offset, || elem_ty.is_some())?
             .check_core_type(
                 types,
@@ -1878,10 +1932,10 @@ impl ComponentState {
                 "`future.cancel-read` requires the component model async feature"
             )
         }
-        if cancellable && !self.features.cm_async_builtins() {
+        if cancellable && !self.features.cm_more_async_builtins() {
             bail!(
                 offset,
-                "async `future.cancel-read` requires the component model async builtins feature"
+                "async `future.cancel-read` requires the component model more async builtins feature"
             )
         }
 
@@ -1908,10 +1962,10 @@ impl ComponentState {
                 "`future.cancel-write` requires the component model async feature"
             )
         }
-        if cancellable && !self.features.cm_async_builtins() {
+        if cancellable && !self.features.cm_more_async_builtins() {
             bail!(
                 offset,
-                "async `future.cancel-write` requires the component model async builtins feature"
+                "async `future.cancel-write` requires the component model more async builtins feature"
             )
         }
 
@@ -2763,14 +2817,18 @@ impl ComponentState {
 
         // Validate `realloc`
         if let Some(realloc_idx) = realloc {
-            let addr_type = match memory {
-                // If a memory was specified, `realloc` must match its address type.
-                Some(memory_idx) => match self.memory_at(memory_idx, offset)?.memory64 {
-                    true => ValType::I64,
-                    false => ValType::I32,
-                },
-                // Backwards compatibility: Assume `i32` memory if none was specified.
-                None => ValType::I32,
+            let mty = match memory {
+                Some(i) => self.memory_at(i, offset)?,
+                None => {
+                    return Err(BinaryReaderError::new(
+                        "canonical option `realloc` requires `memory` to also be specified",
+                        offset,
+                    ));
+                }
+            };
+            let addr_type = match mty.memory64 {
+                true => ValType::I64,
+                false => ValType::I32,
             };
             let ty_id = self.core_function_at(realloc_idx, offset)?;
             let func_ty = types[ty_id].unwrap_func();
