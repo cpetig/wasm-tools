@@ -10,8 +10,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
-use anyhow::Context;
-use anyhow::{Result, bail};
+use anyhow::Context as _;
 use id_arena::{Arena, Id};
 use semver::Version;
 
@@ -52,6 +51,7 @@ pub use ast::{ParsedUsePath, parse_use_path, pretty_print};
 mod sizealign;
 pub use sizealign::*;
 mod resolve;
+pub use resolve::error::*;
 pub use resolve::*;
 mod live;
 pub use live::{LiveTypes, TypeIdVisitor};
@@ -64,9 +64,36 @@ mod serde_;
 use serde_::*;
 
 /// Checks if the given string is a legal identifier in wit.
-pub fn validate_id(s: &str) -> Result<()> {
+pub fn validate_id(s: &str) -> anyhow::Result<()> {
     ast::validate_id(0, s)?;
     Ok(())
+}
+
+/// Renders an [`anyhow::Error`] chain produced by this crate, substituting
+/// snippet-bearing output for any [`ResolveError`] or [`ParseError`] layers.
+///
+/// For each layer in the chain, this calls [`ResolveError::highlight`] or
+/// [`ParseError::highlight`] to format typed errors with file/line/column and
+/// a source snippet. Other layers are formatted via their [`fmt::Display`]
+/// impl. Layers are joined with `": "`, matching `format!("{err:#}")`.
+///
+/// `source_map` must be the [`SourceMap`] in which every typed error's spans
+/// are valid; combining typed errors from different source maps in one chain
+/// is unsupported.
+#[cfg(feature = "std")]
+pub fn render_anyhow_error(err: &anyhow::Error, source_map: &SourceMap) -> String {
+    err.chain()
+        .map(|layer| {
+            if let Some(re) = layer.downcast_ref::<ResolveError>() {
+                re.highlight(source_map)
+            } else if let Some(pe) = layer.downcast_ref::<ParseError>() {
+                pe.highlight(source_map)
+            } else {
+                layer.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(": ")
 }
 
 pub type WorldId = Id<World>;
@@ -294,91 +321,6 @@ impl fmt::Display for PackageName {
     }
 }
 
-#[derive(Debug)]
-struct Error {
-    span: Span,
-    msg: String,
-    highlighted: Option<String>,
-}
-
-impl Error {
-    fn new(span: Span, msg: impl Into<String>) -> Error {
-        Error {
-            span,
-            msg: msg.into(),
-            highlighted: None,
-        }
-    }
-
-    /// Highlights this error using the given source map, if the span is known.
-    fn highlight(&mut self, source_map: &ast::SourceMap) {
-        if self.highlighted.is_none() {
-            self.highlighted = source_map.highlight_span(self.span, &self.msg);
-        }
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.highlighted.as_ref().unwrap_or(&self.msg).fmt(f)
-    }
-}
-
-impl core::error::Error for Error {}
-
-#[derive(Debug)]
-struct PackageNotFoundError {
-    span: Span,
-    requested: PackageName,
-    known: Vec<PackageName>,
-    highlighted: Option<String>,
-}
-
-impl PackageNotFoundError {
-    pub fn new(span: Span, requested: PackageName, known: Vec<PackageName>) -> Self {
-        Self {
-            span,
-            requested,
-            known,
-            highlighted: None,
-        }
-    }
-
-    /// Highlights this error using the given source map, if the span is known.
-    fn highlight(&mut self, source_map: &ast::SourceMap) {
-        if self.highlighted.is_none() {
-            self.highlighted = source_map.highlight_span(self.span, &format!("{self}"));
-        }
-    }
-}
-
-impl fmt::Display for PackageNotFoundError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(highlighted) = &self.highlighted {
-            return highlighted.fmt(f);
-        }
-        if self.known.is_empty() {
-            write!(
-                f,
-                "package '{}' not found. no known packages.",
-                self.requested
-            )?;
-        } else {
-            write!(
-                f,
-                "package '{}' not found. known packages:\n",
-                self.requested
-            )?;
-            for known in self.known.iter() {
-                write!(f, "    {known}\n")?;
-            }
-        }
-        Ok(())
-    }
-}
-
-impl core::error::Error for PackageNotFoundError {}
-
 impl UnresolvedPackageGroup {
     /// Parses the given string as a wit document.
     ///
@@ -386,7 +328,7 @@ impl UnresolvedPackageGroup {
     /// are considered to be the contents of `path`. This function does not read
     /// the filesystem.
     #[cfg(feature = "std")]
-    pub fn parse(path: impl AsRef<Path>, contents: &str) -> Result<UnresolvedPackageGroup> {
+    pub fn parse(path: impl AsRef<Path>, contents: &str) -> anyhow::Result<UnresolvedPackageGroup> {
         let path = path
             .as_ref()
             .to_str()
@@ -404,7 +346,7 @@ impl UnresolvedPackageGroup {
     /// grouping. This is useful when a WIT package is split across multiple
     /// files.
     #[cfg(feature = "std")]
-    pub fn parse_dir(path: impl AsRef<Path>) -> Result<UnresolvedPackageGroup> {
+    pub fn parse_dir(path: impl AsRef<Path>) -> anyhow::Result<UnresolvedPackageGroup> {
         let path = path.as_ref();
         let mut map = SourceMap::default();
         let cx = || format!("failed to read directory {path:?}");
@@ -1162,12 +1104,12 @@ pub enum Mangling {
 impl core::str::FromStr for Mangling {
     type Err = anyhow::Error;
 
-    fn from_str(s: &str) -> Result<Mangling> {
+    fn from_str(s: &str) -> anyhow::Result<Mangling> {
         match s {
             "legacy" => Ok(Mangling::Legacy),
             "standard32" => Ok(Mangling::Standard32),
             _ => {
-                bail!(
+                anyhow::bail!(
                     "unknown name mangling `{s}`, \
                      supported values are `legacy` or `standard32`"
                 )
@@ -1277,6 +1219,24 @@ impl ManglingAndAbi {
         match self {
             Self::Standard32 => Mangling::Standard32,
             Self::Legacy(_) => Mangling::Legacy,
+        }
+    }
+
+    /// Returns a suitable [`ManglingAndAbi`], based on `self`, to use for
+    /// `func`.
+    ///
+    /// This handles the case where `func` is a synchronous function which means
+    /// that it's forced to use the sync ABI no matter what.
+    pub fn for_func(&self, func: &Function) -> Self {
+        match self {
+            Self::Standard32 => *self,
+            Self::Legacy(abi) => {
+                if !func.kind.is_async() {
+                    Self::Legacy(LiftLowerAbi::Sync)
+                } else {
+                    Self::Legacy(*abi)
+                }
+            }
         }
     }
 }

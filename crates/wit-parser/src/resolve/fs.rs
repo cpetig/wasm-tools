@@ -195,7 +195,7 @@ impl Resolve {
         match self._push_file(path.as_ref())? {
             #[cfg(feature = "decoding")]
             ParsedFile::Package(id) => Ok(id),
-            ParsedFile::Unresolved(pkg) => self.push_group(pkg),
+            ParsedFile::Unresolved(pkg) => Ok(self.push_group(pkg)?),
         }
     }
 
