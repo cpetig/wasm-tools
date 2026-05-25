@@ -2189,6 +2189,7 @@ pub fn pretty_print(path: impl AsRef<Path> + Clone) {
                                                         println!("\timport {};", p.name().name);
                                                     }
                                                     ExternKind::Func(_, _) => todo!(),
+                                                    ExternKind::NamedPath(_, _) => todo!(),
                                                 }
                                             }
                                             WorldItem::Export(e) => {
@@ -2199,6 +2200,7 @@ pub fn pretty_print(path: impl AsRef<Path> + Clone) {
                                                         println!("\texport {};", p.name().name);
                                                     }
                                                     ExternKind::Func(_, _) => todo!(),
+                                                    ExternKind::NamedPath(_, _) => todo!(),
                                                 }
                                             }
                                             WorldItem::Use(_) => todo!(),
