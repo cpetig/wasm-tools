@@ -50,11 +50,19 @@ pub struct ImportedInterface {
     pub lowerings: IndexMap<(String, AbiVariant), Lowering>,
     pub interface: Option<InterfaceId>,
     pub implements: Option<String>,
+    pub external_id: Option<String>,
 }
 
 #[derive(Debug)]
 pub enum Lowering {
-    Direct,
+    /// This import can be `canon lower`'d at the same time that the core module
+    /// importing it is instantiated.
+    Direct {
+        options: RequiredOptions,
+    },
+    /// This import requires an indirection through the shim module's table as
+    /// the `options` required here can only be satisfied after the core module
+    /// in question has been instantiated (e.g. `realloc`).
     Indirect {
         sig: WasmSignature,
         options: RequiredOptions,
@@ -82,6 +90,24 @@ impl<'a> ComponentWorld<'a> {
         ret.process_live_type_imports();
 
         Ok(ret)
+    }
+
+    /// Returns whether the component encoding process should use context slot 1
+    /// in tasks, generally reserved for TLS.
+    ///
+    /// This is a heuristic which should go away once component-model-threading
+    /// has been stable for awhile and the return value of this function should
+    /// be const-propagated as `true`.
+    pub fn can_use_context_slot_1(&self) -> bool {
+        let uses = |info: &ValidatedModule| {
+            info.imports.imports().any(|(_, _, import)| match import {
+                Import::ThreadNewIndirect
+                | Import::ContextGet { slot: 1, .. }
+                | Import::ContextSet { slot: 1, .. } => true,
+                _ => false,
+            })
+        };
+        uses(&self.info) || self.adapters.values().any(|a| uses(&a.info))
     }
 
     /// Process adapters which are required here. Iterate over all
@@ -238,7 +264,14 @@ impl<'a> ComponentWorld<'a> {
             }
         }
         for (name, item) in resolve.worlds[world].imports.iter() {
-            add_item(&mut self.import_map, resolve, name, item, &required)?;
+            add_item(
+                &mut self.import_map,
+                resolve,
+                name,
+                item,
+                &required,
+                &self.info,
+            )?;
         }
         return Ok(());
 
@@ -248,6 +281,7 @@ impl<'a> ComponentWorld<'a> {
             key: &WorldKey,
             item: &WorldItem,
             required: &Required<'_>,
+            info: &ValidatedModule,
         ) -> Result<()> {
             let name = resolve.name_world_key(key);
             log::trace!("register import `{name}`");
@@ -260,18 +294,28 @@ impl<'a> ComponentWorld<'a> {
                 WorldItem::Interface { id, .. } => Some(*id),
             };
             let implements = resolve.implements_value(key, item);
+            // Note that `external_id` is only tracked for interface imports
+            // here. World-level functions and types all share the `None` entry
+            // in `import_map` but each item can have its own `external-id`
+            // which is emitted on a per-item basis instead.
+            let external_id = match item {
+                WorldItem::Function(_) | WorldItem::Type { .. } => None,
+                WorldItem::Interface { .. } => resolve.external_id_value(key, item),
+            };
             let interface = import_map
                 .entry(import_map_key)
                 .or_insert_with(|| ImportedInterface {
                     interface: interface_id,
                     lowerings: Default::default(),
                     implements: implements.clone(),
+                    external_id: external_id.clone(),
                 });
             assert_eq!(interface.interface, interface_id);
             assert_eq!(interface.implements, implements);
+            assert_eq!(interface.external_id, external_id);
             match item {
                 WorldItem::Function(func) => {
-                    interface.add_func(required, resolve, func);
+                    interface.add_func(required, resolve, func, info);
                 }
                 WorldItem::Type { id, .. } => {
                     interface.add_type(required, resolve, *id);
@@ -281,7 +325,7 @@ impl<'a> ComponentWorld<'a> {
                         interface.add_type(required, resolve, *ty);
                     }
                     for (_name, func) in resolve.interfaces[*id].functions.iter() {
-                        interface.add_func(required, resolve, func);
+                        interface.add_func(required, resolve, func, info);
                     }
                 }
             }
@@ -416,11 +460,13 @@ impl<'a> ComponentWorld<'a> {
                 // Intrinsics that don't need to refer to WIT types can be
                 // skipped here.
                 Import::AdapterExport { .. }
-                | Import::MainModuleMemory
+                | Import::MainModuleMemory(_)
                 | Import::MainModuleExport { .. }
                 | Import::Item(_)
                 | Import::ContextGet { .. }
                 | Import::ContextSet { .. }
+                | Import::TlsBaseGet { .. }
+                | Import::TlsBaseSet { .. }
                 | Import::BackpressureInc
                 | Import::BackpressureDec
                 | Import::WaitableSetNew
@@ -428,7 +474,6 @@ impl<'a> ComponentWorld<'a> {
                 | Import::WaitableSetPoll { .. }
                 | Import::WaitableSetDrop
                 | Import::WaitableJoin
-                | Import::ThreadYield { .. }
                 | Import::SubtaskDrop
                 | Import::SubtaskCancel { .. }
                 | Import::ErrorContextNew { .. }
@@ -437,11 +482,13 @@ impl<'a> ComponentWorld<'a> {
                 | Import::ExportedTaskCancel
                 | Import::ThreadIndex
                 | Import::ThreadNewIndirect { .. }
-                | Import::ThreadSuspendToSuspended { .. }
+                | Import::ThreadResumeLater
                 | Import::ThreadSuspend { .. }
-                | Import::ThreadSuspendTo { .. }
-                | Import::ThreadUnsuspend
-                | Import::ThreadYieldToSuspended { .. } => {}
+                | Import::ThreadYield { .. }
+                | Import::ThreadSuspendThenResume { .. }
+                | Import::ThreadYieldThenResume { .. }
+                | Import::ThreadSuspendThenPromote { .. }
+                | Import::ThreadYieldThenPromote { .. } => {}
             }
         }
     }
@@ -486,8 +533,36 @@ struct Required<'a> {
     resource_drops: IndexSet<TypeId>,
 }
 
+/// Returns whether `options` can all be satisfied without needing anything from
+/// a core module that hasn't been instantiated yet.
+fn options_are_available_before_instantiation(
+    options: RequiredOptions,
+    info: &ValidatedModule,
+) -> bool {
+    // If neither memory nor realloc are needed, this can always be lowered
+    // eagerly.
+    if !options.contains(RequiredOptions::MEMORY) && !options.contains(RequiredOptions::REALLOC) {
+        return true;
+    }
+
+    // Otherwise this depends on linear memory. If the main module imports
+    // linear memory then it's available before instantiating it, and in that
+    // situation we'll also generate shim functions for `realloc` so that's also
+    // available before instantiation.
+    //
+    // If linear memory isn't imported, but instead it's only exported, then we
+    // can't have it before we instantiate the main module.
+    info.imports.imported_memory().is_some()
+}
+
 impl ImportedInterface {
-    fn add_func(&mut self, required: &Required<'_>, resolve: &Resolve, func: &Function) {
+    fn add_func(
+        &mut self,
+        required: &Required<'_>,
+        resolve: &Resolve,
+        func: &Function,
+        info: &ValidatedModule,
+    ) {
         let mut abis = Vec::with_capacity(2);
         if let Some(set) = required.interface_funcs.get(&self.interface) {
             if set.contains(&(func.name.as_str(), AbiVariant::GuestImport)) {
@@ -500,8 +575,8 @@ impl ImportedInterface {
         for abi in abis {
             log::trace!("add func {} {abi:?}", func.name);
             let options = RequiredOptions::for_import(resolve, func, abi);
-            let lowering = if options.is_empty() {
-                Lowering::Direct
+            let lowering = if options_are_available_before_instantiation(options, info) {
+                Lowering::Direct { options }
             } else {
                 let sig = resolve.wasm_signature(abi, func);
                 Lowering::Indirect { sig, options }

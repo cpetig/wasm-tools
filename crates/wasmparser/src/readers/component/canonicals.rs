@@ -64,11 +64,6 @@ pub enum CanonicalFunction {
         /// The type index of the resource that's being dropped.
         resource: u32,
     },
-    /// Same as `ResourceDrop`, but implements the `async` ABI.
-    ResourceDropAsync {
-        /// The type index of the resource that's being dropped.
-        resource: u32,
-    },
     /// A function which returns the underlying i32-based representation of the
     /// specified resource.
     ResourceRep {
@@ -128,10 +123,7 @@ pub enum CanonicalFunction {
     },
     /// A function which yields control to the host so that other tasks are able
     /// to make progress, if any.
-    ThreadYield {
-        /// If `true`, indicates the caller instance maybe reentered.
-        cancellable: bool,
-    },
+    ThreadYield,
     /// A function to drop a specified task which has completed.
     SubtaskDrop,
     /// A function to cancel an in-progress task.
@@ -262,17 +254,11 @@ pub enum CanonicalFunction {
     WaitableSetNew,
     /// A function to block on the next item within a `waitable-set`.
     WaitableSetWait {
-        /// Whether or not the guest can be reentered while calling this
-        /// function.
-        cancellable: bool,
         /// Which memory the results of this operation are stored in.
         memory: u32,
     },
     /// A function to check if any items are ready within a `waitable-set`.
     WaitableSetPoll {
-        /// Whether or not the guest can be reentered while calling this
-        /// function.
-        cancellable: bool,
         /// Which memory the results of this operation are stored in.
         memory: u32,
     },
@@ -289,28 +275,18 @@ pub enum CanonicalFunction {
         /// The index of the table to use.
         table_index: u32,
     },
-    /// A function to suspend the current thread and switch to the given suspended thread.
-    ThreadSuspendToSuspended {
-        /// Whether or not the thread can be cancelled while awaiting resumption.
-        cancellable: bool,
-    },
-    /// A function to suspend the current thread, immediately yielding to any transitive async-lowered calling component.
-    ThreadSuspend {
-        /// Whether or not the thread can be cancelled while suspended.
-        cancellable: bool,
-    },
-    /// A function to suspend the current thread and switch to another thread.
-    ThreadSuspendTo {
-        /// Whether or not the thread can be cancelled while suspended.
-        cancellable: bool,
-    },
     /// A function to schedule the given thread to be resumed later.
-    ThreadUnsuspend,
-    /// A function to yield to the given suspended thread.
-    ThreadYieldToSuspended {
-        /// Whether or not the thread can be cancelled while yielding.
-        cancellable: bool,
-    },
+    ThreadResumeLater,
+    /// A function to suspend the current thread, immediately yielding to any transitive async-lowered calling component.
+    ThreadSuspend,
+    /// The `thread.suspend-then-resume` intrinsic
+    ThreadSuspendThenResume,
+    /// The `thread.yield-then-resume` intrinsic
+    ThreadYieldThenResume,
+    /// The `thread.suspend-then-promote` intrinsic
+    ThreadSuspendThenPromote,
+    /// The `thread.yield-then-promote` intrinsic
+    ThreadYieldThenPromote,
 }
 
 /// A reader for the canonical section of a WebAssembly component.
@@ -340,9 +316,6 @@ impl<'a> FromReader<'a> for CanonicalFunction {
             0x03 => CanonicalFunction::ResourceDrop {
                 resource: reader.read()?,
             },
-            0x07 => CanonicalFunction::ResourceDropAsync {
-                resource: reader.read()?,
-            },
             0x04 => CanonicalFunction::ResourceRep {
                 resource: reader.read()?,
             },
@@ -352,6 +325,7 @@ impl<'a> FromReader<'a> for CanonicalFunction {
                 result: crate::read_resultlist(reader)?,
                 options: read_opts(reader)?,
             },
+            0x05 => CanonicalFunction::TaskCancel,
             0x0a => CanonicalFunction::ContextGet {
                 ty: reader.read()?,
                 slot: reader.read_var_u32()?,
@@ -360,8 +334,8 @@ impl<'a> FromReader<'a> for CanonicalFunction {
                 ty: reader.read()?,
                 slot: reader.read_var_u32()?,
             },
-            0x0c => CanonicalFunction::ThreadYield {
-                cancellable: reader.read()?,
+            0x06 => CanonicalFunction::SubtaskCancel {
+                async_: reader.read()?,
             },
             0x0d => CanonicalFunction::SubtaskDrop,
             0x0e => CanonicalFunction::StreamNew { ty: reader.read()? },
@@ -411,14 +385,18 @@ impl<'a> FromReader<'a> for CanonicalFunction {
             0x1e => CanonicalFunction::ErrorContextDrop,
 
             0x1f => CanonicalFunction::WaitableSetNew,
-            0x20 => CanonicalFunction::WaitableSetWait {
-                cancellable: reader.read()?,
-                memory: reader.read()?,
-            },
-            0x21 => CanonicalFunction::WaitableSetPoll {
-                cancellable: reader.read()?,
-                memory: reader.read()?,
-            },
+            0x20 => {
+                read_legacy_cancellation_byte(reader)?;
+                CanonicalFunction::WaitableSetWait {
+                    memory: reader.read()?,
+                }
+            }
+            0x21 => {
+                read_legacy_cancellation_byte(reader)?;
+                CanonicalFunction::WaitableSetPoll {
+                    memory: reader.read()?,
+                }
+            }
             0x22 => CanonicalFunction::WaitableSetDrop,
             0x23 => CanonicalFunction::WaitableJoin,
             0x26 => CanonicalFunction::ThreadIndex,
@@ -426,23 +404,31 @@ impl<'a> FromReader<'a> for CanonicalFunction {
                 func_ty_index: reader.read()?,
                 table_index: reader.read()?,
             },
-            0x28 => CanonicalFunction::ThreadSuspendToSuspended {
-                cancellable: reader.read()?,
-            },
-            0x29 => CanonicalFunction::ThreadSuspend {
-                cancellable: reader.read()?,
-            },
-            0x2a => CanonicalFunction::ThreadUnsuspend,
-            0x2b => CanonicalFunction::ThreadYieldToSuspended {
-                cancellable: reader.read()?,
-            },
-            0x2c => CanonicalFunction::ThreadSuspendTo {
-                cancellable: reader.read()?,
-            },
-            0x06 => CanonicalFunction::SubtaskCancel {
-                async_: reader.read()?,
-            },
-            0x05 => CanonicalFunction::TaskCancel,
+            0x28 => CanonicalFunction::ThreadResumeLater,
+            0x29 => {
+                read_legacy_cancellation_byte(reader)?;
+                CanonicalFunction::ThreadSuspend
+            }
+            0x0c => {
+                read_legacy_cancellation_byte(reader)?;
+                CanonicalFunction::ThreadYield
+            }
+            0x2a => {
+                read_legacy_cancellation_byte(reader)?;
+                CanonicalFunction::ThreadSuspendThenResume
+            }
+            0x2b => {
+                read_legacy_cancellation_byte(reader)?;
+                CanonicalFunction::ThreadYieldThenResume
+            }
+            0x2c => {
+                read_legacy_cancellation_byte(reader)?;
+                CanonicalFunction::ThreadSuspendThenPromote
+            }
+            0x2d => {
+                read_legacy_cancellation_byte(reader)?;
+                CanonicalFunction::ThreadYieldThenPromote
+            }
             0x40 => CanonicalFunction::ThreadSpawnRef {
                 func_ty_index: reader.read()?,
             },
@@ -460,6 +446,20 @@ fn read_opts(reader: &mut BinaryReader<'_>) -> Result<Box<[CanonicalOption]>> {
     reader
         .read_iter(MAX_WASM_CANONICAL_OPTIONS, "canonical options")?
         .collect::<Result<_>>()
+}
+
+fn read_legacy_cancellation_byte(reader: &mut BinaryReader<'_>) -> Result<()> {
+    Ok(match reader.read_u8()? {
+        0x00 => {}
+        0x01 => {
+            return reader.invalid_leading_byte(
+                0x01,
+                "zero byte; this was historically accepted \
+                 as `cancellable` until WebAssembly/component-model#716",
+            );
+        }
+        x => return reader.invalid_leading_byte(x, "zero byte"),
+    })
 }
 
 impl<'a> FromReader<'a> for CanonicalOption {

@@ -13,6 +13,37 @@ use {
     },
 };
 
+pub const ENV: &str = "env";
+pub const GOT_MEM: &str = "GOT.mem";
+pub const GOT_FUNC: &str = "GOT.func";
+pub const MEMORY: &str = "memory";
+pub const MEMORY_BASE: &str = "__memory_base";
+pub const TABLE_BASE: &str = "__table_base";
+pub const STACK_POINTER: &str = "__stack_pointer";
+pub const INIT_STACK_POINTER: &str = "__init_stack_pointer";
+pub const ASYNCIFY_DATA: &str = "__asyncify_data";
+pub const ASYNCIFY_STATE: &str = "__asyncify_state";
+pub const INDIRECT_FUNCTION_TABLE: &str = "__indirect_function_table";
+pub const HEAP_BASE: &str = "__heap_base";
+pub const HEAP_END: &str = "__heap_end";
+pub const STACK_HIGH: &str = "__stack_high";
+pub const STACK_LOW: &str = "__stack_low";
+pub const APPLY_DATA_RELOCS: &str = "__wasm_apply_data_relocs";
+pub const CALL_CTORS: &str = "__wasm_call_ctors";
+pub const INITIALIZE: &str = "_initialize";
+pub const START: &str = "_start";
+pub const LIBDL_LIBRARIES: &str = "__wasm_libdl_libraries";
+pub const TASK_HOOK: &str = "__wasm_task_hook";
+pub const ROOT: &str = "$root";
+pub const THREAD_NEW_INDIRECT: &str = "[thread-new-indirect-v0]";
+pub const CONTEXT_GET_1: &str = "[context-get-1]";
+pub const GET_STACK_POINTER: &str = "__wasm_get_stack_pointer";
+pub const SET_STACK_POINTER: &str = "__wasm_set_stack_pointer";
+pub const GET_TLS_BASE: &str = "__wasm_get_tls_base";
+pub const SET_TLS_BASE: &str = "__wasm_set_tls_base";
+pub const PROGRAM_TLS_INFO: &str = "__wasm_program_tls_info";
+pub const LIBRARY_TLS_INFO: &str = "__wasm_library_tls_info";
+
 /// Represents a core Wasm value type (not including V128 or reference types, which are not yet supported)
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ValueType {
@@ -187,8 +218,8 @@ pub struct Metadata<'a> {
     /// Whether this module exports `_start`
     pub has_wasi_start: bool,
 
-    /// Whether this module exports `__wasm_set_libraries`
-    pub has_set_libraries: bool,
+    /// Whether this module imports `__wasm_libdl_libraries`
+    pub needs_libdl_libraries: bool,
 
     /// Whether this module includes any `component-type*` custom sections which include exports
     pub has_component_exports: bool,
@@ -196,6 +227,40 @@ pub struct Metadata<'a> {
     /// Whether this module imports `__asyncify_state` or `__asyncify_data`, indicating that it is
     /// asyncified with `--pass-arg=asyncify-relocatable` option.
     pub is_asyncified: bool,
+
+    /// Whether this module imports `__stack_pointer`
+    pub needs_stack_pointer: bool,
+
+    /// Whether this module imports `__init_stack_pointer`
+    pub needs_init_stack_pointer: bool,
+
+    /// Whether this module imports `__heap_base`
+    pub needs_heap_base: bool,
+
+    /// Whether this module imports `__heap_end`
+    pub needs_heap_end: bool,
+
+    /// Whether this module imports `__stack_high`
+    pub needs_stack_high: bool,
+
+    /// Whether this module imports `__stack_low`
+    pub needs_stack_low: bool,
+
+    /// Whether this module imports `env::__wasm_get_tls_base`
+    pub needs_get_tls_base: bool,
+
+    /// Whether this module imports `env::__wasm_set_tls_base`
+    pub needs_set_tls_base: bool,
+
+    /// Whether this module imports the address of `__wasm_program_tls_info`
+    pub needs_program_tls_info: bool,
+
+    /// Whether this module imports `$root::[thread-new-indirect-v0]`, meaning
+    /// the program may spawn threads and is thus using cooperative threading.
+    pub uses_thread_new_indirect: bool,
+
+    /// Whether this module exports a `__wasm_library_tls_info` symbol.
+    pub has_library_tls_info: bool,
 
     /// The functions imported from the `env` module, if any
     pub env_imports: BTreeSet<(&'a str, (FunctionType, SymbolFlags))>,
@@ -242,9 +307,20 @@ impl<'a> Metadata<'a> {
             has_ctors: false,
             has_initialize: false,
             has_wasi_start: false,
-            has_set_libraries: false,
+            needs_libdl_libraries: false,
             has_component_exports,
             is_asyncified: false,
+            needs_stack_pointer: false,
+            needs_init_stack_pointer: false,
+            needs_heap_base: false,
+            needs_heap_end: false,
+            needs_stack_high: false,
+            needs_stack_low: false,
+            needs_get_tls_base: false,
+            needs_set_tls_base: false,
+            needs_program_tls_info: false,
+            uses_thread_new_indirect: false,
+            has_library_tls_info: false,
             env_imports: BTreeSet::new(),
             memory_address_imports: BTreeSet::new(),
             table_address_imports: BTreeSet::new(),
@@ -302,7 +378,9 @@ impl<'a> Metadata<'a> {
 
                         match import.ty {
                             TypeRef::Func(ty) => function_types.push(usize::try_from(ty).unwrap()),
-                            TypeRef::Global(ty) => global_types.push(ty),
+                            TypeRef::Global(ty) => {
+                                global_types.push(ty);
+                            }
                             TypeRef::Tag(ty) => tag_types.push(ty),
                             _ => (),
                         }
@@ -317,12 +395,12 @@ impl<'a> Metadata<'a> {
                         };
 
                         match (import.module, import.name) {
-                            ("env", "memory") => {
+                            (self::ENV, self::MEMORY) => {
                                 if !matches!(import.ty, TypeRef::Memory(_)) {
                                     return type_error();
                                 }
                             }
-                            ("env", "__asyncify_data" | "__asyncify_state") => {
+                            (self::ENV, self::ASYNCIFY_DATA | self::ASYNCIFY_STATE) => {
                                 result.is_asyncified = true;
                                 if !matches!(
                                     import.ty,
@@ -334,18 +412,32 @@ impl<'a> Metadata<'a> {
                                     return type_error();
                                 }
                             }
-                            ("env", "__memory_base" | "__table_base" | "__stack_pointer") => {
-                                if !matches!(
+                            (
+                                self::ENV,
+                                self::MEMORY_BASE
+                                | self::TABLE_BASE
+                                | self::STACK_POINTER
+                                | self::INIT_STACK_POINTER,
+                            ) => {
+                                if matches!(
                                     import.ty,
                                     TypeRef::Global(wasmparser::GlobalType {
                                         content_type: ValType::I32,
                                         ..
                                     })
                                 ) {
+                                    match import.name {
+                                        self::STACK_POINTER => result.needs_stack_pointer = true,
+                                        self::INIT_STACK_POINTER => {
+                                            result.needs_init_stack_pointer = true
+                                        }
+                                        _ => {}
+                                    }
+                                } else {
                                     return type_error();
                                 }
                             }
-                            ("env", "__indirect_function_table") => {
+                            (self::ENV, self::INDIRECT_FUNCTION_TABLE) => {
                                 if let TypeRef::Table(TableType {
                                     element_type,
                                     maximum: None,
@@ -359,7 +451,23 @@ impl<'a> Metadata<'a> {
                                     return type_error();
                                 }
                             }
-                            ("env", name) => match import.ty {
+                            (
+                                self::ENV,
+                                name @ (self::GET_STACK_POINTER
+                                | self::SET_STACK_POINTER
+                                | self::GET_TLS_BASE
+                                | self::SET_TLS_BASE),
+                            ) => {
+                                if !matches!(import.ty, TypeRef::Func(_)) {
+                                    return type_error();
+                                }
+                                match name {
+                                    self::GET_TLS_BASE => result.needs_get_tls_base = true,
+                                    self::SET_TLS_BASE => result.needs_set_tls_base = true,
+                                    _ => {}
+                                }
+                            }
+                            (self::ENV, name) => match import.ty {
                                 TypeRef::Func(ty) => {
                                     result.env_imports.insert((
                                         name,
@@ -368,7 +476,7 @@ impl<'a> Metadata<'a> {
                                                 &types[usize::try_from(ty).unwrap()],
                                             )?,
                                             import_info
-                                                .get(&("env", name))
+                                                .get(&(self::ENV, name))
                                                 .copied()
                                                 .unwrap_or_default(),
                                         ),
@@ -387,15 +495,24 @@ impl<'a> Metadata<'a> {
                                 }
                                 _ => return type_error(),
                             },
-                            ("GOT.mem", name) => {
+                            (self::GOT_MEM, name) => {
                                 if let TypeRef::Global(wasmparser::GlobalType {
                                     content_type: ValType::I32,
                                     ..
                                 }) = import.ty
                                 {
                                     match name {
-                                        "__heap_base" | "__heap_end" | "__stack_high"
-                                        | "__stack_low" => (),
+                                        self::HEAP_BASE => result.needs_heap_base = true,
+                                        self::HEAP_END => result.needs_heap_end = true,
+                                        self::STACK_HIGH => result.needs_stack_high = true,
+                                        self::STACK_LOW => result.needs_stack_low = true,
+                                        self::LIBDL_LIBRARIES => {
+                                            result.needs_libdl_libraries = true;
+                                        }
+                                        self::PROGRAM_TLS_INFO => {
+                                            result.needs_program_tls_info = true;
+                                        }
+
                                         _ => {
                                             result.memory_address_imports.insert(name);
                                         }
@@ -404,7 +521,7 @@ impl<'a> Metadata<'a> {
                                     return type_error();
                                 }
                             }
-                            ("GOT.func", name) => {
+                            (self::GOT_FUNC, name) => {
                                 if let TypeRef::Global(wasmparser::GlobalType {
                                     content_type: ValType::I32,
                                     ..
@@ -414,6 +531,9 @@ impl<'a> Metadata<'a> {
                                 } else {
                                     return type_error();
                                 }
+                            }
+                            (self::ROOT, self::THREAD_NEW_INDIRECT) => {
+                                result.uses_thread_new_indirect = true;
                             }
                             (module, name) if adapter_names.contains(module) => {
                                 let ty = match import.ty {
@@ -461,7 +581,8 @@ impl<'a> Metadata<'a> {
 
                 Payload::GlobalSection(reader) => {
                     for global in reader {
-                        global_types.push(global?.ty);
+                        let global = global?;
+                        global_types.push(global.ty);
                     }
                 }
 
@@ -476,11 +597,11 @@ impl<'a> Metadata<'a> {
                         let export = export?;
 
                         match export.name {
-                            "__wasm_apply_data_relocs" => result.has_data_relocs = true,
-                            "__wasm_call_ctors" => result.has_ctors = true,
-                            "_initialize" => result.has_initialize = true,
-                            "_start" => result.has_wasi_start = true,
-                            "__wasm_set_libraries" => result.has_set_libraries = true,
+                            self::APPLY_DATA_RELOCS => result.has_data_relocs = true,
+                            self::CALL_CTORS => result.has_ctors = true,
+                            self::INITIALIZE => result.has_initialize = true,
+                            self::START => result.has_wasi_start = true,
+                            self::LIBRARY_TLS_INFO => result.has_library_tls_info = true,
                             _ => {
                                 let ty = match export.kind {
                                     ExternalKind::Func => Type::Function(FunctionType::try_from(

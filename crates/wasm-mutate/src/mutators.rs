@@ -23,6 +23,7 @@
 //! [`IfComplementMutator`]: crate::mutators::codemotion::if_complement::IfComplementMutator
 
 pub mod add_function;
+pub mod add_global;
 pub mod add_type;
 pub mod codemotion;
 pub mod custom;
@@ -105,7 +106,7 @@ pub trait Mutator {
 }
 
 /// Type helper to wrap operator and the byte offset in the code section of a Wasm module
-pub type OperatorAndByteOffset<'a> = (Operator<'a>, usize);
+pub type OperatorAndByteOffset<'a> = (Operator<'a>, u64);
 
 #[cfg(test)]
 fn match_mutation<T>(original: &str, mutator: T, expected: &str)

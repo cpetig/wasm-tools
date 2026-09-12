@@ -2,7 +2,6 @@ use bytesize::ByteSize;
 use std::io::Write;
 
 use anyhow::Result;
-use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{CellAlignment, ContentArrangement, Table};
 use termcolor::WriteColor;
@@ -280,8 +279,7 @@ fn write_summary_table(payload: &Payload, f: &mut Box<dyn WriteColor>) -> Result
     // Prepare a table and get the individual metadata
     let mut table = Table::new();
     table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
+        .load_style(UTF8_FULL.with_rounded_corners())
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_width(80)
         .set_header(vec!["KIND", "NAME", "SIZE", "SIZE%", "LANGUAGES", "PARENT"]);
@@ -297,7 +295,7 @@ fn write_summary_table(payload: &Payload, f: &mut Box<dyn WriteColor>) -> Result
         .set_cell_alignment(CellAlignment::Right);
 
     // Get the max value of the `range` field. This is the upper memory bound.
-    fn find_range_max(max: &mut usize, payload: &Payload) {
+    fn find_range_max(max: &mut u64, payload: &Payload) {
         let range = &payload.metadata().range;
         if range.end > *max {
             *max = range.end;
@@ -327,7 +325,7 @@ fn write_summary_table_inner(
     payload: &Payload,
     parent: &str,
     unknown_id: &mut u16,
-    range_max: usize,
+    range_max: u64,
     f: &mut Box<dyn WriteColor>,
     table: &mut Table,
 ) -> Result<()> {
@@ -346,7 +344,7 @@ fn write_summary_table_inner(
             name
         }
     };
-    let size = ByteSize::b((range.end - range.start) as u64)
+    let size = ByteSize::b(range.end - range.start)
         .display()
         .si_short()
         .to_string();
@@ -394,8 +392,7 @@ fn write_details_table(payload: &Payload, f: &mut Box<dyn WriteColor>) -> Result
     // Prepare a table and get the individual metadata
     let mut table = Table::new();
     table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
+        .load_style(UTF8_FULL.with_rounded_corners())
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_width(80)
         .set_header(vec!["KIND", "VALUE"]);

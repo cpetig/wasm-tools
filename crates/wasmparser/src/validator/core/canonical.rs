@@ -69,14 +69,14 @@
 
 use super::{RecGroupId, TypeAlloc, TypeList};
 use crate::{
-    BinaryReaderError, CompositeInnerType, CompositeType, PackedIndex, RecGroup, Result,
-    StorageType, UnpackedIndex, ValType, WasmFeatures,
+    CompositeInnerType, CompositeType, Error, PackedIndex, RecGroup, Result, StorageType,
+    UnpackedIndex, ValType, WasmFeatures, require_feature,
     types::{CoreTypeId, TypeIdentifier},
 };
 
 pub(crate) trait InternRecGroup {
     fn add_type_id(&mut self, id: CoreTypeId);
-    fn type_id_at(&self, idx: u32, offset: usize) -> Result<CoreTypeId>;
+    fn type_id_at(&self, idx: u32, offset: u64) -> Result<CoreTypeId>;
     fn types_len(&self) -> u32;
     fn features(&self) -> &WasmFeatures;
 
@@ -87,17 +87,18 @@ pub(crate) trait InternRecGroup {
         &mut self,
         types: &mut TypeAlloc,
         mut rec_group: RecGroup,
-        offset: usize,
+        offset: u64,
     ) -> Result<()>
     where
         Self: Sized,
     {
         debug_assert!(rec_group.is_explicit_rec_group() || rec_group.types().len() == 1);
-        if rec_group.is_explicit_rec_group() && !self.features().gc() {
-            bail!(
+        if rec_group.is_explicit_rec_group() {
+            require_feature::gc(
+                *self.features(),
+                "rec group usage requires `gc` proposal to be enabled",
                 offset,
-                "rec group usage requires `gc` proposal to be enabled"
-            );
+            )?;
         }
         if self.features().needs_type_canonicalization() {
             TypeCanonicalizer::new(self, offset).canonicalize_rec_group(&mut rec_group)?;
@@ -127,11 +128,15 @@ pub(crate) trait InternRecGroup {
         rec_group: RecGroupId,
         id: CoreTypeId,
         types: &mut TypeAlloc,
-        offset: usize,
+        offset: u64,
     ) -> Result<()> {
         let ty = &types[id];
-        if !self.features().gc() && (!ty.is_final || ty.supertype_idx.is_some()) {
-            bail!(offset, "gc proposal must be enabled to use subtypes");
+        if !ty.is_final || ty.supertype_idx.is_some() {
+            require_feature::gc(
+                *self.features(),
+                "gc proposal must be enabled to use subtypes",
+                offset,
+            )?;
         }
 
         self.check_composite_type(&ty.composite_type, &types, offset)?;
@@ -168,20 +173,19 @@ pub(crate) trait InternRecGroup {
         rec_group: RecGroupId,
         id: CoreTypeId,
         types: &TypeList,
-        offset: usize,
+        offset: u64,
     ) -> Result<()> {
         let ty = &types[id].composite_type;
         if ty.descriptor_idx.is_some() || ty.describes_idx.is_some() {
-            if !self.features().custom_descriptors() {
-                return Err(BinaryReaderError::new(
-                    "custom descriptors proposal must be enabled to use descriptor and describes",
-                    offset,
-                ));
-            }
+            require_feature::custom_descriptors(
+                *self.features(),
+                "custom descriptors proposal must be enabled to use descriptor and describes",
+                offset,
+            )?;
             match &ty.inner {
                 CompositeInnerType::Struct(_) => (),
                 _ => {
-                    return Err(BinaryReaderError::new(
+                    return Err(Error::new(
                         if ty.descriptor_idx.is_some() {
                             "descriptor clause on non-struct type"
                         } else {
@@ -283,15 +287,13 @@ pub(crate) trait InternRecGroup {
         &mut self,
         ty: &CompositeType,
         types: &TypeList,
-        offset: usize,
+        offset: u64,
     ) -> Result<()> {
-        let features = self.features();
+        let features = *self.features();
         let check = |ty: &ValType, shared: bool| {
-            features
-                .check_value_type(*ty)
-                .map_err(|e| BinaryReaderError::new(e, offset))?;
+            features.check_value_type(*ty, offset)?;
             if shared && !types.valtype_is_shared(*ty) {
-                return Err(BinaryReaderError::new(
+                return Err(Error::new(
                     "shared composite type must contain shared types",
                     offset,
                 ));
@@ -303,37 +305,37 @@ pub(crate) trait InternRecGroup {
             }
             Ok(())
         };
-        if !features.shared_everything_threads() && ty.shared {
-            return Err(BinaryReaderError::new(
+        if ty.shared {
+            require_feature::shared_everything_threads(
+                features,
                 "shared composite types require the shared-everything-threads proposal",
                 offset,
-            ));
+            )?;
         }
         match &ty.inner {
             CompositeInnerType::Func(t) => {
                 for vt in t.params().iter().chain(t.results()) {
                     check(vt, ty.shared)?;
                 }
-                if t.results().len() > 1 && !features.multi_value() {
-                    return Err(BinaryReaderError::new(
+                if t.results().len() > 1 {
+                    require_feature::multi_value(
+                        features,
                         "func type returns multiple values but the multi-value feature is not enabled",
                         offset,
-                    ));
+                    )?;
                 }
             }
             CompositeInnerType::Array(t) => {
-                if !features.gc() {
-                    bail!(
-                        offset,
-                        "array indexed types not supported without the gc feature",
-                    );
-                }
-                if !features.gc_types() {
-                    bail!(
-                        offset,
-                        "cannot define array types when gc types are disabled",
-                    );
-                }
+                require_feature::gc(
+                    features,
+                    "array indexed types not supported without the gc feature",
+                    offset,
+                )?;
+                require_feature::gc_types(
+                    features,
+                    "cannot define array types when gc types are disabled",
+                    offset,
+                )?;
                 match &t.0.element_type {
                     StorageType::I8 | StorageType::I16 => {
                         // Note: scalar types are always `shared`.
@@ -342,18 +344,16 @@ pub(crate) trait InternRecGroup {
                 };
             }
             CompositeInnerType::Struct(t) => {
-                if !features.gc() {
-                    bail!(
-                        offset,
-                        "struct indexed types not supported without the gc feature",
-                    );
-                }
-                if !features.gc_types() {
-                    bail!(
-                        offset,
-                        "cannot define struct types when gc types are disabled",
-                    );
-                }
+                require_feature::gc(
+                    features,
+                    "struct indexed types not supported without the gc feature",
+                    offset,
+                )?;
+                require_feature::gc_types(
+                    features,
+                    "cannot define struct types when gc types are disabled",
+                    offset,
+                )?;
                 for ft in t.fields.iter() {
                     match &ft.element_type {
                         StorageType::I8 | StorageType::I16 => {
@@ -364,18 +364,16 @@ pub(crate) trait InternRecGroup {
                 }
             }
             CompositeInnerType::Cont(t) => {
-                if !features.stack_switching() {
-                    bail!(
-                        offset,
-                        "cannot define continuation types when stack switching is disabled",
-                    );
-                }
-                if !features.gc_types() {
-                    bail!(
-                        offset,
-                        "cannot define continuation types when gc types are disabled",
-                    );
-                }
+                require_feature::stack_switching(
+                    features,
+                    "cannot define continuation types when stack switching is disabled",
+                    offset,
+                )?;
+                require_feature::gc_types(
+                    features,
+                    "cannot define continuation types when gc types are disabled",
+                    offset,
+                )?;
                 // Check that the type index points to a valid function type.
                 let id = t.0.as_core_type_id().unwrap();
                 match types[id].composite_type.inner {
@@ -392,7 +390,7 @@ pub(crate) trait InternRecGroup {
         types: &TypeList,
         rec_group: RecGroupId,
         index: PackedIndex,
-        offset: usize,
+        offset: u64,
     ) -> Result<CoreTypeId> {
         match index.unpack() {
             UnpackedIndex::Id(id) => Ok(id),
@@ -421,13 +419,13 @@ pub(crate) struct TypeCanonicalizer<'a> {
     module: &'a dyn InternRecGroup,
     rec_group_start: u32,
     rec_group_len: u32,
-    offset: usize,
+    offset: u64,
     mode: CanonicalizationMode,
     within_rec_group: Option<core::ops::Range<CoreTypeId>>,
 }
 
 impl<'a> TypeCanonicalizer<'a> {
-    pub fn new(module: &'a dyn InternRecGroup, offset: usize) -> Self {
+    pub fn new(module: &'a dyn InternRecGroup, offset: u64) -> Self {
         // These defaults will work for when we are canonicalizing types from
         // outside of a rec group definition, forcing all `PackedIndex`es to be
         // canonicalized to `CoreTypeId`s.

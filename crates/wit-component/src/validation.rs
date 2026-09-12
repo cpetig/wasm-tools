@@ -8,8 +8,8 @@ use std::mem;
 use wasm_encoder::ExportKind;
 use wasmparser::names::{ComponentName, ComponentNameKind};
 use wasmparser::{
-    Encoding, ExternalKind, FuncType, Parser, Payload, TypeRef, ValType, ValidPayload, Validator,
-    WasmFeatures, types::TypesRef,
+    Encoding, ExternalKind, FuncType, MemoryType, Parser, Payload, TypeRef, ValType, ValidPayload,
+    Validator, WasmFeatures, types::TypesRef,
 };
 use wit_parser::{
     Function, InterfaceId, PackageName, Resolve, Type, TypeDefKind, TypeId, World, WorldId,
@@ -108,6 +108,9 @@ pub struct ImportMap {
     /// and the second level of the map is the field namespace. The item is then
     /// how the import is satisfied.
     names: IndexMap<String, ImportInstance>,
+
+    /// Cache for the last-inserted `MainModuleMemory` into `names`
+    imported_memory: Option<MemoryType>,
 }
 
 pub enum ImportInstance {
@@ -248,7 +251,7 @@ pub enum Import {
     /// An adapter is importing the memory of the main module.
     ///
     /// (should be combined with `MainModuleExport` below one day)
-    MainModuleMemory,
+    MainModuleMemory(MemoryType),
 
     /// An adapter is importing an arbitrary item from the main module.
     MainModuleExport { name: String, kind: ExportKind },
@@ -290,6 +293,24 @@ pub enum Import {
         slot: u32,
     },
 
+    /// The `__wasm_get_tls_base` function that LLVM emits to read the base
+    /// pointer of this module's thread-local storage.
+    ///
+    /// Unlike [`Import::ContextGet`] this is not tied to a particular storage
+    /// mechanism: how it's satisfied depends on whether the program uses
+    /// cooperative threading. See
+    /// `EncodingState::materialize_tls_base_import` for the details.
+    TlsBaseGet {
+        /// The type of the base pointer (`i32` or `i64`).
+        ty: ValType,
+    },
+
+    /// The `__wasm_set_tls_base` counterpart to [`Import::TlsBaseGet`].
+    TlsBaseSet {
+        /// The type of the base pointer (`i32` or `i64`).
+        ty: ValType,
+    },
+
     /// A `canon backpressure.inc` intrinsic.
     BackpressureInc,
 
@@ -304,26 +325,20 @@ pub enum Import {
     /// This allows the guest to wait for any pending calls to async-lowered
     /// imports and/or `stream` and `future` operations to complete without
     /// unwinding the current Wasm stack.
-    WaitableSetWait { cancellable: bool },
+    WaitableSetWait,
 
     /// A `canon waitable.poll` intrinsic.
     ///
     /// This allows the guest to check whether any pending calls to
     /// async-lowered imports and/or `stream` and `future` operations have
     /// completed without unwinding the current Wasm stack and without blocking.
-    WaitableSetPoll { cancellable: bool },
+    WaitableSetPoll,
 
     /// A `waitable-set.drop` intrinsic.
     WaitableSetDrop,
 
     /// A `waitable.join` intrinsic.
     WaitableJoin,
-
-    /// A `canon thread.yield` intrinsic.
-    ///
-    /// This allows the guest to yield (e.g. during an computationally-intensive
-    /// operation) and allow other subtasks to make progress.
-    ThreadYield { cancellable: bool },
 
     /// A `canon subtask.drop` intrinsic.
     ///
@@ -441,31 +456,26 @@ pub enum Import {
     /// This allows the guest to create a new thread running a specified function.
     ThreadNewIndirect,
 
-    /// A `canon thread.suspend-to-suspended` intrinsic.
-    ///
-    /// This allows the guest to switch execution to another thread.
-    ThreadSuspendToSuspended { cancellable: bool },
+    /// A `canon thread.resume-later` intrinsic.
+    ThreadResumeLater,
 
     /// A `canon thread.suspend` intrinsic.
-    ///
-    /// This allows the guest to suspend the current thread, switching execution to
-    /// an unspecified thread.
-    ThreadSuspend { cancellable: bool },
+    ThreadSuspend,
 
-    /// A `canon thread.suspend-to` intrinsic.
-    ///
-    /// This allows the guest to suspend the current thread and switch to another thread.
-    ThreadSuspendTo { cancellable: bool },
+    /// A `canon thread.yield` intrinsic.
+    ThreadYield,
 
-    /// A `canon thread.unsuspend` intrinsic.
-    ///
-    /// This allows the guest to mark a suspended thread for later resumption.
-    ThreadUnsuspend,
+    /// A `canon thread.suspend-then-resume` intrinsic.
+    ThreadSuspendThenResume,
 
-    /// A `canon thread.yield-to-suspended` intrinsic.
-    ///
-    /// This allows the guest to suspend, yielding execution to a specified thread.
-    ThreadYieldToSuspended { cancellable: bool },
+    /// A `canon thread.yield-then-resume` intrinsic.
+    ThreadYieldThenResume,
+
+    /// A `canon thread.suspend-then-promote` intrinsic.
+    ThreadSuspendThenPromote,
+
+    /// A `canon thread.yield-then-promote` intrinsic.
+    ThreadYieldThenPromote,
 }
 
 impl ImportMap {
@@ -506,6 +516,11 @@ impl ImportMap {
     /// Returns the map for how all imports must be satisfied.
     pub fn modules(&self) -> &IndexMap<String, ImportInstance> {
         &self.names
+    }
+
+    /// Returns the type of the `env::memory` import of this module, if present.
+    pub fn imported_memory(&self) -> Option<MemoryType> {
+        self.imported_memory
     }
 
     /// Classify an import and call `insert_import()` on it. Used during
@@ -552,7 +567,9 @@ impl ImportMap {
         // Special-case the main module's memory imported into adapters which
         // currently with `wasm-ld` is not easily configurable.
         if import.module == "env" && import.name == "memory" {
-            return Ok(Import::MainModuleMemory);
+            if let TypeRef::Memory(ty) = import.ty {
+                return Ok(Import::MainModuleMemory(ty));
+            }
         }
 
         // Special-case imports from the main module into adapters.
@@ -633,20 +650,16 @@ impl ImportMap {
                 return Ok(Import::WaitableSetNew);
             }
 
-            if let Some((info, result_ty)) = names.waitable_set_wait(name) {
+            if let Some(result_ty) = names.waitable_set_wait(name) {
                 let expected = FuncType::new([ValType::I32, result_ty], [ValType::I32]);
                 validate_func_sig(name, &expected, ty)?;
-                return Ok(Import::WaitableSetWait {
-                    cancellable: info.cancellable,
-                });
+                return Ok(Import::WaitableSetWait);
             }
 
-            if let Some((info, result_ty)) = names.waitable_set_poll(name) {
+            if let Some(result_ty) = names.waitable_set_poll(name) {
                 let expected = FuncType::new([ValType::I32, result_ty], [ValType::I32]);
                 validate_func_sig(name, &expected, ty)?;
-                return Ok(Import::WaitableSetPoll {
-                    cancellable: info.cancellable,
-                });
+                return Ok(Import::WaitableSetPoll);
             }
 
             if names.waitable_set_drop(name) {
@@ -659,14 +672,6 @@ impl ImportMap {
                 let expected = FuncType::new([ValType::I32; 2], []);
                 validate_func_sig(name, &expected, ty)?;
                 return Ok(Import::WaitableJoin);
-            }
-
-            if let Some(info) = names.thread_yield(name) {
-                let expected = FuncType::new([], [ValType::I32]);
-                validate_func_sig(name, &expected, ty)?;
-                return Ok(Import::ThreadYield {
-                    cancellable: info.cancellable,
-                });
             }
 
             if names.subtask_drop(name) {
@@ -715,38 +720,40 @@ impl ImportMap {
                 validate_func_sig(name, &expected, ty)?;
                 return Ok(Import::ThreadNewIndirect);
             }
-            if let Some(info) = names.thread_suspend_to_suspended(name) {
-                let expected = FuncType::new([ValType::I32], [ValType::I32]);
-                validate_func_sig(name, &expected, ty)?;
-                return Ok(Import::ThreadSuspendToSuspended {
-                    cancellable: info.cancellable,
-                });
-            }
-            if let Some(info) = names.thread_suspend(name) {
-                let expected = FuncType::new([], [ValType::I32]);
-                validate_func_sig(name, &expected, ty)?;
-                return Ok(Import::ThreadSuspend {
-                    cancellable: info.cancellable,
-                });
-            }
-            if let Some(info) = names.thread_suspend_to(name) {
-                let expected = FuncType::new([ValType::I32], [ValType::I32]);
-                validate_func_sig(name, &expected, ty)?;
-                return Ok(Import::ThreadSuspendTo {
-                    cancellable: info.cancellable,
-                });
-            }
-            if names.thread_unsuspend(name) {
+            if names.thread_resume_later(name) {
                 let expected = FuncType::new([ValType::I32], []);
                 validate_func_sig(name, &expected, ty)?;
-                return Ok(Import::ThreadUnsuspend);
+                return Ok(Import::ThreadResumeLater);
             }
-            if let Some(info) = names.thread_yield_to_suspended(name) {
+            if names.thread_suspend(name) {
+                let expected = FuncType::new([], [ValType::I32]);
+                validate_func_sig(name, &expected, ty)?;
+                return Ok(Import::ThreadSuspend);
+            }
+            if names.thread_yield(name) {
+                let expected = FuncType::new([], [ValType::I32]);
+                validate_func_sig(name, &expected, ty)?;
+                return Ok(Import::ThreadYield);
+            }
+            if names.thread_suspend_then_resume(name) {
                 let expected = FuncType::new([ValType::I32], [ValType::I32]);
                 validate_func_sig(name, &expected, ty)?;
-                return Ok(Import::ThreadYieldToSuspended {
-                    cancellable: info.cancellable,
-                });
+                return Ok(Import::ThreadSuspendThenResume);
+            }
+            if names.thread_yield_then_resume(name) {
+                let expected = FuncType::new([ValType::I32], [ValType::I32]);
+                validate_func_sig(name, &expected, ty)?;
+                return Ok(Import::ThreadYieldThenResume);
+            }
+            if names.thread_suspend_then_promote(name) {
+                let expected = FuncType::new([ValType::I32], [ValType::I32]);
+                validate_func_sig(name, &expected, ty)?;
+                return Ok(Import::ThreadSuspendThenPromote);
+            }
+            if names.thread_yield_then_promote(name) {
+                let expected = FuncType::new([ValType::I32], [ValType::I32]);
+                validate_func_sig(name, &expected, ty)?;
+                return Ok(Import::ThreadYieldThenPromote);
             }
 
             let (key_name, abi) = names.world_key_name_and_abi(name);
@@ -765,6 +772,12 @@ impl ImportMap {
             match world.imports.get(&key) {
                 Some(_) => bail!("expected world top-level import `{name}` to be a function"),
                 None => bail!("no top-level imported function `{name}` specified"),
+            }
+        }
+
+        if module == "env" {
+            if let Some(import) = names.env_import(name, ty) {
+                return Ok(import);
             }
         }
 
@@ -1048,6 +1061,12 @@ impl ImportMap {
     /// kind of `Import` it is: for example, a certain-typed function from an
     /// adapter.
     fn insert_import(&mut self, import: wasmparser::Import<'_>, item: Import) -> Result<()> {
+        if let Import::MainModuleMemory(ty) = item {
+            if self.imported_memory.is_some() {
+                bail!("module has multiple imports for memory");
+            }
+            self.imported_memory = Some(ty);
+        }
         let entry = self
             .names
             .entry(import.module.to_string())
@@ -1129,11 +1148,8 @@ pub enum Export {
     /// __indirect_function_table, used for `thread.new-indirect`
     IndirectFunctionTable,
 
-    /// __wasm_init_task, used for initializing export tasks
-    WasmInitTask,
-
-    /// __wasm_init_async_task, used for initializing export tasks for async-lifted exports
-    WasmInitAsyncTask,
+    /// Used to hook lifecycle events for tasks.
+    WasmTaskHook,
 }
 
 impl ExportMap {
@@ -1232,14 +1248,10 @@ impl ExportMap {
             let expected = FuncType::new([], []);
             validate_func_sig(name, &expected, ty)?;
             return Ok(Some(Export::Initialize));
-        } else if Some(name) == names.export_wasm_init_task() {
-            let expected = FuncType::new([], []);
+        } else if Some(name) == names.export_wasm_task_hook() {
+            let expected = FuncType::new([ValType::I32], []);
             validate_func_sig(name, &expected, ty)?;
-            return Ok(Some(Export::WasmInitTask));
-        } else if Some(name) == names.export_wasm_init_async_task() {
-            let expected = FuncType::new([], []);
-            validate_func_sig(name, &expected, ty)?;
-            return Ok(Some(Export::WasmInitAsyncTask));
+            return Ok(Some(Export::WasmTaskHook));
         }
 
         let full_name = name;
@@ -1389,8 +1401,23 @@ impl ExportMap {
         self.general_purpose_realloc()
     }
 
-    fn general_purpose_realloc(&self) -> Option<&str> {
+    pub fn general_purpose_realloc(&self) -> Option<&str> {
         self.find(|m| matches!(m, Export::GeneralPurposeRealloc))
+    }
+
+    /// Returns an iterator over all `realloc` functions exported by this module
+    /// which may be used as a `realloc` canonical option.
+    ///
+    /// Note that `cabi_realloc_adapter` is intentionally not included here as
+    /// that's only ever imported directly into an adapter module and is never
+    /// used as a canonical option.
+    pub fn reallocs(&self) -> impl Iterator<Item = &str> + '_ {
+        self.names.iter().filter_map(|(name, export)| match export {
+            Export::GeneralPurposeRealloc
+            | Export::GeneralPurposeExportRealloc
+            | Export::GeneralPurposeImportRealloc => Some(name.as_str()),
+            _ => None,
+        })
     }
 
     /// Returns the memory, if exported, for this module.
@@ -1403,14 +1430,9 @@ impl ExportMap {
         self.find(|t| matches!(t, Export::IndirectFunctionTable))
     }
 
-    /// Returns the `__wasm_init_task` function, if exported, for this module.
-    pub fn wasm_init_task(&self) -> Option<&str> {
-        self.find(|t| matches!(t, Export::WasmInitTask))
-    }
-
-    /// Returns the `__wasm_init_async_task` function, if exported, for this module.
-    pub fn wasm_init_async_task(&self) -> Option<&str> {
-        self.find(|t| matches!(t, Export::WasmInitAsyncTask))
+    /// Returns the hook for tasks, if exported.
+    pub fn wasm_task_hook(&self) -> Option<&str> {
+        self.find(|t| matches!(t, Export::WasmTaskHook))
     }
 
     /// Returns the `_initialize` intrinsic, if exported, for this module.
@@ -1518,13 +1540,6 @@ impl ExportMap {
     }
 }
 
-/// A builtin that may be declared as cancellable.
-struct MaybeCancellable<T> {
-    #[allow(unused)]
-    inner: T,
-    cancellable: bool,
-}
-
 /// A builtin that may be declared as async-lowered.
 struct MaybeAsyncLowered<T> {
     inner: T,
@@ -1570,8 +1585,7 @@ trait NameMangling {
     fn export_initialize(&self) -> &str;
     fn export_realloc(&self) -> &str;
     fn export_indirect_function_table(&self) -> Option<&str>;
-    fn export_wasm_init_task(&self) -> Option<&str>;
-    fn export_wasm_init_async_task(&self) -> Option<&str>;
+    fn export_wasm_task_hook(&self) -> Option<&str>;
     fn resource_drop_name<'a>(&self, name: &'a str) -> Option<&'a str>;
     fn resource_new_name<'a>(&self, name: &'a str) -> Option<&'a str>;
     fn resource_rep_name<'a>(&self, name: &'a str) -> Option<&'a str>;
@@ -1580,11 +1594,10 @@ trait NameMangling {
     fn backpressure_inc(&self, name: &str) -> bool;
     fn backpressure_dec(&self, name: &str) -> bool;
     fn waitable_set_new(&self, name: &str) -> bool;
-    fn waitable_set_wait(&self, name: &str) -> Option<(MaybeCancellable<()>, ValType)>;
-    fn waitable_set_poll(&self, name: &str) -> Option<(MaybeCancellable<()>, ValType)>;
+    fn waitable_set_wait(&self, name: &str) -> Option<ValType>;
+    fn waitable_set_poll(&self, name: &str) -> Option<ValType>;
     fn waitable_set_drop(&self, name: &str) -> bool;
     fn waitable_join(&self, name: &str) -> bool;
-    fn thread_yield(&self, name: &str) -> Option<MaybeCancellable<()>>;
     fn subtask_drop(&self, name: &str) -> bool;
     fn subtask_cancel(&self, name: &str) -> Option<MaybeAsyncLowered<()>>;
     fn async_lift_callback_name<'a>(&self, name: &'a str) -> Option<&'a str>;
@@ -1659,11 +1672,13 @@ trait NameMangling {
     ) -> Option<PayloadInfo>;
     fn thread_index(&self, name: &str) -> bool;
     fn thread_new_indirect(&self, name: &str) -> bool;
-    fn thread_suspend_to_suspended(&self, name: &str) -> Option<MaybeCancellable<()>>;
-    fn thread_suspend(&self, name: &str) -> Option<MaybeCancellable<()>>;
-    fn thread_suspend_to(&self, name: &str) -> Option<MaybeCancellable<()>>;
-    fn thread_unsuspend(&self, name: &str) -> bool;
-    fn thread_yield_to_suspended(&self, name: &str) -> Option<MaybeCancellable<()>>;
+    fn thread_resume_later(&self, name: &str) -> bool;
+    fn thread_suspend(&self, name: &str) -> bool;
+    fn thread_yield(&self, name: &str) -> bool;
+    fn thread_suspend_then_resume(&self, name: &str) -> bool;
+    fn thread_yield_then_resume(&self, name: &str) -> bool;
+    fn thread_suspend_then_promote(&self, name: &str) -> bool;
+    fn thread_yield_then_promote(&self, name: &str) -> bool;
     fn module_to_interface(
         &self,
         module: &str,
@@ -1687,6 +1702,7 @@ trait NameMangling {
     ) -> Option<TypeId>;
     fn world_key_name_and_abi<'a>(&self, name: &'a str) -> (&'a str, AbiVariant);
     fn interface_function_name_and_abi<'a>(&self, name: &'a str) -> (&'a str, AbiVariant);
+    fn env_import(&self, name: &str, ty: &FuncType) -> Option<Import>;
 }
 
 /// Definition of the "standard" naming scheme which currently starts with
@@ -1717,10 +1733,7 @@ impl NameMangling for Standard {
     fn export_indirect_function_table(&self) -> Option<&str> {
         None
     }
-    fn export_wasm_init_task(&self) -> Option<&str> {
-        None
-    }
-    fn export_wasm_init_async_task(&self) -> Option<&str> {
+    fn export_wasm_task_hook(&self) -> Option<&str> {
         None
     }
     fn resource_drop_name<'a>(&self, name: &'a str) -> Option<&'a str> {
@@ -1747,10 +1760,10 @@ impl NameMangling for Standard {
     fn waitable_set_new(&self, _name: &str) -> bool {
         false
     }
-    fn waitable_set_wait(&self, _name: &str) -> Option<(MaybeCancellable<()>, ValType)> {
+    fn waitable_set_wait(&self, _name: &str) -> Option<ValType> {
         None
     }
-    fn waitable_set_poll(&self, _name: &str) -> Option<(MaybeCancellable<()>, ValType)> {
+    fn waitable_set_poll(&self, _name: &str) -> Option<ValType> {
         None
     }
     fn waitable_set_drop(&self, _name: &str) -> bool {
@@ -1758,9 +1771,6 @@ impl NameMangling for Standard {
     }
     fn waitable_join(&self, _name: &str) -> bool {
         false
-    }
-    fn thread_yield(&self, _name: &str) -> Option<MaybeCancellable<()>> {
-        None
     }
     fn subtask_drop(&self, _name: &str) -> bool {
         false
@@ -1798,20 +1808,26 @@ impl NameMangling for Standard {
     fn thread_new_indirect(&self, _name: &str) -> bool {
         false
     }
-    fn thread_suspend_to_suspended(&self, _name: &str) -> Option<MaybeCancellable<()>> {
-        None
-    }
-    fn thread_suspend(&self, _name: &str) -> Option<MaybeCancellable<()>> {
-        None
-    }
-    fn thread_suspend_to(&self, _name: &str) -> Option<MaybeCancellable<()>> {
-        None
-    }
-    fn thread_unsuspend(&self, _name: &str) -> bool {
+    fn thread_resume_later(&self, _name: &str) -> bool {
         false
     }
-    fn thread_yield_to_suspended(&self, _name: &str) -> Option<MaybeCancellable<()>> {
-        None
+    fn thread_suspend(&self, _name: &str) -> bool {
+        false
+    }
+    fn thread_yield(&self, _name: &str) -> bool {
+        false
+    }
+    fn thread_suspend_then_resume(&self, _name: &str) -> bool {
+        false
+    }
+    fn thread_yield_then_resume(&self, _name: &str) -> bool {
+        false
+    }
+    fn thread_suspend_then_promote(&self, _name: &str) -> bool {
+        false
+    }
+    fn thread_yield_then_promote(&self, _name: &str) -> bool {
+        false
     }
     fn future_new(
         &self,
@@ -1982,6 +1998,9 @@ impl NameMangling for Standard {
     fn interface_function_name_and_abi<'a>(&self, name: &'a str) -> (&'a str, AbiVariant) {
         (name, AbiVariant::GuestImport)
     }
+    fn env_import(&self, _name: &str, _ty: &FuncType) -> Option<Import> {
+        None
+    }
 }
 
 impl Standard {
@@ -2123,25 +2142,6 @@ impl Legacy {
             None
         }
     }
-    fn strip_cancellable_prefix<'a>(&self, name: &'a str) -> (bool, &'a str) {
-        name.strip_prefix("[cancellable]")
-            .map_or((false, name), |s| (true, s))
-    }
-    fn match_with_cancellable_prefix(
-        &self,
-        name: &str,
-        expected: &str,
-    ) -> Option<MaybeCancellable<()>> {
-        let (cancellable, clean_name) = self.strip_cancellable_prefix(name);
-        if clean_name == expected {
-            Some(MaybeCancellable {
-                inner: (),
-                cancellable,
-            })
-        } else {
-            None
-        }
-    }
 
     /// Matches a name with the given prefix and either no suffix (for backwards compat) or
     /// "-i32" or "-i64".
@@ -2183,11 +2183,8 @@ impl NameMangling for Legacy {
     fn export_indirect_function_table(&self) -> Option<&str> {
         Some("__indirect_function_table")
     }
-    fn export_wasm_init_task(&self) -> Option<&str> {
-        Some("__wasm_init_task")
-    }
-    fn export_wasm_init_async_task(&self) -> Option<&str> {
-        Some("__wasm_init_async_task")
+    fn export_wasm_task_hook(&self) -> Option<&str> {
+        Some(crate::linking::metadata::TASK_HOOK)
     }
     fn resource_drop_name<'a>(&self, name: &'a str) -> Option<&'a str> {
         name.strip_prefix("[resource-drop]")
@@ -2213,32 +2210,19 @@ impl NameMangling for Legacy {
     fn waitable_set_new(&self, name: &str) -> bool {
         name == "[waitable-set-new]"
     }
-    fn waitable_set_wait(&self, name: &str) -> Option<(MaybeCancellable<()>, ValType)> {
-        let (cancellable, clean_name) = self.strip_cancellable_prefix(name);
-        let mb_cancellable = MaybeCancellable {
-            inner: (),
-            cancellable,
-        };
-        let result_ty = Legacy::match_with_optional_type_suffix(clean_name, "[waitable-set-wait")?;
-        Some((mb_cancellable, result_ty))
+    fn waitable_set_wait(&self, name: &str) -> Option<ValType> {
+        let result_ty = Legacy::match_with_optional_type_suffix(name, "[waitable-set-wait")?;
+        Some(result_ty)
     }
-    fn waitable_set_poll(&self, name: &str) -> Option<(MaybeCancellable<()>, ValType)> {
-        let (cancellable, clean_name) = self.strip_cancellable_prefix(name);
-        let mb_cancellable = MaybeCancellable {
-            inner: (),
-            cancellable,
-        };
-        let result_ty = Legacy::match_with_optional_type_suffix(clean_name, "[waitable-set-poll")?;
-        Some((mb_cancellable, result_ty))
+    fn waitable_set_poll(&self, name: &str) -> Option<ValType> {
+        let result_ty = Legacy::match_with_optional_type_suffix(name, "[waitable-set-poll")?;
+        Some(result_ty)
     }
     fn waitable_set_drop(&self, name: &str) -> bool {
         name == "[waitable-set-drop]"
     }
     fn waitable_join(&self, name: &str) -> bool {
         name == "[waitable-join]"
-    }
-    fn thread_yield(&self, name: &str) -> Option<MaybeCancellable<()>> {
-        self.match_with_cancellable_prefix(name, "[thread-yield]")
     }
     fn subtask_drop(&self, name: &str) -> bool {
         name == "[subtask-drop]"
@@ -2287,20 +2271,26 @@ impl NameMangling for Legacy {
         // For now, we'll fix the type of the start function and the table to extract it from
         name == "[thread-new-indirect-v0]"
     }
-    fn thread_suspend_to_suspended(&self, name: &str) -> Option<MaybeCancellable<()>> {
-        self.match_with_cancellable_prefix(name, "[thread-suspend-to-suspended]")
+    fn thread_resume_later(&self, name: &str) -> bool {
+        name == "[thread-resume-later]"
     }
-    fn thread_suspend(&self, name: &str) -> Option<MaybeCancellable<()>> {
-        self.match_with_cancellable_prefix(name, "[thread-suspend]")
+    fn thread_suspend(&self, name: &str) -> bool {
+        name == "[thread-suspend]"
     }
-    fn thread_suspend_to(&self, name: &str) -> Option<MaybeCancellable<()>> {
-        self.match_with_cancellable_prefix(name, "[thread-suspend-to]")
+    fn thread_yield(&self, name: &str) -> bool {
+        name == "[thread-yield]"
     }
-    fn thread_unsuspend(&self, name: &str) -> bool {
-        name == "[thread-unsuspend]"
+    fn thread_suspend_then_resume(&self, name: &str) -> bool {
+        name == "[thread-suspend-then-resume]"
     }
-    fn thread_yield_to_suspended(&self, name: &str) -> Option<MaybeCancellable<()>> {
-        self.match_with_cancellable_prefix(name, "[thread-yield-to-suspended]")
+    fn thread_yield_then_resume(&self, name: &str) -> bool {
+        name == "[thread-yield-then-resume]"
+    }
+    fn thread_suspend_then_promote(&self, name: &str) -> bool {
+        name == "[thread-suspend-then-promote]"
+    }
+    fn thread_yield_then_promote(&self, name: &str) -> bool {
+        name == "[thread-yield-then-promote]"
     }
     fn future_new(&self, lookup_context: &PayloadLookupContext, name: &str) -> Option<PayloadInfo> {
         self.prefixed_payload(lookup_context, name, "[future-new-")
@@ -2415,11 +2405,16 @@ impl NameMangling for Legacy {
             _ => bail!("module requires an import interface named `{module}`"),
         };
 
+        // FIXME: this prevents core wasm from importing from `@1` or
+        // `@0.1`, for example. More refactoring will be necessary to enable
+        // that.
+        let version = name.version(None)?;
+
         // Prioritize an exact match based on versions, so try that first.
         let pkgname = PackageName {
             namespace: name.namespace().to_string(),
             name: name.package().to_string(),
-            version: name.version(),
+            version: version.clone(),
         };
         if let Some(pkg) = resolve.package_names.get(&pkgname) {
             if let Some(id) = resolve.packages[*pkg]
@@ -2471,7 +2466,7 @@ impl NameMangling for Legacy {
                 continue;
             }
 
-            let module_version = match name.version() {
+            let module_version = match &version {
                 Some(version) => version,
                 None => continue,
             };
@@ -2580,6 +2575,30 @@ impl NameMangling for Legacy {
                 AbiVariant::GuestImport
             },
         )
+    }
+    fn env_import(&self, name: &str, ty: &FuncType) -> Option<Import> {
+        match name {
+            "__wasm_get_stack_pointer" => {
+                let ty = *ty.results().get(0)?;
+                Some(Import::ContextGet { ty, slot: 0 })
+            }
+            "__wasm_set_stack_pointer" => {
+                let ty = *ty.params().get(0)?;
+                Some(Import::ContextSet { ty, slot: 0 })
+            }
+            // TLS handling is slightly different than above to handle
+            // coop-threading-vs-not, so the exact resolution of this import is
+            // deferred to later.
+            "__wasm_get_tls_base" => {
+                let ty = *ty.results().get(0)?;
+                Some(Import::TlsBaseGet { ty })
+            }
+            "__wasm_set_tls_base" => {
+                let ty = *ty.params().get(0)?;
+                Some(Import::TlsBaseSet { ty })
+            }
+            _ => None,
+        }
     }
 }
 

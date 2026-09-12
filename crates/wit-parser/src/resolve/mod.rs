@@ -415,19 +415,37 @@ impl Resolve {
     pub fn push_source(&mut self, path: &str, contents: &str) -> anyhow::Result<PackageId> {
         let mut map = SourceMap::default();
         map.push_str(path, contents);
-        // Parse error: the local `SourceMap` is not exposed through this API,
-        // so we eagerly render with the snippet here. A future improvement
-        // would return `(SourceMap, ParseError)` from `SourceMap::parse` callers
-        // so the typed error can be propagated.
-        let group = map
-            .parse()
-            .map_err(|(map, e)| anyhow::anyhow!("{}", e.highlight(&map)))?;
+        let group = self.parse_source_map(map)?;
         Ok(self.push_group(group)?)
+    }
+
+    /// Parses `map` into an [`UnresolvedPackageGroup`].
+    ///
+    /// On parse failure the local [`SourceMap`] is merged into
+    /// [`Resolve::source_map`] (with the typed [`crate::ParseError`]'s spans
+    /// adjusted) so the downcasted error remains renderable against
+    /// `self.source_map`.
+    pub(crate) fn parse_source_map(
+        &mut self,
+        map: SourceMap,
+    ) -> anyhow::Result<UnresolvedPackageGroup> {
+        map.parse().map_err(|(map, mut e)| {
+            let offset = self.source_map.append(map);
+            e.adjust_spans(offset);
+            e.into()
+        })
     }
 
     /// Renders a span as a human-readable location string (e.g., "file.wit:10:5").
     pub fn render_location(&self, span: Span) -> String {
         self.source_map.render_location(span)
+    }
+
+    /// Renders an error returned by this [`Resolve`]'s `push_*` methods with
+    /// source context (file:line:col + snippet).
+    #[cfg(feature = "std")]
+    pub fn render_error(&self, err: &anyhow::Error) -> String {
+        crate::render_anyhow_error(err, &self.source_map)
     }
 
     pub fn all_bits_valid(&self, ty: &Type) -> bool {
@@ -779,6 +797,7 @@ impl Resolve {
                                 id: aid,
                                 stability: astability,
                                 span: aspan,
+                                ..
                             },
                             WorldItem::Interface {
                                 id: bid,
@@ -1546,6 +1565,19 @@ impl Resolve {
         None
     }
 
+    /// Returns the component model `external-id` value for the world import of
+    /// `key` and `item`.
+    ///
+    /// See the component model explainer and 🏷️ for more information on this feature.
+    pub fn external_id_value(&self, key: &WorldKey, item: &WorldItem) -> Option<String> {
+        let _ = key;
+        match item {
+            WorldItem::Interface { external_id, .. } => external_id.clone(),
+            WorldItem::Function(f) => f.external_id.clone(),
+            WorldItem::Type { id, .. } => self.types[*id].external_id.clone(),
+        }
+    }
+
     /// Returns the interface that `id` uses a type from, if it uses a type from
     /// a different interface than `id` is defined within.
     ///
@@ -2089,8 +2121,21 @@ impl Resolve {
             match item {
                 // Interfaces get their dependencies added first followed by the
                 // interface itself.
-                WorldItem::Interface { id, stability, .. } => {
-                    self.elaborate_world_import(&mut new_imports, name.clone(), *id, &stability);
+                WorldItem::Interface {
+                    id,
+                    stability,
+                    docs,
+                    external_id,
+                    ..
+                } => {
+                    self.elaborate_world_import(
+                        &mut new_imports,
+                        name.clone(),
+                        *id,
+                        &stability,
+                        docs,
+                        external_id.as_deref(),
+                    );
                 }
 
                 // Functions are added as-is since their dependence on types in
@@ -2110,6 +2155,8 @@ impl Resolve {
                             WorldKey::Interface(dep),
                             dep,
                             &self.types[*id].stability,
+                            &Docs::default(),
+                            None,
                         );
                     }
                     let prev = new_imports.insert(name.clone(), item.clone());
@@ -2163,19 +2210,32 @@ impl Resolve {
         key: WorldKey,
         id: InterfaceId,
         stability: &Stability,
+        docs: &Docs,
+        external_id: Option<&str>,
     ) {
         if imports.contains_key(&key) {
             return;
         }
+        // Synthesized dependency imports carry no statement-level docs of their
+        // own.
         for dep in self.interface_direct_deps(id) {
-            self.elaborate_world_import(imports, WorldKey::Interface(dep), dep, stability);
+            self.elaborate_world_import(
+                imports,
+                WorldKey::Interface(dep),
+                dep,
+                stability,
+                &Docs::default(),
+                None,
+            );
         }
         let prev = imports.insert(
             key,
             WorldItem::Interface {
                 id,
                 stability: stability.clone(),
+                docs: docs.clone(),
                 span: Default::default(),
+                external_id: external_id.map(|s| s.to_string()),
             },
         );
         assert!(prev.is_none());
@@ -2289,8 +2349,13 @@ impl Resolve {
                     return false;
                 }
             }
-            let (id, stability) = match &item {
-                WorldItem::Interface { id, stability, .. } => (*id, stability),
+            let (id, stability, external_id) = match &item {
+                WorldItem::Interface {
+                    id,
+                    stability,
+                    external_id,
+                    ..
+                } => (*id, stability, external_id),
                 _ => unreachable!(),
             };
             // If this is an import and it's already in the `imports` set then
@@ -2302,7 +2367,9 @@ impl Resolve {
                 let item = WorldItem::Interface {
                     id: dep,
                     stability: stability.clone(),
+                    docs: Default::default(),
                     span: Default::default(),
+                    external_id: external_id.clone(),
                 };
                 let key = WorldKey::Interface(dep);
                 let add_export = add_export && export_interfaces.contains_key(&key);
@@ -2414,12 +2481,16 @@ impl Resolve {
                 &WorldItem::Interface {
                     id: *to_replace,
                     stability: Default::default(),
+                    docs: Default::default(),
                     span: Default::default(),
+                    external_id: Default::default(),
                 },
                 &WorldItem::Interface {
                     id: *replace_with,
                     stability: Default::default(),
+                    docs: Default::default(),
                     span: Default::default(),
+                    external_id: Default::default(),
                 },
             )
             .with_context(|| {
@@ -3031,7 +3102,7 @@ impl Resolve {
         // never being importable-from it means that mutations to `CloneMaps`
         // are discarded when named interfaces are cloned. The trick here
         // happens where this unconditionally preserves all modifications to
-        // `CloneMaps` for `WorldKey::Interface` clones. Behaivor then "falls
+        // `CloneMaps` for `WorldKey::Interface` clones. Behavior then "falls
         // out" where references to cloned interfaces are naturally rewritten.
         //
         // This all falls down, however, if an import is cloned and recorded.
@@ -3465,6 +3536,7 @@ impl Remap {
                     docs: _,
                     stability: _,
                     span: _,
+                    external_id: _,
                 } => *self.own_handles.entry(id).or_insert(new_id),
 
                 // Everything not-related to `own<T>` doesn't get its ID
@@ -3717,7 +3789,11 @@ impl Remap {
             }
 
             let iface_id = pkg.interfaces.get(interface).copied().ok_or_else(|| {
-                ResolveError::new_semantic(iface_span, "interface not found in package")
+                ResolveError::from(ResolveErrorKind::InterfaceNotFound {
+                    span: iface_span,
+                    requested: interface.to_string(),
+                    package: pkg.name.clone(),
+                })
             })?;
             assert_eq!(self.interfaces.len(), unresolved_iface_id.index());
             self.interfaces.push(Some(iface_id));
@@ -3775,7 +3851,11 @@ impl Remap {
             }
 
             let world_id = pkg.worlds.get(world).copied().ok_or_else(|| {
-                ResolveError::new_semantic(world_span, "world not found in package")
+                ResolveError::from(ResolveErrorKind::WorldNotFound {
+                    span: world_span,
+                    requested: world.to_string(),
+                    package: pkg.name.clone(),
+                })
             })?;
             assert_eq!(self.worlds.len(), unresolved_world_id.index());
             self.worlds.push(Some(world_id));
@@ -3933,6 +4013,7 @@ impl Remap {
                     docs: Default::default(),
                     stability: Default::default(),
                     span: Default::default(),
+                    external_id: None,
                 })
             });
         }
@@ -4279,6 +4360,7 @@ impl Remap {
                             id: aid,
                             stability: astability,
                             span: aspan,
+                            ..
                         },
                         WorldItem::Interface {
                             id: bid,
@@ -5871,7 +5953,7 @@ interface iface {
         };
         let mut resolve = Resolve::default();
         let err = resolve.push_groups(a, Vec::from([b])).unwrap_err();
-        let msg = err.highlight(&resolve.source_map);
+        let msg = err.render(&resolve.source_map);
         assert!(
             msg.contains("file:///"),
             "cycle error should contain a file URI, got: {msg}"

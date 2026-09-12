@@ -32,6 +32,9 @@ struct PackageFile<'a> {
     decl_list: DeclList<'a>,
 }
 
+/// Maximum nesting depth of `package { ... }` scopes.
+const MAX_ITEM_DEPTH: usize = 100;
+
 impl<'a> PackageFile<'a> {
     /// Parse a standalone file represented by `tokens`.
     ///
@@ -54,7 +57,7 @@ impl<'a> PackageFile<'a> {
         } else {
             None
         };
-        let decl_list = DeclList::parse_until(tokens, None)?;
+        let decl_list = DeclList::parse_until(tokens, None, 0)?;
         Ok(PackageFile {
             package_id,
             decl_list,
@@ -66,6 +69,7 @@ impl<'a> PackageFile<'a> {
         tokens: &mut Tokenizer<'a>,
         docs: Docs<'a>,
         attributes: Vec<Attribute<'a>>,
+        depth: usize,
     ) -> ParseResult<Self> {
         let span = tokens.expect(Token::Package)?;
         if !attributes.is_empty() {
@@ -74,9 +78,12 @@ impl<'a> PackageFile<'a> {
                 format!("cannot place attributes on nested packages"),
             ));
         }
+        if depth >= MAX_ITEM_DEPTH {
+            return Err(ParseError::new_syntax(span, "package nesting too deep"));
+        }
         let package_id = PackageName::parse(tokens, docs)?;
         tokens.expect(Token::LeftBrace)?;
-        let decl_list = DeclList::parse_until(tokens, Some(Token::RightBrace))?;
+        let decl_list = DeclList::parse_until(tokens, Some(Token::RightBrace), depth + 1)?;
         Ok(PackageFile {
             package_id: Some(package_id),
             decl_list,
@@ -125,7 +132,11 @@ pub struct DeclList<'a> {
 }
 
 impl<'a> DeclList<'a> {
-    fn parse_until(tokens: &mut Tokenizer<'a>, end: Option<Token>) -> ParseResult<DeclList<'a>> {
+    fn parse_until(
+        tokens: &mut Tokenizer<'a>,
+        end: Option<Token>,
+        depth: usize,
+    ) -> ParseResult<DeclList<'a>> {
         let mut items = Vec::new();
         let mut docs = parse_docs(tokens)?;
         loop {
@@ -141,7 +152,7 @@ impl<'a> DeclList<'a> {
                     }
                 }
             }
-            items.push(AstItem::parse(tokens, docs)?);
+            items.push(AstItem::parse(tokens, docs, depth)?);
             docs = parse_docs(tokens)?;
         }
         Ok(DeclList { items })
@@ -263,7 +274,7 @@ enum AstItem<'a> {
 }
 
 impl<'a> AstItem<'a> {
-    fn parse(tokens: &mut Tokenizer<'a>, docs: Docs<'a>) -> ParseResult<Self> {
+    fn parse(tokens: &mut Tokenizer<'a>, docs: Docs<'a>, depth: usize) -> ParseResult<Self> {
         let attributes = Attribute::parse_list(tokens)?;
         match tokens.clone().next()? {
             Some((_span, Token::Interface)) => {
@@ -272,7 +283,7 @@ impl<'a> AstItem<'a> {
             Some((_span, Token::World)) => World::parse(tokens, docs, attributes).map(Self::World),
             Some((_span, Token::Use)) => ToplevelUse::parse(tokens, attributes).map(Self::Use),
             Some((_span, Token::Package)) => {
-                PackageFile::parse_nested(tokens, docs, attributes).map(Self::Package)
+                PackageFile::parse_nested(tokens, docs, attributes, depth).map(Self::Package)
             }
             other => Err(err_expected(tokens, "`world`, `interface` or `use`", other).into()),
         }
@@ -1390,9 +1401,25 @@ fn parse_docs<'a>(tokens: &mut Tokenizer<'a>) -> Result<Docs<'a>, lex::Error> {
     Ok(docs)
 }
 
+/// Maximum nesting depth of types parsed with `Type::parse`, e.g.
+/// `list<list<list<...>>>`.
+const MAX_TYPE_DEPTH: usize = 100;
+
 impl<'a> Type<'a> {
     fn parse(tokens: &mut Tokenizer<'a>) -> ParseResult<Self> {
-        match tokens.next()? {
+        Type::parse_at_depth(tokens, 0)
+    }
+
+    fn parse_at_depth(tokens: &mut Tokenizer<'a>, depth: usize) -> ParseResult<Self> {
+        let token = tokens.next()?;
+        if depth >= MAX_TYPE_DEPTH {
+            let span = match token {
+                Some((span, _)) => span,
+                None => tokens.eof_span(),
+            };
+            return Err(ParseError::new_syntax(span, "type nesting too deep"));
+        }
+        match token {
             Some((span, Token::U8)) => Ok(Type::U8(span)),
             Some((span, Token::U16)) => Ok(Type::U16(span)),
             Some((span, Token::U32)) => Ok(Type::U32(span)),
@@ -1411,7 +1438,7 @@ impl<'a> Type<'a> {
                     tokens,
                     Token::LessThan,
                     Token::GreaterThan,
-                    |_docs, tokens| Type::parse(tokens),
+                    |_docs, tokens| Type::parse_at_depth(tokens, depth + 1),
                 )?;
                 Ok(Type::Tuple(Tuple { span, types }))
             }
@@ -1423,7 +1450,7 @@ impl<'a> Type<'a> {
             // list<T, N>
             Some((span, Token::List)) => {
                 tokens.expect(Token::LessThan)?;
-                let ty = Type::parse(tokens)?;
+                let ty = Type::parse_at_depth(tokens, depth + 1)?;
                 let size = if tokens.eat(Token::Comma)? {
                     let number = tokens.next()?;
                     if let Some((span, Token::Integer)) = number {
@@ -1455,9 +1482,9 @@ impl<'a> Type<'a> {
             // map<K, V>
             Some((span, Token::Map)) => {
                 tokens.expect(Token::LessThan)?;
-                let key = Type::parse(tokens)?;
+                let key = Type::parse_at_depth(tokens, depth + 1)?;
                 tokens.expect(Token::Comma)?;
-                let value = Type::parse(tokens)?;
+                let value = Type::parse_at_depth(tokens, depth + 1)?;
                 tokens.expect(Token::GreaterThan)?;
                 Ok(Type::Map(Map {
                     span,
@@ -1469,7 +1496,7 @@ impl<'a> Type<'a> {
             // option<T>
             Some((span, Token::Option_)) => {
                 tokens.expect(Token::LessThan)?;
-                let ty = Type::parse(tokens)?;
+                let ty = Type::parse_at_depth(tokens, depth + 1)?;
                 tokens.expect(Token::GreaterThan)?;
                 Ok(Type::Option(Option_ {
                     span,
@@ -1488,11 +1515,11 @@ impl<'a> Type<'a> {
                 if tokens.eat(Token::LessThan)? {
                     if tokens.eat(Token::Underscore)? {
                         tokens.expect(Token::Comma)?;
-                        err = Some(Box::new(Type::parse(tokens)?));
+                        err = Some(Box::new(Type::parse_at_depth(tokens, depth + 1)?));
                     } else {
-                        ok = Some(Box::new(Type::parse(tokens)?));
+                        ok = Some(Box::new(Type::parse_at_depth(tokens, depth + 1)?));
                         if tokens.eat(Token::Comma)? {
-                            err = Some(Box::new(Type::parse(tokens)?));
+                            err = Some(Box::new(Type::parse_at_depth(tokens, depth + 1)?));
                         }
                     };
                     tokens.expect(Token::GreaterThan)?;
@@ -1506,7 +1533,7 @@ impl<'a> Type<'a> {
                 let mut ty = None;
 
                 if tokens.eat(Token::LessThan)? {
-                    ty = Some(Box::new(Type::parse(tokens)?));
+                    ty = Some(Box::new(Type::parse_at_depth(tokens, depth + 1)?));
                     tokens.expect(Token::GreaterThan)?;
                 };
                 Ok(Type::Future(Future { span, ty }))
@@ -1518,7 +1545,7 @@ impl<'a> Type<'a> {
                 let mut ty = None;
 
                 if tokens.eat(Token::LessThan)? {
-                    ty = Some(Box::new(Type::parse(tokens)?));
+                    ty = Some(Box::new(Type::parse_at_depth(tokens, depth + 1)?));
                     tokens.expect(Token::GreaterThan)?;
                 };
                 Ok(Type::Stream(Stream { span, ty }))
@@ -1651,6 +1678,7 @@ enum Attribute<'a> {
     Since { span: Span, version: Version },
     Unstable { span: Span, feature: Id<'a> },
     Deprecated { span: Span, version: Version },
+    ExternalId { span: Span, id: String },
 }
 
 impl<'a> Attribute<'a> {
@@ -1692,6 +1720,15 @@ impl<'a> Attribute<'a> {
                         version,
                     }
                 }
+                "external-id" => {
+                    tokens.expect(Token::LeftParen)?;
+                    let span = tokens.expect(Token::StringLiteral)?;
+                    tokens.expect(Token::RightParen)?;
+                    Attribute::ExternalId {
+                        span: id.span,
+                        id: tokens.string_literal(span)?,
+                    }
+                }
                 other => {
                     return Err(ParseError::new_syntax(
                         id.span,
@@ -1702,14 +1739,6 @@ impl<'a> Attribute<'a> {
             ret.push(attr);
         }
         Ok(ret)
-    }
-
-    fn span(&self) -> Span {
-        match self {
-            Attribute::Since { span, .. }
-            | Attribute::Unstable { span, .. }
-            | Attribute::Deprecated { span, .. } => *span,
-        }
     }
 }
 
@@ -1754,6 +1783,39 @@ impl SourceMap {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read file {path:?}"))?;
         self.push(path, contents);
+        Ok(())
+    }
+
+    /// Reads all `*.wit` files in the directory `path` (non-recursively) and
+    /// appends their contents to this [`SourceMap`].
+    ///
+    /// Subdirectories, non-`*.wit` files, and symlinks to directories are
+    /// ignored. Note that a `deps` subdirectory is not probed here; that is
+    /// handled by [`crate::Resolve::push_dir`].
+    #[cfg(feature = "std")]
+    pub fn push_dir(&mut self, path: &Path) -> anyhow::Result<()> {
+        let cx = || format!("failed to read directory {path:?}");
+        for entry in path.read_dir().with_context(&cx)? {
+            let entry = entry.with_context(&cx)?;
+            let entry_path = entry.path();
+            let ty = entry.file_type().with_context(&cx)?;
+            if ty.is_dir() {
+                continue;
+            }
+            if ty.is_symlink() {
+                if entry_path.is_dir() {
+                    continue;
+                }
+            }
+            let filename = match entry_path.file_name().and_then(|s| s.to_str()) {
+                Some(name) => name,
+                None => continue,
+            };
+            if !filename.ends_with(".wit") {
+                continue;
+            }
+            self.push_file(&entry_path)?;
+        }
         Ok(())
     }
 
@@ -1911,6 +1973,29 @@ impl SourceMap {
         return msg;
     }
 
+    /// Resolves a global `span` to a location within a single source file.
+    ///
+    /// Returns the path the source was registered with and the span's byte
+    /// range (UTF-8) relative to that file's contents. Returns `None` if
+    /// `span` is unknown or does not fall within any source in this map.
+    pub fn resolve_span(&self, span: Span) -> Option<SpanLocation<'_>> {
+        if !span.is_known() || span.start() >= self.offset {
+            return None;
+        }
+        let src = self.source_for_offset(span.start());
+        // Exclude the synthetic `\n` appended by `push_str` so that spans
+        // pointing at eof resolve to an empty range at the end of the file.
+        let len = src.contents.len() - 1;
+        let start = src.to_relative_offset(span.start()).min(len);
+        let end = usize::try_from(span.end().saturating_sub(src.offset))
+            .unwrap()
+            .clamp(start, len);
+        Some(SpanLocation {
+            path: &src.path,
+            range: start..end,
+        })
+    }
+
     /// Renders a span as a human-readable location string (e.g., "file.wit:10:5").
     pub fn render_location(&self, span: Span) -> String {
         if !span.is_known() {
@@ -1946,6 +2031,15 @@ impl SourceMap {
     pub fn source_names(&self) -> impl Iterator<Item = &str> {
         self.sources.iter().map(|src| src.path.as_str())
     }
+}
+
+/// A [`Span`] resolved to a location within a single source file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpanLocation<'a> {
+    /// The path of the source, as it was registered with the [`SourceMap`].
+    pub path: &'a str,
+    /// The byte range (UTF-8) within the file's contents.
+    pub range: core::ops::Range<usize>,
 }
 
 impl Source {

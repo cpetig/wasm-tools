@@ -9,8 +9,6 @@ use crate::abi::AbiVariant;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-#[cfg(feature = "std")]
-use anyhow::Context as _;
 use id_arena::{Arena, Id};
 use semver::Version;
 
@@ -46,7 +44,7 @@ pub mod abi;
 mod ast;
 pub use ast::error::*;
 pub use ast::lex::Span;
-pub use ast::{ItemName, SourceMap};
+pub use ast::{ItemName, SourceMap, SpanLocation};
 pub use ast::{ParsedUsePath, parse_use_path, pretty_print};
 mod sizealign;
 pub use sizealign::*;
@@ -72,22 +70,23 @@ pub fn validate_id(s: &str) -> anyhow::Result<()> {
 /// Renders an [`anyhow::Error`] chain produced by this crate, substituting
 /// snippet-bearing output for any [`ResolveError`] or [`ParseError`] layers.
 ///
-/// For each layer in the chain, this calls [`ResolveError::highlight`] or
-/// [`ParseError::highlight`] to format typed errors with file/line/column and
+/// For each layer in the chain, this calls [`ResolveError::render`] or
+/// [`ParseError::render`] to format typed errors with file/line/column and
 /// a source snippet. Other layers are formatted via their [`fmt::Display`]
 /// impl. Layers are joined with `": "`, matching `format!("{err:#}")`.
 ///
 /// `source_map` must be the [`SourceMap`] in which every typed error's spans
 /// are valid; combining typed errors from different source maps in one chain
-/// is unsupported.
+/// is unsupported. For errors from [`Resolve`] methods, prefer
+/// [`Resolve::render_error`].
 #[cfg(feature = "std")]
 pub fn render_anyhow_error(err: &anyhow::Error, source_map: &SourceMap) -> String {
     err.chain()
         .map(|layer| {
             if let Some(re) = layer.downcast_ref::<ResolveError>() {
-                re.highlight(source_map)
+                re.render(source_map)
             } else if let Some(pe) = layer.downcast_ref::<ParseError>() {
-                pe.highlight(source_map)
+                pe.render(source_map)
             } else {
                 layer.to_string()
             }
@@ -125,7 +124,7 @@ pub type TypeId = Id<TypeDef>;
 /// will connect the `foreign_deps` field of this structure to packages
 /// previously inserted within the [`Resolve`]. Embedders are responsible for
 /// performing this resolution themselves.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnresolvedPackage {
     /// The namespace, name, and version information for this package.
     pub name: PackageName,
@@ -203,7 +202,7 @@ impl UnresolvedPackage {
 }
 
 /// Tracks a set of packages, all pulled from the same group of WIT source files.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnresolvedPackageGroup {
     /// The "main" package in this package group which was found at the root of
     /// the WIT files.
@@ -327,16 +326,18 @@ impl UnresolvedPackageGroup {
     /// The `path` argument is used for error reporting. The `contents` provided
     /// are considered to be the contents of `path`. This function does not read
     /// the filesystem.
+    ///
+    /// On failure the constructed [`SourceMap`] is returned alongside the
+    /// typed [`ParseError`] so the caller can render a snippet via
+    /// [`ParseError::render`] or merge the source map elsewhere.
     #[cfg(feature = "std")]
-    pub fn parse(path: impl AsRef<Path>, contents: &str) -> anyhow::Result<UnresolvedPackageGroup> {
-        let path = path
-            .as_ref()
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("path is not valid utf-8: {:?}", path.as_ref()))?;
+    pub fn parse(
+        path: impl AsRef<Path>,
+        contents: &str,
+    ) -> Result<UnresolvedPackageGroup, (SourceMap, ParseError)> {
         let mut map = SourceMap::default();
-        map.push_str(path, contents);
+        map.push(path.as_ref(), contents);
         map.parse()
-            .map_err(|(map, e)| anyhow::anyhow!("{}", e.highlight(&map)))
     }
 
     /// Parses a WIT package from the directory provided.
@@ -347,32 +348,12 @@ impl UnresolvedPackageGroup {
     /// files.
     #[cfg(feature = "std")]
     pub fn parse_dir(path: impl AsRef<Path>) -> anyhow::Result<UnresolvedPackageGroup> {
-        let path = path.as_ref();
         let mut map = SourceMap::default();
-        let cx = || format!("failed to read directory {path:?}");
-        for entry in path.read_dir().with_context(&cx)? {
-            let entry = entry.with_context(&cx)?;
-            let path = entry.path();
-            let ty = entry.file_type().with_context(&cx)?;
-            if ty.is_dir() {
-                continue;
-            }
-            if ty.is_symlink() {
-                if path.is_dir() {
-                    continue;
-                }
-            }
-            let filename = match path.file_name().and_then(|s| s.to_str()) {
-                Some(name) => name,
-                None => continue,
-            };
-            if !filename.ends_with(".wit") {
-                continue;
-            }
-            map.push_file(&path)?;
-        }
-        map.parse()
-            .map_err(|(map, e)| anyhow::anyhow!("{}", e.highlight(&map)))
+        map.push_dir(path.as_ref())?;
+        map.parse().map_err(|(map, e)| {
+            let rendered = e.render(&map);
+            anyhow::Error::from(e).context(rendered)
+        })
     }
 }
 
@@ -523,6 +504,14 @@ pub enum WorldItem {
             serde(skip_serializing_if = "Stability::is_unknown")
         )]
         stability: Stability,
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+        external_id: Option<String>,
+        /// Documentation attached to the `import`/`export` statement.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Docs::is_empty")
+        )]
+        docs: Docs,
         #[cfg_attr(feature = "serde", serde(skip))]
         span: Span,
     },
@@ -640,6 +629,8 @@ pub struct TypeDef {
     /// Source span for this type.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub span: Span,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub external_id: Option<String>,
 }
 
 impl TypeDef {
@@ -904,9 +895,9 @@ impl Enum {
 fn discriminant_type(num_cases: usize) -> Int {
     match num_cases.checked_sub(1) {
         None => Int::U8,
-        Some(n) if n <= u8::max_value() as usize => Int::U8,
-        Some(n) if n <= u16::max_value() as usize => Int::U16,
-        Some(n) if n <= u32::max_value() as usize => Int::U32,
+        Some(n) if n <= u8::MAX as usize => Int::U8,
+        Some(n) if n <= u16::MAX as usize => Int::U16,
+        Some(n) if n <= u32::MAX as usize => Int::U32,
         _ => panic!("too many cases to fit in a repr"),
     }
 }
@@ -961,6 +952,8 @@ pub struct Function {
     /// Source span for this function.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub span: Span,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub external_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1532,6 +1525,7 @@ mod test {
             docs: Docs::default(),
             stability: Stability::Unknown,
             span: Default::default(),
+            external_id: Default::default(),
         });
         let t1 = resolve.types.alloc(TypeDef {
             name: None,
@@ -1540,6 +1534,7 @@ mod test {
             docs: Docs::default(),
             stability: Stability::Unknown,
             span: Default::default(),
+            external_id: Default::default(),
         });
         let t2 = resolve.types.alloc(TypeDef {
             name: None,
@@ -1548,6 +1543,7 @@ mod test {
             docs: Docs::default(),
             stability: Stability::Unknown,
             span: Default::default(),
+            external_id: Default::default(),
         });
         let found = Function {
             name: "foo".into(),
@@ -1568,6 +1564,7 @@ mod test {
             docs: Docs::default(),
             stability: Stability::Unknown,
             span: Default::default(),
+            external_id: Default::default(),
         }
         .find_futures_and_streams(&resolve);
         assert_eq!(3, found.len());
