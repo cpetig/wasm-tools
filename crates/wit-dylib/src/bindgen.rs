@@ -2,10 +2,11 @@ use crate::metadata;
 use crate::{Adapter, ImportedStackPointer};
 use std::collections::HashMap;
 use std::slice;
-use wasm_encoder::{BlockType, Function, InstructionSink, MemArg, ValType};
+use wasm_encoder::{BlockType, Function, InstructionSink, MemArg, MemArgTarget, ValType};
 use wit_parser::abi::{AbiVariant, FlatTypes, WasmSignature, WasmType};
 use wit_parser::{
     Alignment, ArchitectureSize, FlagsRepr, Handle, Int, Resolve, Type, TypeDefKind, TypeId,
+    WorldId,
 };
 
 macro_rules! intrinsics {
@@ -119,7 +120,7 @@ pub fn import(
     abi: AbiVariant,
     import_idx: u32,
 ) -> Function {
-    let sig = resolve.wasm_signature(abi, func);
+    let sig = adapter.wasm_signature(resolve, abi, func);
     let initial_locals = if abi.is_async() { 2 } else { 1 };
     let mut c = FunctionCompiler::new(adapter, resolve, initial_locals);
     let frame = c.stack_frame(func, &sig, abi);
@@ -204,9 +205,10 @@ pub fn import(
 /// returns the result if there is one.
 pub fn async_import_abi_area_types<'a>(
     resolve: &Resolve,
+    world: WorldId,
     func: &'a wit_parser::Function,
 ) -> impl Iterator<Item = &'a Type> {
-    let sig = resolve.wasm_signature(AbiVariant::GuestImportAsync, func);
+    let sig = resolve.wasm_signature(world, AbiVariant::GuestImportAsync, func);
     let include_params = sig.indirect_params;
     func.params
         .iter()
@@ -230,7 +232,7 @@ fn async_import_retptr_offset(
         return None;
     }
 
-    let types = async_import_abi_area_types(resolve, func);
+    let types = async_import_abi_area_types(resolve, adapter.world.unwrap(), func);
     let (size, _ty) = adapter.sizes.field_offsets(types).pop().unwrap();
     Some(size.size_wasm32().try_into().unwrap())
 }
@@ -250,7 +252,7 @@ pub fn lift_async_import_results(
     abi: AbiVariant,
 ) -> Function {
     assert!(abi.is_async());
-    let sig = resolve.wasm_signature(abi, func);
+    let sig = adapter.wasm_signature(resolve, abi, func);
     let mut c = FunctionCompiler::new(adapter, resolve, 2);
     c.ctx = Some(TempLocal::new(0, ValType::I32));
 
@@ -275,6 +277,13 @@ pub fn lift_async_import_results(
     c.finish()
 }
 
+const MEMARG_32: MemArg = MemArg {
+    target: MemArgTarget::Memory(0),
+    align: 2,
+    offset: 0,
+    ordering: None,
+};
+
 pub fn export(
     adapter: &mut Adapter,
     resolve: &Resolve,
@@ -282,7 +291,7 @@ pub fn export(
     abi: AbiVariant,
     func_metadata_index: usize,
 ) -> Function {
-    let sig = resolve.wasm_signature(abi, func);
+    let sig = adapter.wasm_signature(resolve, abi, func);
     let mut c = FunctionCompiler::new(adapter, resolve, sig.params.len() as u32);
     let frame = c.stack_frame(func, &sig, abi);
     c.allocate_stack_frame(&frame);
@@ -340,11 +349,7 @@ pub fn export(
         let l_ctx = c.ctx.take().unwrap();
         c.ins().local_get(l_scratch.idx);
         c.ins().local_get(l_ctx.idx);
-        c.ins().i32_store(MemArg {
-            memory_index: 0,
-            align: 2,
-            offset: 0,
-        });
+        c.ins().i32_store(MEMARG_32);
         c.free_temp_local(l_ctx);
         c.free_temp_local(l_scratch);
         if let Some(fp) = c.fp.take() {
@@ -362,7 +367,7 @@ pub fn post_return(
     func_metadata_index: usize,
 ) -> Function {
     assert!(!abi.is_async());
-    let sig = resolve.wasm_signature(abi, func);
+    let sig = adapter.wasm_signature(resolve, abi, func);
     let mut c = FunctionCompiler::new(adapter, resolve, sig.results.len() as u32);
     let frame = c.stack_frame(func, &sig, abi);
 
@@ -372,11 +377,7 @@ pub fn post_return(
     // Load the `ctx` pointer for the export allocated during the originally
     // invoked function.
     c.ins().local_get(l_sp.idx);
-    c.ins().i32_load(MemArg {
-        memory_index: 0,
-        align: 2,
-        offset: 0,
-    });
+    c.ins().i32_load(MEMARG_32);
     c.ctx = Some(c.local_set_new_tmp(ValType::I32));
 
     // Bump sp by 8 bytes to restore it to just before the end of the export
@@ -877,11 +878,7 @@ impl<'a> FunctionCompiler<'a> {
                 self.ins().call(pop_string);
                 self.store_scalar_from_top_of_stack(&dst_len, ValType::I32, 2);
                 self.local_get_stack_temp_addr();
-                self.ins().i32_load(MemArg {
-                    memory_index: 0,
-                    offset: 0,
-                    align: 2,
-                });
+                self.ins().i32_load(MEMARG_32);
                 self.store_scalar_from_top_of_stack(&dst_ptr, ValType::I32, 2);
             }
             Type::Id(id) => self.lower_id(id, dest),
@@ -988,11 +985,7 @@ impl<'a> FunctionCompiler<'a> {
                 self.ins().call(pop_list);
                 let l_len = self.local_set_new_tmp(ValType::I32);
                 self.local_get_stack_temp_addr();
-                self.ins().i32_load(MemArg {
-                    memory_index: 0,
-                    offset: 0,
-                    align: 2,
-                });
+                self.ins().i32_load(MEMARG_32);
                 let l_ptr = self.local_set_new_tmp(ValType::I32);
 
                 // If the pointer is null then the interpreter doesn't support
@@ -1257,7 +1250,8 @@ impl<'a> FunctionCompiler<'a> {
             // destination the lower operation stores in a prefix of the values
             // requested and the others are manually zero'd.
             Some(ty) => {
-                let (dst, zero_locals) = payload_dst.narrow_payload(me.resolve, ty);
+                let (dst, zero_locals) =
+                    payload_dst.narrow_payload(me.resolve, me.adapter.world.unwrap(), ty);
                 me.lower(*ty, &dst);
                 if let Some(zero_locals) = zero_locals {
                     push_zeros(me, zero_locals);
@@ -1740,7 +1734,8 @@ impl<'a> FunctionCompiler<'a> {
 
         let lift_payload = |me: &mut Self, ty: Option<&Type>| match ty {
             Some(ty) => {
-                let (src, _) = payload_src.narrow_payload(me.resolve, ty);
+                let (src, _) =
+                    payload_src.narrow_payload(me.resolve, me.adapter.world.unwrap(), ty);
                 me.lift(&src, *ty);
             }
             None => {}
@@ -1915,7 +1910,7 @@ impl<'a> FunctionCompiler<'a> {
                 fields
                     .into_iter()
                     .map(|ty| {
-                        let n = flat_types(self.resolve, ty).unwrap().len();
+                        let n = flat_count(self.resolve, self.adapter.world.unwrap(), ty);
                         let (a, b) = types.split_at(n);
                         types = b;
                         AbiLoc::Stack(a)
@@ -1995,14 +1990,16 @@ impl StackFrame {
     }
 }
 
-fn flat_types(resolve: &Resolve, ty: &Type) -> Option<Vec<WasmType>> {
+/// Returns the number of flat core wasm values that `ty` is represented with.
+///
+/// # Panics
+///
+/// Panics if `ty` needs more than `Resolve::MAX_FLAT_PARAMS` flat values.
+fn flat_count(resolve: &Resolve, world: WorldId, ty: &Type) -> usize {
     let mut storage = [WasmType::I32; Resolve::MAX_FLAT_PARAMS];
     let mut flat = FlatTypes::new(&mut storage);
-    if resolve.push_flat(ty, &mut flat) {
-        Some(flat.to_vec())
-    } else {
-        None
-    }
+    assert!(resolve.push_flat(world, ty, &mut flat));
+    flat.to_vec().len()
 }
 
 /// Same as `Source` but for where values are translated into.
@@ -2051,10 +2048,15 @@ impl<'a> AbiLoc<'a> {
         }
     }
 
-    fn narrow_payload(&self, resolve: &Resolve, ty: &Type) -> (Self, Option<&'a [TempLocal]>) {
+    fn narrow_payload(
+        &self,
+        resolve: &Resolve,
+        world: WorldId,
+        ty: &Type,
+    ) -> (Self, Option<&'a [TempLocal]>) {
         match self {
             AbiLoc::Stack(locals) => {
-                let flat_count = flat_types(resolve, ty).unwrap().len();
+                let flat_count = flat_count(resolve, world, ty);
                 let (lower_locals, rest) = locals.split_at(flat_count);
                 (AbiLoc::Stack(lower_locals), Some(rest))
             }
@@ -2078,7 +2080,7 @@ impl Memory {
         MemArg {
             offset: u64::from(self.offset),
             align,
-            memory_index: 0,
+            ..MEMARG_32
         }
     }
 

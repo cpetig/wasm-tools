@@ -79,14 +79,14 @@ impl<'a> ModuleInfo<'a> {
             match payload {
                 Payload::CodeSectionStart {
                     count: _,
-                    range,
+                    unchecked_range,
                     size: _,
                 } => {
                     info.code = Some(info.raw_sections.len());
-                    info.section(SectionId::Code.into(), get_input_data(&range));
+                    info.section(SectionId::Code.into(), get_input_data(&unchecked_range));
                     parser.skip_section();
                     // update slice, bypass the section
-                    wasm = &wasm[(range.end - offset) as usize..];
+                    wasm = &wasm[(unchecked_range.end - offset) as usize..];
 
                     continue;
                 }
@@ -158,6 +158,10 @@ impl<'a> ModuleInfo<'a> {
                     for ty in reader {
                         info.memory_types.push(ty?);
                     }
+                }
+                Payload::TagSection(reader) => {
+                    info.tag_count += reader.count();
+                    info.section(SectionId::Tag.into(), get_input_data(&reader.range()));
                 }
                 Payload::GlobalSection(reader) => {
                     info.globals = Some(info.raw_sections.len());

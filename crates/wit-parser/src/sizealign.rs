@@ -7,7 +7,7 @@ use core::{
     ops::{Add, AddAssign},
 };
 
-use crate::{FlagsRepr, Int, Resolve, Type, TypeDef, TypeDefKind};
+use crate::{FlagsRepr, Handle, Int, Resolve, Type, TypeDef, TypeDefKind, WorldId};
 
 /// Architecture specific alignment
 #[derive(Eq, PartialEq, Clone, Copy)]
@@ -260,16 +260,28 @@ impl SizeAlign {
         }
     }
 
-    pub fn fill(&mut self, resolve: &Resolve) -> anyhow::Result<()> {
+    /// Calculates the size and alignment of all types in `resolve`.
+    ///
+    /// The `world` is the world that types are being used within, and will
+    /// affect the size/alignment of `borrow<T>` resources.
+    ///
+    /// Note that correctly assigning sizes to `borrow<T>` requires that the
+    /// [`Resolve::generate_nominal_type_ids`] method has been called.
+    pub fn fill(&mut self, resolve: &Resolve, world: WorldId) -> anyhow::Result<()> {
         self.map = Vec::new();
         for (_, ty) in resolve.types.iter() {
-            let pair = self.calculate(ty)?;
+            let pair = self.calculate(resolve, world, ty)?;
             self.map.push(pair);
         }
         Ok(())
     }
 
-    fn calculate(&self, ty: &TypeDef) -> anyhow::Result<ElementInfo> {
+    fn calculate(
+        &self,
+        resolve: &Resolve,
+        world: WorldId,
+        ty: &TypeDef,
+    ) -> anyhow::Result<ElementInfo> {
         Ok(match &ty.kind {
             TypeDefKind::Type(t) => ElementInfo::new(self.size(t), self.align(t)),
             TypeDefKind::FixedLengthList(t, size) => {
@@ -307,7 +319,12 @@ impl SizeAlign {
             TypeDefKind::Enum(e) => self.variant(e.tag(), []),
             TypeDefKind::Option(t) => self.variant(Int::U8, [Some(t)]),
             TypeDefKind::Result(r) => self.variant(Int::U8, [r.ok.as_ref(), r.err.as_ref()]),
-            // A resource is represented as an index.
+            // A borrow of a resource owned by `world` is represented as the
+            // resource's rep, which is pointer-sized.
+            TypeDefKind::Handle(Handle::Borrow(id)) if resolve.borrow_is_rep(world, *id) => {
+                ElementInfo::from(Alignment::Pointer)
+            }
+            // Otherwise a resource is represented as an index.
             // A future is represented as an index.
             // A stream is represented as an index.
             TypeDefKind::Handle(_) | TypeDefKind::Future(_) | TypeDefKind::Stream(_) => {
@@ -476,6 +493,19 @@ mod test {
     use alloc::string::ToString;
     use alloc::vec;
 
+    fn empty_world(resolve: &mut Resolve) -> WorldId {
+        resolve.worlds.alloc(crate::World {
+            name: "w".to_string(),
+            imports: Default::default(),
+            exports: Default::default(),
+            package: None,
+            docs: Default::default(),
+            stability: Default::default(),
+            includes: Default::default(),
+            span: Default::default(),
+        })
+    }
+
     #[test]
     fn align() {
         // u8 + ptr
@@ -575,16 +605,22 @@ mod test {
     fn resource_size() {
         // keep it identical to the old behavior
         let obj = SizeAlign::default();
+        let mut resolve = Resolve::default();
+        let world = empty_world(&mut resolve);
         let elem = obj
-            .calculate(&TypeDef {
-                name: None,
-                kind: TypeDefKind::Resource,
-                owner: crate::TypeOwner::None,
-                docs: Default::default(),
-                stability: Default::default(),
-                span: Default::default(),
-                external_id: Default::default(),
-            })
+            .calculate(
+                &resolve,
+                world,
+                &TypeDef {
+                    name: None,
+                    kind: TypeDefKind::Resource,
+                    owner: crate::TypeOwner::None,
+                    docs: Default::default(),
+                    stability: Default::default(),
+                    span: Default::default(),
+                    external_id: Default::default(),
+                },
+            )
             .unwrap();
         assert_eq!(elem.size, ArchitectureSize::new(usize::MAX, 0));
         assert_eq!(
@@ -608,21 +644,26 @@ mod test {
             span: Default::default(),
             external_id: Default::default(),
         });
-        obj.fill(&resolve).unwrap();
+        let world = empty_world(&mut resolve);
+        obj.fill(&resolve, world).unwrap();
         let my_result = crate::Result_ {
             ok: Some(Type::String),
             err: Some(Type::Id(id)),
         };
         let elem = obj
-            .calculate(&TypeDef {
-                name: None,
-                kind: TypeDefKind::Result(my_result),
-                owner: crate::TypeOwner::None,
-                docs: Default::default(),
-                stability: Default::default(),
-                span: Default::default(),
-                external_id: Default::default(),
-            })
+            .calculate(
+                &resolve,
+                world,
+                &TypeDef {
+                    name: None,
+                    kind: TypeDefKind::Result(my_result),
+                    owner: crate::TypeOwner::None,
+                    docs: Default::default(),
+                    stability: Default::default(),
+                    span: Default::default(),
+                    external_id: Default::default(),
+                },
+            )
             .unwrap();
         assert_eq!(elem.size, ArchitectureSize::new(8, 2));
         assert_eq!(elem.align, Alignment::Pointer);
@@ -658,7 +699,8 @@ mod test {
             external_id: Default::default(),
         });
 
-        let err = obj.fill(&resolve).unwrap_err();
+        let world = empty_world(&mut resolve);
+        let err = obj.fill(&resolve, world).unwrap_err();
         assert!(err.to_string().contains("overflows"));
 
         // A benign, non-overflowing fixed-length list still computes fine.
@@ -673,11 +715,14 @@ mod test {
             span: Default::default(),
             external_id: Default::default(),
         });
-        obj.fill(&resolve).unwrap();
+        let world = empty_world(&mut resolve);
+        obj.fill(&resolve, world).unwrap();
     }
     #[test]
     fn result_ptr_64bit() {
         let obj = SizeAlign::default();
+        let mut resolve = Resolve::default();
+        let world = empty_world(&mut resolve);
         let my_record = crate::Record {
             fields: vec![
                 crate::Field {
@@ -695,17 +740,76 @@ mod test {
             ],
         };
         let elem = obj
-            .calculate(&TypeDef {
-                name: None,
-                kind: TypeDefKind::Record(my_record),
-                owner: crate::TypeOwner::None,
-                docs: Default::default(),
-                stability: Default::default(),
-                span: Default::default(),
-                external_id: Default::default(),
-            })
+            .calculate(
+                &resolve,
+                world,
+                &TypeDef {
+                    name: None,
+                    kind: TypeDefKind::Record(my_record),
+                    owner: crate::TypeOwner::None,
+                    docs: Default::default(),
+                    stability: Default::default(),
+                    span: Default::default(),
+                    external_id: Default::default(),
+                },
+            )
             .unwrap();
         assert_eq!(elem.size, ArchitectureSize::new(8, 2));
         assert_eq!(elem.align, Alignment::Bytes(NonZeroUsize::new(8).unwrap()));
+    }
+
+    #[test]
+    fn borrow_of_exported_resource_is_pointer_sized() {
+        let mut resolve = Resolve::default();
+        resolve
+            .push_str(
+                "test.wit",
+                "
+                    package a:b;
+
+                    interface exported {
+                        resource r;
+                        record with-borrow { a: u8, b: borrow<r> }
+                    }
+                    interface imported {
+                        resource r;
+                        record with-borrow { a: u8, b: borrow<r> }
+                    }
+
+                    world w {
+                        import imported;
+                        export exported;
+                    }
+                ",
+            )
+            .unwrap();
+        let (world, _) = resolve.worlds.iter().next().unwrap();
+        let mut sizes = SizeAlign::default();
+        sizes.fill(&resolve, world).unwrap();
+
+        let record = |iface: &str| {
+            let (_, i) = resolve
+                .interfaces
+                .iter()
+                .find(|(_, i)| i.name.as_deref() == Some(iface))
+                .unwrap();
+            Type::Id(i.types["with-borrow"])
+        };
+
+        // A `borrow` of an exported resource is its rep, which is
+        // pointer-sized.
+        let exported = record("exported");
+        assert_eq!(sizes.size(&exported), ArchitectureSize::new(0, 2));
+        assert_eq!(sizes.size(&exported).size_wasm32(), 8);
+        assert_eq!(sizes.size(&exported).size_wasm64(), 16);
+        assert_eq!(sizes.align(&exported), Alignment::Pointer);
+
+        // A `borrow` of an imported resource is an `i32` handle.
+        let imported = record("imported");
+        assert_eq!(sizes.size(&imported), ArchitectureSize::new(8, 0));
+        assert_eq!(
+            sizes.align(&imported),
+            Alignment::Bytes(NonZeroUsize::new(4).unwrap())
+        );
     }
 }

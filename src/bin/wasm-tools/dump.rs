@@ -111,7 +111,7 @@ impl<'a> Dump<'a> {
                         if explicit {
                             me.print(offset)?;
                         }
-                        write!(me.state, "[type {}] {ty:?}", inc(&mut i.core_types))?;
+                        write!(me.state, "[type {}] {ty}", inc(&mut i.core_types))?;
                     }
                     me.print(end)
                 })?,
@@ -285,11 +285,15 @@ impl<'a> Dump<'a> {
                     Ok(())
                 })?,
 
-                Payload::CodeSectionStart { count, range, size } => {
+                Payload::CodeSectionStart {
+                    count,
+                    unchecked_range,
+                    size,
+                } => {
                     write!(self.state, "code section")?;
-                    self.color_print(range.start)?;
+                    self.color_print(unchecked_range.start)?;
                     write!(self.state, "{count} count")?;
-                    self.print(range.end - size as u64)?;
+                    self.print(unchecked_range.end - size as u64)?;
                 }
 
                 Payload::CodeSectionEntry(body) => {
@@ -481,6 +485,7 @@ impl<'a> Dump<'a> {
                             | CanonicalFunction::StreamNew { .. }
                             | CanonicalFunction::StreamRead { .. }
                             | CanonicalFunction::StreamWrite { .. }
+                            | CanonicalFunction::StreamForward { .. }
                             | CanonicalFunction::StreamCancelRead { .. }
                             | CanonicalFunction::StreamCancelWrite { .. }
                             | CanonicalFunction::StreamDropReadable { .. }
@@ -488,6 +493,7 @@ impl<'a> Dump<'a> {
                             | CanonicalFunction::FutureNew { .. }
                             | CanonicalFunction::FutureRead { .. }
                             | CanonicalFunction::FutureWrite { .. }
+                            | CanonicalFunction::FutureForward { .. }
                             | CanonicalFunction::FutureCancelRead { .. }
                             | CanonicalFunction::FutureCancelWrite { .. }
                             | CanonicalFunction::FutureDropReadable { .. }
@@ -534,7 +540,7 @@ impl<'a> Dump<'a> {
                     self.print(c.data_offset())?;
                     match c.as_known() {
                         KnownCustom::Name(iter) => {
-                            self.print_subsections(iter, |me, item, pos| {
+                            self.print_subsections(iter.sections, |me, item, pos| {
                                 me.print_core_name(item, pos)
                             })?;
                         }
@@ -643,10 +649,14 @@ impl<'a> Dump<'a> {
     }
 
     fn print_name_map(&mut self, thing: &str, n: NameMap<'_>) -> Result<()> {
-        self.section(n, &format!("{thing} name"), |me, end, naming| {
-            write!(me.state, "{naming:?}")?;
-            me.print(end)
-        })
+        self.section(
+            n.names.into(),
+            &format!("{thing} name"),
+            |me, end, naming| {
+                write!(me.state, "{naming:?}")?;
+                me.print(end)
+            },
+        )
     }
 
     fn print_indirect_name_map(
@@ -655,7 +665,7 @@ impl<'a> Dump<'a> {
         thing_b: &str,
         n: IndirectNameMap<'_>,
     ) -> Result<()> {
-        self.section(n, thing_b, |me, _end, naming| {
+        self.section(n.names.into(), thing_b, |me, _end, naming| {
             write!(me.state, "{} {} ", thing_a, naming.index)?;
             me.print_name_map(thing_b, naming.names)
         })
@@ -719,6 +729,8 @@ impl<'a> Dump<'a> {
             Name::Data(n) => self.print_name_map("data", n)?,
             Name::Field(n) => self.print_indirect_name_map("type", "field", n)?,
             Name::Tag(n) => self.print_name_map("tag", n)?,
+            Name::Parameter(n) => self.print_indirect_name_map("func", "param", n)?,
+            Name::TagParameter(n) => self.print_indirect_name_map("tag", "param", n)?,
             Name::Unknown { ty, range, .. } => {
                 write!(self.state, "unknown names: {ty}")?;
                 self.print(range.start)?;
@@ -776,6 +788,10 @@ impl<'a> Dump<'a> {
                 write!(me.state, "{item:?}")?;
                 me.print(pos)
             }),
+            Linking::TargetArch(arch) => {
+                write!(self.state, "target arch: {arch:?}")?;
+                self.print(end)
+            }
             Linking::Unknown { ty, range, .. } => {
                 write!(self.state, "unknown subsection: {ty}")?;
                 self.print(range.start)?;

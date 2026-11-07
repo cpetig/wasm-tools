@@ -89,12 +89,20 @@ impl<T: WasmType> Display for DisplayType<'_, T> {
                 }
                 f.write_str(" }")
             }
+            WasmTypeKind::Map => {
+                let (key, value) = ty.map_key_value_types().unwrap();
+                write!(f, "map<{}, {}>", DisplayType(&key), DisplayType(&value))
+            }
             simple => Display::fmt(&simple, f),
         }
     }
 }
 
 /// Implements a WAVE-formatted [`Display`] for a [`WasmValue`].
+///
+/// Formatting fails with [`core::fmt::Error`] if the value can't be encoded as
+/// WAVE; use [`to_string`](crate::to_string) to get a
+/// [`WriterError`](crate::writer::WriterError) describing why instead.
 pub struct DisplayValue<'a, T: WasmValue>(pub &'a T);
 
 impl<T: WasmValue> Display for DisplayValue<'_, T> {
@@ -219,6 +227,18 @@ mod tests {
             (
                 Type::flags(["read", "write"]).unwrap(),
                 "flags { read, write }",
+            ),
+            (
+                Type::map(Type::STRING, Type::U32).unwrap(),
+                "map<string, u32>",
+            ),
+            (
+                Type::map(
+                    Type::CHAR,
+                    Type::map(Type::BOOL, Type::list(Type::U8)).unwrap(),
+                )
+                .unwrap(),
+                "map<char, map<bool, list<u8>>>",
             ),
         ] {
             assert_eq!(ty.to_string(), expected);

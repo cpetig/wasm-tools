@@ -1,5 +1,5 @@
 use crate::encoding::types::{TypeEncodingMaps, ValtypeEncoder, extern_name};
-use anyhow::Result;
+use anyhow::{Result, bail};
 use indexmap::IndexSet;
 use std::collections::HashMap;
 use std::mem;
@@ -24,8 +24,8 @@ use wit_parser::*;
 ///
 /// The binary returned can be [`decode`d](crate::decode) to recover the WIT
 /// package provided.
-pub fn encode(resolve: &Resolve, package: PackageId) -> Result<Vec<u8>> {
-    let mut component = encode_component(resolve, package)?;
+pub fn encode(resolve: &Resolve, package: PackageId, canonical_names: bool) -> Result<Vec<u8>> {
+    let mut component = encode_component(resolve, package, canonical_names)?;
     component.raw_custom_section(&crate::base_producers().raw_custom_section());
     Ok(component.finish())
 }
@@ -48,11 +48,16 @@ pub fn encode(resolve: &Resolve, package: PackageId) -> Result<Vec<u8>> {
 ///
 /// The binary returned can be [`decode`d](crate::decode) to recover the WIT
 /// package provided.
-pub fn encode_component(resolve: &Resolve, package: PackageId) -> Result<ComponentBuilder> {
+pub fn encode_component(
+    resolve: &Resolve,
+    package: PackageId,
+    canonical_names: bool,
+) -> Result<ComponentBuilder> {
     let mut encoder = Encoder {
         component: ComponentBuilder::default(),
         resolve,
         package,
+        canonical_names,
     };
     encoder.run()?;
 
@@ -66,7 +71,11 @@ pub fn encode_component(resolve: &Resolve, package: PackageId) -> Result<Compone
 }
 
 /// Encodes a `world` as a component type.
-pub fn encode_world(resolve: &Resolve, world_id: WorldId) -> Result<ComponentType> {
+pub fn encode_world(
+    resolve: &Resolve,
+    world_id: WorldId,
+    canonical_names: bool,
+) -> Result<ComponentType> {
     let mut component = InterfaceEncoder::new(resolve);
     let world = &resolve.worlds[world_id];
     log::trace!("encoding world {}", world.name);
@@ -93,9 +102,10 @@ pub fn encode_world(resolve: &Resolve, world_id: WorldId) -> Result<ComponentTyp
                 continue;
             }
         };
-        component
-            .outer
-            .import(component_extern_name(resolve, key, import), ty);
+        component.outer.import(
+            component_extern_name(resolve, key, import, canonical_names),
+            ty,
+        );
     }
     // Encode the exports
     for (key, export) in world.exports.iter() {
@@ -113,24 +123,68 @@ pub fn encode_world(resolve: &Resolve, world_id: WorldId) -> Result<ComponentTyp
             }
             WorldItem::Type { .. } => unreachable!(),
         };
-        component
-            .outer
-            .export(component_extern_name(resolve, key, export), ty);
+        component.outer.export(
+            component_extern_name(resolve, key, export, canonical_names),
+            ty,
+        );
     }
 
     Ok(component.outer)
 }
 
-fn component_extern_name(
+pub(crate) fn component_extern_name(
     resolve: &Resolve,
     key: &WorldKey,
     item: &WorldItem,
+    canonical_names: bool,
 ) -> wasm_encoder::ComponentExternName<'static> {
+    let interface = match key {
+        WorldKey::Interface(id) => Some(*id),
+        WorldKey::Name(_) => None,
+    };
+    interface_extern_name(
+        resolve,
+        &resolve.name_world_key(key),
+        interface,
+        resolve.implements_interface(key, item),
+        resolve.external_id_value(key, item),
+        canonical_names,
+    )
+}
+
+/// Returns the name of an import or export named `name`.
+///
+/// `interface` is the interface that `name` refers to when `name` is an
+/// interface name, and `implements` is the interface that a plain `name`
+/// implements. With `canonical_names` these interfaces are named by their
+/// canonicalized interface names with the rest of their version in the
+/// `version-suffix`.
+pub(crate) fn interface_extern_name(
+    resolve: &Resolve,
+    name: &str,
+    interface: Option<InterfaceId>,
+    implements: Option<InterfaceId>,
+    external_id: Option<String>,
+    canonical_names: bool,
+) -> ComponentExternName<'static> {
+    let (name, implements, version_suffix) = if canonical_names {
+        let canonical = |id| resolve.canonicalized_id_of(id).unwrap();
+        (
+            interface.map_or_else(|| name.to_string(), canonical),
+            implements.map(canonical),
+            interface
+                .or(implements)
+                .and_then(|id| resolve.version_suffix_of(id)),
+        )
+    } else {
+        let implements = implements.map(|id| resolve.id_of(id).unwrap());
+        (name.to_string(), implements, None)
+    };
     ComponentExternName {
-        name: resolve.name_world_key(key).into(),
-        implements: resolve.implements_value(key, item).map(|s| s.into()),
-        external_id: resolve.external_id_value(key, item).map(|s| s.into()),
-        version_suffix: None,
+        name: name.into(),
+        implements: implements.map(|s| s.into()),
+        external_id: external_id.map(|s| s.into()),
+        version_suffix: version_suffix.map(|s| s.into()),
     }
 }
 
@@ -138,6 +192,7 @@ struct Encoder<'a> {
     component: ComponentBuilder,
     resolve: &'a Resolve,
     package: PackageId,
+    canonical_names: bool,
 }
 
 impl Encoder<'_> {
@@ -153,7 +208,7 @@ impl Encoder<'_> {
         // For each `world` encode it directly as a component and then create a
         // wrapper component that exports that component.
         for (name, &world) in self.resolve.packages[self.package].worlds.iter() {
-            let component_ty = encode_world(self.resolve, world)?;
+            let component_ty = encode_world(self.resolve, world, self.canonical_names)?;
 
             let world = &self.resolve.worlds[world];
             let mut wrapper = ComponentType::new();
@@ -197,11 +252,20 @@ impl Encoder<'_> {
         for interface in interfaces {
             encoder.interface = Some(interface);
             let iface = &self.resolve.interfaces[interface];
-            let name = self.resolve.id_of(interface).unwrap();
+            let extern_name = interface_extern_name(
+                self.resolve,
+                &self.resolve.id_of(interface).unwrap(),
+                Some(interface),
+                None,
+                None,
+                self.canonical_names,
+            );
             if interface == id {
                 let idx = encoder.encode_instance(interface)?;
                 log::trace!("exporting self as {idx}");
-                encoder.outer.export(name, ComponentTypeRef::Instance(idx));
+                encoder
+                    .outer
+                    .export(extern_name, ComponentTypeRef::Instance(idx));
             } else {
                 encoder.push_instance();
                 for (_, id) in iface.types.iter() {
@@ -212,7 +276,9 @@ impl Encoder<'_> {
                 encoder.outer.ty().instance(&instance);
                 encoder.import_map.insert(interface, encoder.instances);
                 encoder.instances += 1;
-                encoder.outer.import(name, ComponentTypeRef::Instance(idx));
+                encoder
+                    .outer
+                    .import(extern_name, ComponentTypeRef::Instance(idx));
             }
         }
 
@@ -380,9 +446,21 @@ impl<'a> ValtypeEncoder<'a> for InterfaceEncoder<'a> {
     fn interface(&self) -> Option<InterfaceId> {
         self.interface
     }
-    fn import_type(&mut self, owner: InterfaceId, id: TypeId) -> u32 {
+    fn import_type(&mut self, owner: InterfaceId, id: TypeId) -> Result<u32> {
         let ty = &self.resolve.types[id];
-        let instance = self.import_map[&owner];
+        let Some(&instance) = self.import_map.get(&owner) else {
+            let name = ty.name.as_deref().unwrap_or_default();
+            let dep = self.resolve.id_of(owner).unwrap_or_default();
+            match self.interface.and_then(|id| self.resolve.id_of(id)) {
+                Some(user) => bail!(
+                    "interface `{user}` uses type `{name}` from interface `{dep}`, which the \
+                     world doesn't import before `{user}`"
+                ),
+                None => bail!(
+                    "type `{name}` from interface `{dep}` is used before the world imports `{dep}`"
+                ),
+            }
+        };
         let outer_idx = *self.outer_type_map.entry(id).or_insert_with(|| {
             let ret = self.outer.type_count();
             self.outer.alias(Alias::InstanceExport {
@@ -400,9 +478,9 @@ impl<'a> ValtypeEncoder<'a> for InterfaceEncoder<'a> {
                     index: outer_idx,
                     kind: ComponentOuterAliasKind::Type,
                 });
-                ret
+                Ok(ret)
             }
-            None => outer_idx,
+            None => Ok(outer_idx),
         }
     }
 }

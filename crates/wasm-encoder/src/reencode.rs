@@ -693,7 +693,7 @@ pub mod utils {
             let data_range = start as usize..end;
             data.get(data_range).ok_or(Error::InvalidCodeSectionSize)
         };
-        for section in parser.parse_all(data) {
+        for section in parser.clone().parse_all(data) {
             match section? {
                 wasmparser::Payload::Version {
                     encoding: wasmparser::Encoding::Module,
@@ -833,7 +833,9 @@ pub mod utils {
                     reencoder.parse_data_section(&mut data, section)?;
                     module.section(&data);
                 }
-                wasmparser::Payload::CodeSectionStart { range, .. } => {
+                wasmparser::Payload::CodeSectionStart {
+                    unchecked_range, ..
+                } => {
                     handle_intersperse_section_hook(
                         reencoder,
                         module,
@@ -846,8 +848,8 @@ pub mod utils {
                     // does not give us here) and recurse with that. This means
                     // that users overriding `parse_code_section` always get
                     // that function called.
-                    let section = get_original_section(range.clone())?;
-                    let reader = wasmparser::BinaryReader::new(section, range.start);
+                    let section = get_original_section(unchecked_range.clone())?;
+                    let reader = parser.binary_reader(section, unchecked_range.start);
                     let section = wasmparser::CodeSectionReader::new(reader)?;
                     reencoder.parse_code_section(&mut codes, section)?;
                     module.section(&codes);
@@ -943,7 +945,23 @@ pub mod utils {
         Ok(crate::MemArg {
             offset: arg.offset,
             align: arg.align.into(),
-            memory_index: reencoder.memory_index(arg.memory)?,
+            target: match arg.target {
+                wasmparser::MemArgTarget::Memory(i) => {
+                    crate::MemArgTarget::Memory(reencoder.memory_index(i)?)
+                }
+                wasmparser::MemArgTarget::Array(ty) => {
+                    crate::MemArgTarget::Array(reencoder.type_index(ty)?)
+                }
+            },
+            ordering: match arg.ordering {
+                None => None,
+                Some(wasmparser::MemArgOrdering::Op(o)) => {
+                    Some(crate::MemArgOrdering::Op(reencoder.ordering(o)?))
+                }
+                Some(wasmparser::MemArgOrdering::Rmw(o)) => {
+                    Some(crate::MemArgOrdering::Rmw(reencoder.ordering(o)?))
+                }
+            },
         })
     }
 
@@ -1149,10 +1167,11 @@ pub mod utils {
     ) -> Result<crate::SubType, Error<T::Error>> {
         Ok(crate::SubType {
             is_final: sub_ty.is_final,
-            supertype_idx: sub_ty
-                .supertype_idx
+            supertype_idxs: sub_ty
+                .supertype_idxs
+                .iter()
                 .map(|i| reencoder.type_index_unpacked(i.unpack()))
-                .transpose()?,
+                .collect::<Result<Vec<_>, _>>()?,
             composite_type: reencoder.composite_type(sub_ty.composite_type)?,
         })
     }
@@ -1891,6 +1910,12 @@ pub mod utils {
             }
             wasmparser::Name::Field(map) => {
                 names.fields(&indirect_name_map(map, |i| reencoder.type_index(i))?);
+            }
+            wasmparser::Name::Parameter(map) => {
+                names.parameters(&indirect_name_map(map, |i| reencoder.type_index(i))?);
+            }
+            wasmparser::Name::TagParameter(map) => {
+                names.tag_parameters(&indirect_name_map(map, |i| reencoder.tag_index(i))?);
             }
             wasmparser::Name::Unknown { ty, data, .. } => {
                 names.raw(ty, data);

@@ -12,13 +12,15 @@ Options:
   -g
           Shorthand for `--generate-dwarf full`
   -f, --features <FEATURES>
-          Comma-separated list of WebAssembly features to enable during
-          validation
+          Comma-separated list of WebAssembly features to enable during parsing
+          and validation
   -v, --verbose...
           Use verbose output (-v info, -vv debug, -vvv trace)
       --color <COLOR>
           Configuration over whether terminal colors are used in output
           [default: auto]
+      --validate-custom
+          Opt-in to validating the contents of custom sections
   -h, --help
           Print help (see more with '--help')
 

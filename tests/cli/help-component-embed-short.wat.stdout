@@ -27,11 +27,14 @@ Options:
           The expected string encoding format for the component
   -w, --world <WORLD>
           The world that the component uses
+      --emit-canonical-names
+          Emits canonical interface names with version suffixes
       --dummy
           Don't read a core wasm module as input, instead generating a "dummy"
           module as a placeholder
       --dummy-names <DUMMY_NAMES>
           Same as `--dummy`, but the style of core wasm names is specified
+          [possible values: standard32, legacy, legacy64]
       --async-callback
           With `--dummy-names legacy`, this will generate a core module such
           that all the imports are lowered using the async ABI and the exports

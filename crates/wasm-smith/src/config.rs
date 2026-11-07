@@ -748,6 +748,22 @@ define_config! {
         /// Defaults to `false`.
         pub wide_arithmetic_enabled: bool = true,
 
+        /// Determines whether the [acquire-release-atomics proposal] is
+        /// enabled.
+        ///
+        /// [acquire-release-atomics proposal]: https://github.com/WebAssembly/acquire-release-atomics
+        ///
+        /// Defaults to `false`.
+        pub acquire_release_atomics_enabled: bool = false,
+
+        /// Determines whether the [multibyte-array-access proposal] is
+        /// enabled.
+        ///
+        /// [multibyte-array-access proposal]: https://github.com/WebAssembly/multibyte-array-access
+        ///
+        /// Defaults to `false`.
+        pub multibyte_array_access_enabled: bool = false,
+
         /// Determines whether the [extended-const proposal] is enabled.
         ///
         /// [extended-const proposal]: https://github.com/WebAssembly/extended-const
@@ -912,6 +928,8 @@ impl<'a> Arbitrary<'a> for Config {
             // Proposals that are not stage4+ are disabled by default.
             custom_page_sizes_enabled: false,
             wide_arithmetic_enabled: false,
+            acquire_release_atomics_enabled: false,
+            multibyte_array_access_enabled: false,
             shared_everything_threads_enabled: false,
             custom_descriptors_enabled: false,
         };
@@ -947,6 +965,7 @@ impl Config {
         if !self.gc_enabled {
             self.shared_everything_threads_enabled = false;
             self.custom_descriptors_enabled = false;
+            self.multibyte_array_access_enabled = false;
         }
 
         // If simd is disabled then disable all relaxed simd instructions as
@@ -959,6 +978,7 @@ impl Config {
         // without threads, which it is built on.
         if !self.threads_enabled {
             self.shared_everything_threads_enabled = false;
+            self.acquire_release_atomics_enabled = false;
         }
 
         // If module_shape is present then disable available_imports and exports.
@@ -1012,6 +1032,14 @@ impl Config {
         );
         features.set(WasmFeatures::EXTENDED_CONST, self.extended_const_enabled);
         features.set(WasmFeatures::WIDE_ARITHMETIC, self.wide_arithmetic_enabled);
+        features.set(
+            WasmFeatures::ACQUIRE_RELEASE_ATOMICS,
+            self.acquire_release_atomics_enabled,
+        );
+        features.set(
+            WasmFeatures::MULTIBYTE_ARRAY_ACCESS,
+            self.multibyte_array_access_enabled,
+        );
         features.set(
             WasmFeatures::CUSTOM_DESCRIPTORS,
             self.custom_descriptors_enabled,

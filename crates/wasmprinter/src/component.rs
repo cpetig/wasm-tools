@@ -408,7 +408,7 @@ impl Printer<'_, '_> {
         }
         if let Some(version_suffix) = version_suffix {
             self.result.write_str(" ")?;
-            self.start_group("versionsuffix ")?;
+            self.start_group("version-suffix ")?;
             self.print_str(version_suffix)?;
             self.end_group()?;
         }
@@ -462,6 +462,24 @@ impl Printer<'_, '_> {
         Ok(&states[states.len() - count - 1])
     }
 
+    /// Prints the `count` of an outer alias as the identifier of the scope it
+    /// refers to, unless a scope in between has the same identifier, which
+    /// the identifier would refer to instead.
+    fn print_outer_count(&mut self, states: &[State], count: u32) -> Result<()> {
+        if let Some(i) = states.len().checked_sub(count as usize + 1) {
+            if let Some(name) = &states[i].name {
+                let shadowed = states[i + 1..]
+                    .iter()
+                    .any(|s| s.name.as_ref() == Some(name));
+                if !shadowed {
+                    return name.write_identifier(self);
+                }
+            }
+        }
+        write!(self.result, "{count}")?;
+        Ok(())
+    }
+
     pub(crate) fn print_outer_alias(
         &mut self,
         states: &mut [State],
@@ -479,11 +497,7 @@ impl Printer<'_, '_> {
             }
         };
         self.start_group("alias outer ")?;
-        if let Some(name) = outer.name.as_ref() {
-            name.write(self)?;
-        } else {
-            write!(self.result, "{count}")?;
-        }
+        self.print_outer_count(states, count)?;
         self.result.write_str(" ")?;
         match kind {
             OuterAliasKind::Type => {
@@ -1043,6 +1057,11 @@ impl Printer<'_, '_> {
                         me.print_canonical_options(state, &options)
                     })?;
                 }
+                CanonicalFunction::StreamForward { ty } => {
+                    self.print_intrinsic(state, "canon stream.forward ", &|me, state| {
+                        me.print_idx(&state.component.type_names, ty)
+                    })?;
+                }
                 CanonicalFunction::StreamCancelRead { ty, async_ } => {
                     self.print_intrinsic(state, "canon stream.cancel-read ", &|me, state| {
                         me.print_idx(&state.component.type_names, ty)?;
@@ -1086,6 +1105,11 @@ impl Printer<'_, '_> {
                     self.print_intrinsic(state, "canon future.write ", &|me, state| {
                         me.print_idx(&state.component.type_names, ty)?;
                         me.print_canonical_options(state, &options)
+                    })?;
+                }
+                CanonicalFunction::FutureForward { ty } => {
+                    self.print_intrinsic(state, "canon future.forward ", &|me, state| {
+                        me.print_idx(&state.component.type_names, ty)
                     })?;
                 }
                 CanonicalFunction::FutureCancelRead { ty, async_ } => {
@@ -1434,11 +1458,7 @@ impl Printer<'_, '_> {
                     }
                 };
                 self.start_group("alias outer ")?;
-                if let Some(name) = outer.name.as_ref() {
-                    name.write(self)?;
-                } else {
-                    write!(self.result, "{count}")?;
-                }
+                self.print_outer_count(states, count)?;
                 self.result.write_str(" ")?;
                 match kind {
                     ComponentOuterAliasKind::CoreModule => {

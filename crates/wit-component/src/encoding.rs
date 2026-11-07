@@ -72,6 +72,7 @@
 //! component model.
 
 use crate::StringEncoding;
+use crate::encoding::wit::{component_extern_name, interface_extern_name};
 use crate::metadata::{self, Bindgen, ModuleMetadata};
 use crate::validation::{
     Export, ExportMap, Import, ImportInstance, ImportMap, PayloadInfo, PayloadType,
@@ -87,7 +88,7 @@ use wasm_encoder::*;
 use wasmparser::{Validator, WasmFeatures};
 use wit_parser::{
     Function, FunctionKind, InterfaceId, LiveTypes, Param, Resolve, Stability, Type, TypeDefKind,
-    TypeId, TypeOwner, WorldItem, WorldKey,
+    TypeId, TypeOwner, WorldId, WorldItem, WorldKey,
     abi::{AbiVariant, WasmSignature, WasmType},
 };
 
@@ -110,15 +111,13 @@ mod dedupe;
 pub(crate) use dedupe::ModuleImportMap;
 use wasm_metadata::AddMetadataField;
 
-fn to_val_type(ty: &WasmType) -> ValType {
+fn to_wasm_type(ty: &wasmparser::ValType) -> WasmType {
     match ty {
-        WasmType::I32 => ValType::I32,
-        WasmType::I64 => ValType::I64,
-        WasmType::F32 => ValType::F32,
-        WasmType::F64 => ValType::F64,
-        WasmType::Pointer => ValType::I32,
-        WasmType::PointerOrI64 => ValType::I64,
-        WasmType::Length => ValType::I32,
+        wasmparser::ValType::I32 => WasmType::I32,
+        wasmparser::ValType::I64 => WasmType::I64,
+        wasmparser::ValType::F32 => WasmType::F32,
+        wasmparser::ValType::F64 => WasmType::F64,
+        _ => unreachable!(),
     }
 }
 
@@ -135,14 +134,20 @@ fn import_func_name(f: &Function) -> String {
         // There's probably a better and more "formal" way to do this
         // but quick-and-dirty string manipulation should work well
         // enough for now hopefully.
-        FunctionKind::Method(_)
+        FunctionKind::Getter
+        | FunctionKind::Setter
+        | FunctionKind::Method(_)
+        | FunctionKind::MethodGetter(_)
+        | FunctionKind::MethodSetter(_)
         | FunctionKind::AsyncMethod(_)
         | FunctionKind::Static(_)
+        | FunctionKind::StaticGetter(_)
+        | FunctionKind::StaticSetter(_)
         | FunctionKind::AsyncStatic(_)
         | FunctionKind::Constructor(_) => {
             format!(
                 "import-{}",
-                f.name.replace('[', "").replace([']', '.', ' '], "-")
+                f.name.replace('[', "").replace([']', '.'], "-")
             )
         }
     }
@@ -167,8 +172,13 @@ bitflags::bitflags! {
 }
 
 impl RequiredOptions {
-    fn for_import(resolve: &Resolve, func: &Function, abi: AbiVariant) -> RequiredOptions {
-        let sig = resolve.wasm_signature(abi, func);
+    fn for_import(
+        resolve: &Resolve,
+        world: WorldId,
+        func: &Function,
+        abi: AbiVariant,
+    ) -> RequiredOptions {
+        let sig = resolve.wasm_signature(world, abi, func);
         let mut ret = RequiredOptions::empty();
         // Lift the params and lower the results for imports
         ret.add_lift(TypeContents::for_types(
@@ -188,8 +198,13 @@ impl RequiredOptions {
         ret
     }
 
-    fn for_export(resolve: &Resolve, func: &Function, abi: AbiVariant) -> RequiredOptions {
-        let sig = resolve.wasm_signature(abi, func);
+    fn for_export(
+        resolve: &Resolve,
+        world: WorldId,
+        func: &Function,
+        abi: AbiVariant,
+    ) -> RequiredOptions {
+        let sig = resolve.wasm_signature(world, abi, func);
         let mut ret = RequiredOptions::empty();
         // Lower the params and lift the results for exports
         ret.add_lower(TypeContents::for_types(
@@ -209,13 +224,14 @@ impl RequiredOptions {
         }
         if let AbiVariant::GuestExportAsync | AbiVariant::GuestExportAsyncStackful = abi {
             ret |= RequiredOptions::ASYNC;
-            ret |= task_return_options_and_type(resolve, func).0;
+            ret |= task_return_options_and_type(resolve, world, func).0;
         }
         ret
     }
 
     fn for_payload(
         resolve: &Resolve,
+        world: WorldId,
         info: &PayloadInfo,
         kind: &PayloadFuncKind,
         async_: bool,
@@ -228,6 +244,7 @@ impl RequiredOptions {
         RequiredOptions::MEMORY
             | RequiredOptions::for_import(
                 resolve,
+                world,
                 &Function {
                     name: String::new(),
                     kind: FunctionKind::Freestanding,
@@ -609,15 +626,21 @@ impl<'a> EncodingState<'a> {
         let instance_type_idx = self
             .component
             .type_instance(Some(&format!("ty-{name}")), &ty);
-        let instance_idx = self.component.import(
-            wasm_encoder::ComponentExternName {
-                name: name.into(),
-                implements: info.implements.as_deref().map(|s| s.into()),
-                external_id: info.external_id.as_deref().map(|s| s.into()),
-                version_suffix: None,
-            },
-            ComponentTypeRef::Instance(instance_type_idx),
+
+        // `name` is the interface's name unless it's a plain name, which is the
+        // case for imports with `implements` and of anonymous interfaces.
+        let is_interface_name = info.implements.is_none() && interface.name.is_some();
+        let extern_name = interface_extern_name(
+            resolve,
+            name,
+            is_interface_name.then_some(interface_id),
+            info.implements,
+            info.external_id.clone(),
+            self.info.encoder.emit_canonical_names,
         );
+        let instance_idx = self
+            .component
+            .import(extern_name, ComponentTypeRef::Instance(instance_type_idx));
         let prev = self.instances.insert(interface_id, instance_idx);
         assert!(prev.is_none());
         Ok(())
@@ -748,7 +771,7 @@ impl<'a> EncodingState<'a> {
                 | Export::WorldFuncPostReturn(..)
                 | Export::InterfaceFuncPostReturn(..)
                 | Export::ResourceDtor(..)
-                | Export::Memory
+                | Export::Memory(_)
                 | Export::GeneralPurposeRealloc
                 | Export::GeneralPurposeExportRealloc
                 | Export::GeneralPurposeImportRealloc
@@ -762,7 +785,11 @@ impl<'a> EncodingState<'a> {
         let world = &resolve.worlds[self.info.encoder.metadata.world];
 
         for export_name in exports {
-            let export_string = resolve.name_world_key(export_name);
+            let export_string = if self.info.encoder.emit_canonical_names {
+                resolve.name_canonicalized_world_key(export_name)
+            } else {
+                resolve.name_world_key(export_name)
+            };
             match &world.exports[export_name] {
                 WorldItem::Function(func) => {
                     let ty = self
@@ -993,13 +1020,10 @@ impl<'a> EncodingState<'a> {
             component_index,
             imports,
         );
+        let extern_name =
+            component_extern_name(resolve, key, item, self.info.encoder.emit_canonical_names);
         let idx = self.component.export(
-            wasm_encoder::ComponentExternName {
-                name: export_name.into(),
-                implements: resolve.implements_value(key, item).map(|s| s.into()),
-                external_id: resolve.external_id_value(key, item).map(|s| s.into()),
-                version_suffix: None,
-            },
+            extern_name,
             ComponentExportKind::Instance,
             instance_index,
             None,
@@ -1070,7 +1094,7 @@ impl<'a> EncodingState<'a> {
                     ret
                 }
             }
-            fn import_type(&mut self, _: InterfaceId, _id: TypeId) -> u32 {
+            fn import_type(&mut self, _: InterfaceId, _id: TypeId) -> Result<u32> {
                 unreachable!()
             }
             fn type_encoding_maps(&mut self) -> &mut TypeEncodingMaps<'a> {
@@ -1113,6 +1137,7 @@ impl<'a> EncodingState<'a> {
 
         let options = RequiredOptions::for_export(
             resolve,
+            self.info.encoder.metadata.world,
             func,
             exports
                 .abi(key, func)
@@ -1152,6 +1177,7 @@ impl<'a> EncodingState<'a> {
     fn encode_shim_instantiation(&mut self) -> Result<(Shims<'a>, fixup::FixupModule)> {
         let mut ret = Shims::default();
         let mut fixups = fixup::FixupModule::default();
+        fixups.index_type = self.info.index_type();
 
         ret.append_indirect(self.info, CustomModule::Main)
             .context("failed to register indirect shims for main module")?;
@@ -1236,8 +1262,16 @@ impl<'a> EncodingState<'a> {
         for shim in ret.shims.values() {
             let type_index = intern_type(
                 &mut types,
-                shim.sig.params.iter().map(to_val_type).collect(),
-                shim.sig.results.iter().map(to_val_type).collect(),
+                shim.sig
+                    .params
+                    .iter()
+                    .map(|ty| self.info.index_type().encoder_val_type(ty))
+                    .collect(),
+                shim.sig
+                    .results
+                    .iter()
+                    .map(|ty| self.info.index_type().encoder_val_type(ty))
+                    .collect(),
             );
 
             let trapping_stub = if self.info.encoder.shim_return_call_ref {
@@ -1706,12 +1740,17 @@ impl<'a> EncodingState<'a> {
                             )
                         });
 
-                        // Declare the resource with this destructor and register it in
-                        // our internal map. This should be the first and only time this
-                        // type is inserted into this map.
+                        // Declare the resource with this destructor and
+                        // register it in our internal map. This should be the
+                        // first and only time this type is inserted into this
+                        // map.
+                        //
+                        // Note that the `rep` of this resource is the index
+                        // type for linear memory and isn't otherwise
+                        // customizable at this time.
                         let resource_idx = self.component.type_resource(
                             Some(def.name.as_ref().unwrap()),
-                            ValType::I32,
+                            self.info.index_type().encoder_ptr(),
                             dtor,
                         );
                         let prev = self
@@ -1740,7 +1779,7 @@ impl<'a> EncodingState<'a> {
         // If memory hasn't been defined yet then it's provided by the main
         // module here.
         if self.memory_index.is_none() {
-            if let Some(memory) = self.info.info.exports.memory() {
+            if let Some((memory, _)) = self.info.info.exports.memory() {
                 self.memory_index = Some(self.core_alias_export(
                     Some("memory"),
                     instance_index,
@@ -1909,7 +1948,8 @@ impl<'a> EncodingState<'a> {
                 )
             }
             Import::ExportedTaskReturn(key, interface, func) => {
-                let (options, _sig) = task_return_options_and_type(resolve, func);
+                let (options, _sig) =
+                    task_return_options_and_type(resolve, self.info.encoder.metadata.world, func);
                 let result_ty = func.result;
                 if options.is_empty() || self.memory_index.is_some() {
                     // Note that an "import type encoder" is used here despite
@@ -2006,6 +2046,11 @@ impl<'a> EncodingState<'a> {
                 PayloadFuncKind::StreamWrite,
                 *async_,
             ),
+            Import::StreamForward(info) => {
+                let ty = self.payload_type_index(info)?;
+                let index = self.component.stream_forward(ty);
+                Ok((ExportKind::Func, index))
+            }
             Import::StreamCancelRead { info, async_ } => {
                 let ty = self.payload_type_index(info)?;
                 let index = self.component.stream_cancel_read(ty, *async_);
@@ -2045,6 +2090,11 @@ impl<'a> EncodingState<'a> {
                 PayloadFuncKind::FutureWrite,
                 *async_,
             ),
+            Import::FutureForward(info) => {
+                let ty = self.payload_type_index(info)?;
+                let index = self.component.future_forward(ty);
+                Ok((ExportKind::Func, index))
+            }
             Import::FutureCancelRead { info, async_ } => {
                 let ty = self.payload_type_index(info)?;
                 let index = self.component.future_cancel_read(ty, *async_);
@@ -2138,11 +2188,10 @@ impl<'a> EncodingState<'a> {
                 let index = self.component.thread_index();
                 Ok((ExportKind::Func, index))
             }
-            Import::ThreadNewIndirect => Ok(self.materialize_shim_import(
+            Import::ThreadNewIndirect { closure_ty, .. } => Ok(self.materialize_shim_import(
                 shims,
                 &ShimKind::ThreadNewIndirect {
-                    // This is fixed for now
-                    func_ty: FuncType::new([ValType::I32], []),
+                    func_ty: FuncType::new([(*closure_ty).try_into()?], []),
                 },
             )),
             Import::ThreadResumeLater => {
@@ -2229,7 +2278,8 @@ impl<'a> EncodingState<'a> {
             return Ok(self.materialize_shim_import(shims, &shim_kind));
         }
         let resolve = &self.info.encoder.metadata.resolve;
-        let options = RequiredOptions::for_payload(resolve, info, &kind, async_);
+        let world = self.info.encoder.metadata.world;
+        let options = RequiredOptions::for_payload(resolve, world, info, &kind, async_);
         let func = self.encode_payload_func(
             shims,
             &for_module,
@@ -2649,10 +2699,12 @@ impl<'a> Shims<'a> {
                 | Import::SubtaskCancel { .. }
                 | Import::FutureNew(..)
                 | Import::StreamNew(..)
+                | Import::FutureForward { .. }
                 | Import::FutureCancelRead { .. }
                 | Import::FutureCancelWrite { .. }
                 | Import::FutureDropWritable { .. }
                 | Import::FutureDropReadable { .. }
+                | Import::StreamForward { .. }
                 | Import::StreamCancelRead { .. }
                 | Import::StreamCancelWrite { .. }
                 | Import::StreamDropWritable { .. }
@@ -2677,7 +2729,8 @@ impl<'a> Shims<'a> {
                 // for it, otherwise skip the shim and let it get materialized
                 // naturally later.
                 Import::ExportedTaskReturn(key, interface, func) => {
-                    let (options, sig) = task_return_options_and_type(resolve, func);
+                    let (options, sig) =
+                        task_return_options_and_type(resolve, world.encoder.metadata.world, func);
                     if options.is_empty() || memory_available {
                         continue;
                     }
@@ -2715,7 +2768,7 @@ impl<'a> Shims<'a> {
                         *async_,
                         info,
                         PayloadFuncKind::FutureWrite,
-                        vec![WasmType::I32; 2],
+                        vec![WasmType::I32, WasmType::Pointer],
                         vec![WasmType::I32],
                     );
                 }
@@ -2727,7 +2780,7 @@ impl<'a> Shims<'a> {
                         *async_,
                         info,
                         PayloadFuncKind::FutureRead,
-                        vec![WasmType::I32; 2],
+                        vec![WasmType::I32, WasmType::Pointer],
                         vec![WasmType::I32],
                     );
                 }
@@ -2739,8 +2792,8 @@ impl<'a> Shims<'a> {
                         *async_,
                         info,
                         PayloadFuncKind::StreamWrite,
-                        vec![WasmType::I32; 3],
-                        vec![WasmType::I32],
+                        vec![WasmType::I32, WasmType::Pointer, WasmType::Length],
+                        vec![WasmType::Length],
                     );
                 }
                 Import::StreamRead { async_, info } => {
@@ -2751,8 +2804,8 @@ impl<'a> Shims<'a> {
                         *async_,
                         info,
                         PayloadFuncKind::StreamRead,
-                        vec![WasmType::I32; 3],
-                        vec![WasmType::I32],
+                        vec![WasmType::I32, WasmType::Pointer, WasmType::Length],
+                        vec![WasmType::Length],
                     );
                 }
 
@@ -2767,7 +2820,7 @@ impl<'a> Shims<'a> {
                         options: RequiredOptions::empty(),
                         kind: ShimKind::WaitableSetWait,
                         sig: WasmSignature {
-                            params: vec![WasmType::I32; 2],
+                            params: vec![WasmType::I32, WasmType::Pointer],
                             results: vec![WasmType::I32],
                             indirect_params: false,
                             retptr: false,
@@ -2786,7 +2839,7 @@ impl<'a> Shims<'a> {
                         options: RequiredOptions::empty(),
                         kind: ShimKind::WaitableSetPoll,
                         sig: WasmSignature {
-                            params: vec![WasmType::I32; 2],
+                            params: vec![WasmType::I32, WasmType::Pointer],
                             results: vec![WasmType::I32],
                             indirect_params: false,
                             retptr: false,
@@ -2807,7 +2860,7 @@ impl<'a> Shims<'a> {
                             encoding: *encoding,
                         },
                         sig: WasmSignature {
-                            params: vec![WasmType::I32; 2],
+                            params: vec![WasmType::Pointer, WasmType::Length],
                             results: vec![WasmType::I32],
                             indirect_params: false,
                             retptr: false,
@@ -2829,7 +2882,7 @@ impl<'a> Shims<'a> {
                             encoding: *encoding,
                         },
                         sig: WasmSignature {
-                            params: vec![WasmType::I32; 2],
+                            params: vec![WasmType::I32, WasmType::Pointer],
                             results: vec![],
                             indirect_params: false,
                             retptr: false,
@@ -2845,18 +2898,20 @@ impl<'a> Shims<'a> {
                     );
                 }
 
-                Import::ThreadNewIndirect => {
+                Import::ThreadNewIndirect {
+                    table_idx_ty,
+                    closure_ty,
+                } => {
                     let name = self.shims.len().to_string();
                     self.push(Shim {
                         name,
                         debug_name: "thread.new-indirect".to_string(),
                         options: RequiredOptions::empty(),
                         kind: ShimKind::ThreadNewIndirect {
-                            // This is fixed for now
-                            func_ty: FuncType::new([ValType::I32], vec![]),
+                            func_ty: FuncType::new([(*closure_ty).try_into()?], vec![]),
                         },
                         sig: WasmSignature {
-                            params: vec![WasmType::I32; 2],
+                            params: vec![to_wasm_type(table_idx_ty), to_wasm_type(closure_ty)],
                             results: vec![WasmType::I32],
                             indirect_params: false,
                             retptr: false,
@@ -2884,16 +2939,6 @@ impl<'a> Shims<'a> {
                             retptr: false,
                         },
                     });
-
-                    fn to_wasm_type(ty: &wasmparser::ValType) -> WasmType {
-                        match ty {
-                            wasmparser::ValType::I32 => WasmType::I32,
-                            wasmparser::ValType::I64 => WasmType::I64,
-                            wasmparser::ValType::F32 => WasmType::F32,
-                            wasmparser::ValType::F64 => WasmType::F64,
-                            _ => unreachable!(),
-                        }
-                    }
                 }
 
                 // WIT-level functions may require an indirection, so yield some
@@ -2940,7 +2985,7 @@ impl<'a> Shims<'a> {
                     export: export_name,
                 },
                 sig: WasmSignature {
-                    params: vec![WasmType::I32],
+                    params: vec![WasmType::Pointer],
                     results: Vec::new(),
                     indirect_params: false,
                     retptr: false,
@@ -2968,7 +3013,13 @@ impl<'a> Shims<'a> {
         let debug_name = format!("{module}-{}", info.name);
         let name = self.shims.len().to_string();
 
-        let options = RequiredOptions::for_payload(resolve, info, &kind, async_);
+        let options = RequiredOptions::for_payload(
+            resolve,
+            world.encoder.metadata.world,
+            info,
+            &kind,
+            async_,
+        );
         if !options.contains(RequiredOptions::REALLOC)
             && world.info.imports.imported_memory().is_some()
         {
@@ -3106,8 +3157,8 @@ impl<'a> Shims<'a> {
                 export,
             },
             sig: WasmSignature {
-                params: vec![WasmType::I32; 4],
-                results: vec![WasmType::I32],
+                params: vec![WasmType::Pointer; 4],
+                results: vec![WasmType::Pointer],
                 indirect_params: false,
                 retptr: false,
             },
@@ -3170,8 +3221,9 @@ fn payload_realloc_name<'a>(
     }
 }
 
-fn task_return_options_and_type(
+pub(crate) fn task_return_options_and_type(
     resolve: &Resolve,
+    world: WorldId,
     func: &Function,
 ) -> (RequiredOptions, WasmSignature) {
     let func_tmp = Function {
@@ -3192,10 +3244,10 @@ fn task_return_options_and_type(
         external_id: None,
     };
     let abi = AbiVariant::GuestImport;
-    let mut options = RequiredOptions::for_import(resolve, func, abi);
+    let mut options = RequiredOptions::for_import(resolve, world, func, abi);
     // `task.return` does not support a `realloc` canonical option.
     options.remove(RequiredOptions::REALLOC);
-    let sig = resolve.wasm_signature(abi, &func_tmp);
+    let sig = resolve.wasm_signature(world, abi, &func_tmp);
     (options, sig)
 }
 
@@ -3276,6 +3328,7 @@ pub struct ComponentEncoder {
     pub(super) reject_legacy_names: bool,
     debug_names: bool,
     shim_return_call_ref: bool,
+    emit_canonical_names: bool,
 }
 
 impl ComponentEncoder {
@@ -3340,6 +3393,18 @@ impl ComponentEncoder {
     /// This is enabled by default.
     pub fn merge_imports_based_on_semver(&mut self, merge: bool) -> &mut Self {
         self.merge_imports_based_on_semver = Some(merge);
+        self
+    }
+
+    /// Sets whether to emit canonical interface names in the component binary.
+    ///
+    /// When enabled, import/export names use canonical version prefixes (e.g.,
+    /// `wasi:cli/exit@0.2` instead of `wasi:cli/exit@0.2.1`) and the
+    /// `version_suffix` field is populated.
+    ///
+    /// This is disabled by default.
+    pub fn emit_canonical_names(&mut self, emit: bool) -> &mut Self {
+        self.emit_canonical_names = emit;
         self
     }
 
@@ -3472,8 +3537,8 @@ impl ComponentEncoder {
     /// This is used to rename instance imports in the final component.
     ///
     /// For example, if there is an instance import `foo:bar/baz` and it is
-    /// desired that the import actually be an `unlocked-dep` name, then
-    /// `foo:bar/baz` can be mapped to `unlocked-dep=<a:b/c@{>=x.y.z}>`.
+    /// desired that the import actually be named `a:b/c@x.y.z`, then
+    /// `foo:bar/baz` can be mapped to `a:b/c@x.y.z`.
     ///
     /// Note: the replacement names are not validated during encoding unless
     /// the `validate` option is set to true.
@@ -3499,6 +3564,10 @@ impl ComponentEncoder {
             self.metadata
                 .resolve
                 .merge_world_imports_based_on_semver(self.metadata.world)?;
+        }
+
+        if self.emit_canonical_names {
+            check_duplicate_canonical_names(&self.metadata.resolve, self.metadata.world)?;
         }
 
         self.finalize_resolve_with_nominal_ids();
@@ -3625,6 +3694,46 @@ impl ComponentWorld<'_> {
     }
 }
 
+/// Verifies that no two imports, and no two exports, of the world share the
+/// same canonical name.
+pub(crate) fn check_duplicate_canonical_names(resolve: &Resolve, world: WorldId) -> Result<()> {
+    let world = &resolve.worlds[world];
+    let mut names = HashMap::new();
+    for key in world.imports.keys() {
+        let WorldKey::Interface(id) = key else {
+            continue;
+        };
+        let canonical = resolve.canonicalized_id_of(*id).unwrap();
+        if let Some(prev) = names.insert(canonical.clone(), *id) {
+            bail!(
+                "import `{}` and import `{}` both have the canonical name \
+                 `{canonical}`; semver-compatible imports must be merged \
+                 before emitting canonical names",
+                resolve.id_of(prev).unwrap(),
+                resolve.id_of(*id).unwrap(),
+            );
+        }
+    }
+    names.clear();
+    for key in world.exports.keys() {
+        let WorldKey::Interface(id) = key else {
+            continue;
+        };
+        let canonical = resolve.canonicalized_id_of(*id).unwrap();
+        if let Some(prev) = names.insert(canonical.clone(), *id) {
+            bail!(
+                "export `{}` and export `{}` both have the canonical name \
+                 `{canonical}`; semver-compatible versions of the same \
+                 interface cannot both be exported when emitting canonical \
+                 names",
+                resolve.id_of(prev).unwrap(),
+                resolve.id_of(*id).unwrap(),
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(all(test, feature = "dummy-module"))]
 mod test {
     use super::*;
@@ -3655,20 +3764,19 @@ world test {
             .unwrap();
         let world = resolve.select_world(&[pkg], None).unwrap();
 
-        let mut module = dummy_module(&resolve, world, ManglingAndAbi::Standard32);
+        let mut module = dummy_module(
+            &resolve,
+            world,
+            ManglingAndAbi::Standard32,
+            crate::IndexType::I32,
+        );
 
-        embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8).unwrap();
+        embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8, true).unwrap();
 
         let encoded = ComponentEncoder::default()
             .import_name_map(HashMap::from([
-                (
-                    "foo".to_string(),
-                    "unlocked-dep=<foo:bar/foo@{>=1.0.0 <1.1.0}>".to_string(),
-                ),
-                (
-                    "test:wit/i".to_string(),
-                    "locked-dep=<foo:bar/i@1.2.3>".to_string(),
-                ),
+                ("foo".to_string(), "foo:bar/foo@1.0.0".to_string()),
+                ("test:wit/i".to_string(), "foo:bar/i@1.2.3".to_string()),
             ]))
             .module(&module)
             .unwrap()
@@ -3677,7 +3785,9 @@ world test {
             .unwrap();
 
         let wat = wasmprinter::print_bytes(encoded).unwrap();
-        assert!(wat.contains("unlocked-dep=<foo:bar/foo@{>=1.0.0 <1.1.0}>"));
-        assert!(wat.contains("locked-dep=<foo:bar/i@1.2.3>"));
+        assert!(wat.contains("(import \"foo:bar/foo@1.0.0\""));
+        assert!(wat.contains("(import \"foo:bar/i@1.2.3\""));
+        assert!(!wat.contains("(import \"foo\""));
+        assert!(!wat.contains("(import \"test:wit/i\""));
     }
 }

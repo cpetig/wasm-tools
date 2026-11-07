@@ -273,8 +273,13 @@ pub fn encode(
     world: WorldId,
     string_encoding: StringEncoding,
     extra_producers: Option<&Producers>,
+    canonical_names: bool,
 ) -> Result<Vec<u8>> {
-    let ty = crate::encoding::encode_world(resolve, world)?;
+    if canonical_names {
+        crate::encoding::check_duplicate_canonical_names(resolve, world)?;
+    }
+
+    let ty = crate::encoding::encode_world(resolve, world, canonical_names)?;
 
     let world = &resolve.worlds[world];
     let mut outer_ty = ComponentType::new();

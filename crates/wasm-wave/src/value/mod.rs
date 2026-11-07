@@ -12,7 +12,7 @@ mod wit;
 use alloc::{
     borrow::{Cow, ToOwned},
     boxed::Box,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::Arc,
     vec::Vec,
 };
@@ -28,8 +28,8 @@ use crate::{
 };
 
 use self::ty::{
-    EnumType, FlagsType, ListType, OptionType, RecordType, ResultType, TupleType, TypeEnum,
-    VariantType,
+    EnumType, FlagsType, ListType, MapType, OptionType, RecordType, ResultType, TupleType,
+    TypeEnum, VariantType,
 };
 
 pub use self::func::FuncType;
@@ -62,6 +62,7 @@ pub(super) enum ValueEnum {
     Option(OptionValue),
     Result(ResultValue),
     Flags(Flags),
+    Map(Map),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -121,6 +122,13 @@ pub struct Flags {
     flags: Vec<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+#[doc(hidden)]
+pub struct Map {
+    ty: Arc<MapType>,
+    entries: Vec<(Value, Value)>,
+}
+
 macro_rules! impl_primitives {
     ($Self:ident, $(($case:ident, $ty:ty, $make:ident, $unwrap:ident)),*) => {
         $(
@@ -161,6 +169,7 @@ impl WasmValue for Value {
             ValueEnum::Option(_) => WasmTypeKind::Option,
             ValueEnum::Result(_) => WasmTypeKind::Result,
             ValueEnum::Flags(_) => WasmTypeKind::Flags,
+            ValueEnum::Map(_) => WasmTypeKind::Map,
         }
     }
 
@@ -303,21 +312,35 @@ impl WasmValue for Value {
         names: impl IntoIterator<Item = &'a str>,
     ) -> Result<Self, WasmValueError> {
         ensure_type_kind(ty, WasmTypeKind::Flags)?;
-        let flag_names = ty.flags_names().collect::<Vec<_>>();
-        let mut flags = names
-            .into_iter()
-            .map(|name| {
-                flag_names
-                    .iter()
-                    .position(|flag| flag == name)
-                    .ok_or_else(|| WasmValueError::UnknownCase(name.into()))
-            })
-            .collect::<Result<Vec<_>, WasmValueError>>()?;
-        // Flags values don't logically contain an ordering of the flags. Sort
-        // the flags values so that equivalent flags values compare equal.
-        flags.sort();
         let ty = maybe_unwrap_type!(&ty.0, TypeEnum::Flags).unwrap().clone();
+        let values = BTreeSet::from_iter(names);
+
+        let mut flags = Vec::with_capacity(values.len());
+        flags.extend(
+            ty.flags
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, flag_name)| values.contains(flag_name.as_ref()).then_some(idx)),
+        );
+        if flags.len() < values.len() {
+            let flag_names = ty.flags.iter().map(|name| name.as_ref()).collect();
+            let unknown = values.difference(&flag_names).next().unwrap_or(&"");
+            return Err(WasmValueError::UnknownCase((*unknown).into()));
+        }
         Ok(Self(ValueEnum::Flags(Flags { ty, flags })))
+    }
+
+    fn make_map(
+        ty: &Self::Type,
+        entries: impl IntoIterator<Item = (Self, Self)>,
+    ) -> Result<Self, WasmValueError> {
+        ensure_type_kind(ty, WasmTypeKind::Map)?;
+        let ty = maybe_unwrap_type!(&ty.0, TypeEnum::Map).unwrap().clone();
+        let entries = entries
+            .into_iter()
+            .map(|(key, value)| Ok((check_type(&ty.key, key)?, check_type(&ty.value, value)?)))
+            .collect::<Result<_, _>>()?;
+        Ok(Self(ValueEnum::Map(Map { ty, entries })))
     }
 
     fn unwrap_f32(&self) -> f32 {
@@ -382,6 +405,14 @@ impl WasmValue for Value {
                 .flags
                 .iter()
                 .map(|idx| cow(flags.ty.flags[*idx].as_ref())),
+        )
+    }
+    fn unwrap_map(&self) -> Box<dyn Iterator<Item = (Cow<'_, Self>, Cow<'_, Self>)> + '_> {
+        let map = unwrap_val!(&self.0, ValueEnum::Map, "map");
+        Box::new(
+            map.entries
+                .iter()
+                .map(|(key, value)| (cow(key), cow(value))),
         )
     }
 }
@@ -534,6 +565,19 @@ fn check_type2(expected: &Type, val: &Value) -> Result<(), WasmValueError> {
                     if *flag >= flags.ty.as_ref().flags.len() {
                         return wrong_value_type();
                     }
+                }
+            } else {
+                return wrong_value_type();
+            }
+        }
+        (ValueEnum::Map(map), _) => {
+            if let TypeEnum::Map(map_type) = &expected.0 {
+                if map.ty.as_ref() != map_type.as_ref() {
+                    return wrong_value_type();
+                }
+                for (key, value) in &map.entries {
+                    check_type2(&map_type.key, key)?;
+                    check_type2(&map_type.value, value)?;
                 }
             } else {
                 return wrong_value_type();

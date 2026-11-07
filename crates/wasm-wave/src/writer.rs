@@ -2,6 +2,11 @@
 
 use core::fmt::Write;
 
+use alloc::{
+    collections::{BTreeMap, btree_map::Entry},
+    string::String,
+    vec::Vec,
+};
 use thiserror::Error;
 
 use crate::{
@@ -23,6 +28,10 @@ impl<W: Write> Writer<W> {
     }
 
     /// WAVE-encodes and writes the given [`WasmValue`] to the underlying writer.
+    ///
+    /// Returns [`WriterError::UnsupportedType`] if `val`, or any value nested
+    /// within it, has a type that WAVE cannot encode. Output written before the
+    /// error was encountered is left in the underlying writer.
     pub fn write_value<V>(&mut self, val: &V) -> Result<(), WriterError>
     where
         V: WasmValue,
@@ -168,7 +177,23 @@ impl<W: Write> Writer<W> {
                 self.write_str("}")?;
                 Ok(())
             }
-            WasmTypeKind::Unsupported => panic!("unsupported value type"),
+            WasmTypeKind::Map => {
+                let entries = val
+                    .unwrap_map()
+                    .map(|(key, value)| Ok((crate::to_string(&*key)?, key, value)))
+                    .collect::<Result<Vec<_>, WriterError>>()?;
+                self.write_str("{")?;
+                for (idx, (key, value)) in merge_map_entries(entries).into_iter().enumerate() {
+                    if idx != 0 {
+                        self.write_str(", ")?;
+                    }
+                    self.write_value(&*key)?;
+                    self.write_str(": ")?;
+                    self.write_value(&*value)?;
+                }
+                self.write_str("}")
+            }
+            WasmTypeKind::Unsupported => Err(WriterError::UnsupportedType),
         }
     }
 
@@ -194,6 +219,29 @@ impl<W: Write> Writer<W> {
     }
 }
 
+/// Merges map entries that have the same key, as the component model
+/// specifies for maps: the last value wins. Like in an insertion-ordered hash
+/// table, each key keeps the position where it first appears.
+///
+/// Each entry is given with its key's WAVE encoding, which is what keys are
+/// compared by, so that e.g. `"a"` and `"\u{61}"` are the same key.
+pub(crate) fn merge_map_entries<K, V>(
+    entries: impl IntoIterator<Item = (String, K, V)>,
+) -> Vec<(K, V)> {
+    let mut merged: Vec<(K, V)> = Vec::new();
+    let mut indices = BTreeMap::<String, usize>::new();
+    for (encoded_key, key, value) in entries {
+        match indices.entry(encoded_key) {
+            Entry::Occupied(entry) => merged[*entry.get()].1 = value,
+            Entry::Vacant(entry) => {
+                entry.insert(merged.len());
+                merged.push((key, value));
+            }
+        }
+    }
+    merged
+}
+
 impl<W> AsMut<W> for Writer<W> {
     fn as_mut(&mut self) -> &mut W {
         &mut self.inner
@@ -207,4 +255,59 @@ pub enum WriterError {
     /// An error from the underlying writer
     #[error("write failed: {0}")]
     Io(#[from] core::fmt::Error),
+    /// The value (or a value nested within it) has a type that WAVE cannot
+    /// encode.
+    #[error("unsupported value type")]
+    UnsupportedType,
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{borrow::Cow, boxed::Box, string::String, vec, vec::Vec};
+    use core::fmt::Write;
+
+    use super::WriterError;
+    use crate::{
+        value::Type,
+        wasm::{DisplayValue, WasmTypeKind, WasmValue},
+    };
+
+    /// A minimal [`WasmValue`] that can represent a value WAVE can't encode.
+    #[derive(Clone)]
+    enum TestValue {
+        List(Vec<TestValue>),
+        Unsupported,
+    }
+
+    impl WasmValue for TestValue {
+        type Type = Type;
+
+        fn kind(&self) -> WasmTypeKind {
+            match self {
+                TestValue::List(_) => WasmTypeKind::List,
+                TestValue::Unsupported => WasmTypeKind::Unsupported,
+            }
+        }
+
+        fn unwrap_list(&self) -> Box<dyn Iterator<Item = Cow<'_, Self>> + '_> {
+            match self {
+                TestValue::List(vals) => Box::new(vals.iter().map(Cow::Borrowed)),
+                TestValue::Unsupported => panic!("not a list"),
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_value_is_an_error() {
+        let err = crate::to_string(&TestValue::Unsupported).unwrap_err();
+        assert!(matches!(err, WriterError::UnsupportedType), "{err:?}");
+
+        let nested = TestValue::List(vec![TestValue::List(vec![]), TestValue::Unsupported]);
+        let err = crate::to_string(&nested).unwrap_err();
+        assert!(matches!(err, WriterError::UnsupportedType), "{err:?}");
+
+        // Through `Display` the error surfaces as a `fmt::Error`.
+        let mut buf = String::new();
+        assert!(write!(buf, "{}", DisplayValue(&nested)).is_err());
+    }
 }

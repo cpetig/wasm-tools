@@ -418,6 +418,10 @@ impl<'a> Encoder<'a> {
                     self.funcs
                         .stream_write((&info.ty).into(), info.opts.iter().map(Into::into));
                 }
+                CoreFuncKind::StreamForward(info) => {
+                    self.core_func_names.push(name);
+                    self.funcs.stream_forward((&info.ty).into());
+                }
                 CoreFuncKind::StreamCancelRead(info) => {
                     self.core_func_names.push(name);
                     self.funcs
@@ -449,6 +453,10 @@ impl<'a> Encoder<'a> {
                     self.core_func_names.push(name);
                     self.funcs
                         .future_write((&info.ty).into(), info.opts.iter().map(Into::into));
+                }
+                CoreFuncKind::FutureForward(info) => {
+                    self.core_func_names.push(name);
+                    self.funcs.future_forward((&info.ty).into());
                 }
                 CoreFuncKind::FutureCancelRead(info) => {
                     self.core_func_names.push(name);
@@ -857,6 +865,12 @@ impl From<&ComponentType<'_>> for wasm_encoder::ComponentType {
                 ComponentTypeDecl::CoreType(t) => {
                     encode_core_type(encoded.core_type(), &t.def);
                 }
+                ComponentTypeDecl::CoreRec(r) => {
+                    encoded
+                        .core_type()
+                        .core()
+                        .rec(r.types.iter().map(|t| t.to_subtype()));
+                }
                 ComponentTypeDecl::Type(t) => {
                     encode_type(encoded.ty(), &t.def);
                 }
@@ -884,6 +898,12 @@ impl From<&InstanceType<'_>> for wasm_encoder::InstanceType {
             match decl {
                 InstanceTypeDecl::CoreType(t) => {
                     encode_core_type(encoded.core_type(), &t.def);
+                }
+                InstanceTypeDecl::CoreRec(r) => {
+                    encoded
+                        .core_type()
+                        .core()
+                        .rec(r.types.iter().map(|t| t.to_subtype()));
                 }
                 InstanceTypeDecl::Type(t) => {
                     encode_type(encoded.ty(), &t.def);

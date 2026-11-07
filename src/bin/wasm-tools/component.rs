@@ -14,10 +14,10 @@ use wasmparser::types::{CoreTypeId, EntityType, Types};
 use wasmparser::{Payload, ValidPayload, WasmFeatures};
 use wat::Detect;
 use wit_component::{
-    ComponentEncoder, DecodedWasm, Linker, StringEncoding, WitPrinter, embed_component_metadata,
-    metadata,
+    ComponentEncoder, DecodedWasm, IndexType, Linker, StringEncoding, WitPrinter,
+    embed_component_metadata, metadata,
 };
-use wit_parser::{LiftLowerAbi, Mangling, ManglingAndAbi, WorldItem, WorldKey};
+use wit_parser::{LiftLowerAbi, ManglingAndAbi, WorldItem, WorldKey};
 
 /// WebAssembly wit-based component tooling.
 #[derive(Parser)]
@@ -94,14 +94,10 @@ Examples:
         -o foo.component.wasm
 
     # In the output component, replace any imports of \"wasi:io/error@0.2.0\" with
-    # an import of \"unlocked-dep=<wasi:io/error>\". This has the effect of changing
-    # the dependency on `wasi:io/error` from an exact version to one of a set of
-    # possible versions of this dependency.
-    # (For more on locked vs. unlocked dependencies, see
-    # https://github.com/WebAssembly/component-model/blob/main/design/mvp/Explainer.md#import-and-export-definitions)
+    # an import of \"wasi:io/error@0.2.1\".
     # Also use the adapter contained in the file `wasm_snapshot_preview1.wasm`
     # in the current directory, and save the output to the file foo.component.wasm.
-    $ wasm-tools component new foo.wasm --import-name \"wasi:io/error@0.2.0=unlocked-dep=<wasi:io/error>\" \
+    $ wasm-tools component new foo.wasm --import-name \"wasi:io/error@0.2.0=wasi:io/error@0.2.1\" \
         --adapt wasi_snapshot_preview1.wasm -o foo.component.wasm
 
     # Create a component and print it to stdout in in text format, skipping validation of
@@ -119,9 +115,8 @@ pub struct NewOpts {
     ///
     /// This may be used to rename instance imports in the final component.
     ///
-    /// For example, `--import-name "a:b/c=unlocked-dep=<d:e/f>"` will
-    /// rename the instance import `a:b/c` such that it becomes an `unlocked-dep`
-    /// name.
+    /// For example, `--import-name "a:b/c=d:e/f"` will rename the instance
+    /// import `a:b/c` such that it becomes `d:e/f`.
     ///
     /// If the old import name is not found, it is ignored.
     #[clap(long = "import-name", value_name = "OLD=NEW", value_parser = parse_import_name)]
@@ -211,6 +206,14 @@ struct ComponentEncoderOpts {
     #[arg(long, require_equals = true, value_name = "true|false")]
     merge_imports_based_on_semver: Option<Option<bool>>,
 
+    /// Emits canonical interface names with version suffixes.
+    ///
+    /// When enabled, import/export names use canonical version prefixes (e.g.,
+    /// `wasi:cli/exit@0.2` instead of `wasi:cli/exit@0.2.1`) and the
+    /// `version_suffix` field is populated in the binary.
+    #[clap(long)]
+    emit_canonical_names: bool,
+
     /// Reject usage of the "legacy" naming scheme of `wit-component` and
     /// require the new naming scheme to be used.
     ///
@@ -277,7 +280,8 @@ impl ComponentEncoderOpts {
                 self.merge_imports_based_on_semver,
                 true,
             ))
-            .realloc_via_memory_grow(self.realloc_via_memory_grow);
+            .realloc_via_memory_grow(self.realloc_via_memory_grow)
+            .emit_canonical_names(self.emit_canonical_names);
         for (name, wasm) in self.adapters.iter() {
             encoder.adapter(name, wasm)?;
         }
@@ -393,6 +397,14 @@ pub struct EmbedOpts {
     #[clap(short, long)]
     world: Option<String>,
 
+    /// Emits canonical interface names with version suffixes.
+    ///
+    /// When enabled, import/export names use canonical version prefixes (e.g.,
+    /// `wasi:cli/exit@0.2` instead of `wasi:cli/exit@0.2.1`) and the
+    /// `version_suffix` field is populated in the binary.
+    #[clap(long)]
+    emit_canonical_names: bool,
+
     /// Don't read a core wasm module as input, instead generating a "dummy"
     /// module as a placeholder.
     ///
@@ -410,10 +422,9 @@ pub struct EmbedOpts {
     ///
     /// This flag is the same as `--dummy` where if specified a core wasm module
     /// is not read but is instead generated. The value of the option here is
-    /// the name mangling scheme to use for core wasm names generated. Current
-    /// options are `legacy|standard32`.
+    /// the name mangling scheme to use for core wasm names generated.
     #[clap(long, conflicts_with = "dummy")]
-    dummy_names: Option<Mangling>,
+    dummy_names: Option<DummyNames>,
 
     /// With `--dummy-names legacy`, this will generate a core module such that
     /// all the imports are lowered using the async ABI and the exports are
@@ -449,6 +460,13 @@ pub struct EmbedOpts {
     only_custom: bool,
 }
 
+#[derive(clap::ValueEnum, Debug, Copy, Clone, PartialEq, Eq)]
+enum DummyNames {
+    Standard32,
+    Legacy,
+    Legacy64,
+}
+
 impl EmbedOpts {
     fn general_opts(&self) -> &wasm_tools::GeneralOpts {
         self.io.general_opts()
@@ -456,9 +474,13 @@ impl EmbedOpts {
 
     /// Executes the application.
     fn run(self) -> Result<()> {
-        let (resolve, pkg_id) = self.resolve.load()?;
+        let (mut resolve, pkg_id) = self.resolve.load()?;
 
         let world = resolve.select_world(&[pkg_id], self.world.as_deref())?;
+
+        if self.emit_canonical_names {
+            resolve.merge_world_imports_based_on_semver(world)?;
+        }
 
         if self.only_custom {
             let encoded = metadata::encode(
@@ -466,6 +488,7 @@ impl EmbedOpts {
                 world,
                 self.encoding.unwrap_or(StringEncoding::UTF8),
                 None,
+                self.emit_canonical_names,
             )?;
 
             self.io.output_wasm(&encoded, false)?;
@@ -476,29 +499,28 @@ impl EmbedOpts {
             if self.async_callback || self.async_stackful {
                 bail!("non-legacy mangling not yet supported when generating async dummy modules");
             }
-            wit_component::dummy_module(&resolve, world, ManglingAndAbi::Standard32)
-        } else if let Some(mangling) = self.dummy_names {
-            wit_component::dummy_module(
-                &resolve,
-                world,
-                match mangling {
-                    Mangling::Standard32 => {
-                        if self.async_callback || self.async_stackful {
-                            bail!(
-                                "non-legacy mangling not yet supported when generating async dummy modules"
-                            );
-                        }
-                        ManglingAndAbi::Standard32
+            wit_component::dummy_module(&resolve, world, ManglingAndAbi::Standard32, IndexType::I32)
+        } else if let Some(names) = self.dummy_names {
+            let legacy = ManglingAndAbi::Legacy(if self.async_callback {
+                LiftLowerAbi::AsyncCallback
+            } else if self.async_stackful {
+                LiftLowerAbi::AsyncStackful
+            } else {
+                LiftLowerAbi::Sync
+            });
+            let (mangling, index_type) = match names {
+                DummyNames::Standard32 => {
+                    if self.async_callback || self.async_stackful {
+                        bail!(
+                            "non-legacy mangling not yet supported when generating async dummy modules"
+                        );
                     }
-                    Mangling::Legacy => ManglingAndAbi::Legacy(if self.async_callback {
-                        LiftLowerAbi::AsyncCallback
-                    } else if self.async_stackful {
-                        LiftLowerAbi::AsyncStackful
-                    } else {
-                        LiftLowerAbi::Sync
-                    }),
-                },
-            )
+                    (ManglingAndAbi::Standard32, IndexType::I32)
+                }
+                DummyNames::Legacy => (legacy, IndexType::I32),
+                DummyNames::Legacy64 => (legacy, IndexType::I64),
+            };
+            wit_component::dummy_module(&resolve, world, mangling, index_type)
         } else {
             self.io.get_input_wasm(Some(&self.generate_dwarf))?
         };
@@ -508,6 +530,7 @@ impl EmbedOpts {
             &resolve,
             world,
             self.encoding.unwrap_or(StringEncoding::UTF8),
+            self.emit_canonical_names,
         )?;
 
         self.io.output_wasm(&wasm, self.wat)?;
@@ -945,6 +968,14 @@ pub struct WitOpts {
     /// items are otherwise hidden by default.
     #[clap(long)]
     all_features: bool,
+
+    /// Emits canonical interface names with version suffixes.
+    ///
+    /// When enabled, import/export names use canonical version prefixes (e.g.,
+    /// `wasi:cli/exit@0.2` instead of `wasi:cli/exit@0.2.1`) and the
+    /// `version_suffix` field is populated in the binary.
+    #[clap(long)]
+    emit_canonical_names: bool,
 }
 
 impl WitOpts {
@@ -1005,7 +1036,7 @@ impl WitOpts {
         if self.json {
             self.emit_json(&decoded)?;
         } else if self.wasm || self.wat {
-            self.emit_wasm(&decoded)?;
+            self.emit_wasm(&decoded, self.emit_canonical_names)?;
         } else {
             self.emit_wit(&decoded)?;
         }
@@ -1184,12 +1215,12 @@ impl WitOpts {
         Ok(())
     }
 
-    fn emit_wasm(&self, decoded: &DecodedWasm) -> Result<()> {
+    fn emit_wasm(&self, decoded: &DecodedWasm, canonical_names: bool) -> Result<()> {
         assert!(self.wasm || self.wat);
         assert!(self.out_dir.is_none());
 
         let decoded_package = decoded.package();
-        let bytes = wit_component::encode(decoded.resolve(), decoded_package)?;
+        let bytes = wit_component::encode(decoded.resolve(), decoded_package, canonical_names)?;
         if !self.skip_validation {
             wasmparser::Validator::new_with_features(WasmFeatures::all()).validate_all(&bytes)?;
         }
@@ -1307,6 +1338,12 @@ pub struct TargetsOpts {
 
     #[clap(flatten)]
     input: wasm_tools::InputArg,
+
+    /// Matches interfaces by their canonical names, so semver-compatible
+    /// versions (e.g. `wasi:cli@0.2.3` and `wasi:cli@0.2.0`) are type-checked
+    /// against each other.
+    #[clap(long)]
+    semver_compatible: bool,
 }
 
 impl TargetsOpts {
@@ -1320,7 +1357,7 @@ impl TargetsOpts {
         let world = resolve.select_world(&[pkg_id], self.world.as_deref())?;
         let component_to_test = self.input.get_binary_wasm(None)?;
 
-        wit_component::targets(&resolve, world, &component_to_test)?;
+        wit_component::targets(&resolve, world, &component_to_test, self.semver_compatible)?;
 
         Ok(())
     }
@@ -1522,7 +1559,7 @@ impl CoreTypeInterner {
             return Ok(*ret);
         }
         let ty = &types[id];
-        if !ty.is_final || ty.supertype_idx.is_some() || ty.composite_type.shared {
+        if !ty.is_final || !ty.supertype_idxs.is_empty() || ty.composite_type.shared {
             bail!("unsupported core type to translate")
         }
         let f = match &ty.composite_type.inner {

@@ -1,8 +1,9 @@
 use super::{Adapter, ComponentEncoder, LibraryInfo, RequiredOptions};
 use crate::validation::{
-    Import, ImportMap, PayloadType, ValidatedModule, validate_adapter_module, validate_module,
+    Import, ImportMap, IndexType, PayloadType, ValidatedModule, validate_adapter_module,
+    validate_module,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use indexmap::{IndexMap, IndexSet};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -49,7 +50,7 @@ pub struct ComponentWorld<'a> {
 pub struct ImportedInterface {
     pub lowerings: IndexMap<(String, AbiVariant), Lowering>,
     pub interface: Option<InterfaceId>,
-    pub implements: Option<String>,
+    pub implements: Option<InterfaceId>,
     pub external_id: Option<String>,
 }
 
@@ -92,6 +93,13 @@ impl<'a> ComponentWorld<'a> {
         Ok(ret)
     }
 
+    /// Returns the index type of the main module's linear memory, which
+    /// determines the core wasm type of pointers in the canonical ABI for the
+    /// whole component.
+    pub fn index_type(&self) -> IndexType {
+        self.info.index_type
+    }
+
     /// Returns whether the component encoding process should use context slot 1
     /// in tasks, generally reserved for TLS.
     ///
@@ -101,7 +109,7 @@ impl<'a> ComponentWorld<'a> {
     pub fn can_use_context_slot_1(&self) -> bool {
         let uses = |info: &ValidatedModule| {
             info.imports.imports().any(|(_, _, import)| match import {
-                Import::ThreadNewIndirect
+                Import::ThreadNewIndirect { .. }
                 | Import::ContextGet { slot: 1, .. }
                 | Import::ContextSet { slot: 1, .. } => true,
                 _ => false,
@@ -117,6 +125,12 @@ impl<'a> ComponentWorld<'a> {
     fn process_adapters(&mut self) -> Result<()> {
         let resolve = &self.encoder.metadata.resolve;
         let world = self.encoder.metadata.world;
+        let main_memory_page_size = self
+            .info
+            .exports
+            .memory()
+            .map(|(_, ty)| ty.page_size())
+            .unwrap_or(65536);
         for (
             name,
             Adapter {
@@ -178,6 +192,7 @@ impl<'a> ComponentWorld<'a> {
                     &required_by_import,
                     required_exports,
                     library_info.as_ref(),
+                    self.info.index_type,
                 )
                 .with_context(|| {
                     format!("failed to validate the imports of the adapter module `{name}`")
@@ -189,6 +204,11 @@ impl<'a> ComponentWorld<'a> {
                 for (name, _export) in info.exports.iter() {
                     required.insert(name.to_string());
                 }
+                let page_size_log2 = info
+                    .imports
+                    .imported_memory()
+                    .and_then(|ty| ty.page_size_log2)
+                    .unwrap_or(16);
 
                 Cow::Owned(
                     crate::gc::run(
@@ -199,6 +219,8 @@ impl<'a> ComponentWorld<'a> {
                         } else {
                             self.info.exports.realloc_to_import_into_adapter()
                         },
+                        page_size_log2,
+                        info.index_type,
                     )
                     .context("failed to reduce input adapter module to its minimal size")?,
                 )
@@ -209,10 +231,28 @@ impl<'a> ComponentWorld<'a> {
                 &required_by_import,
                 required_exports,
                 library_info.as_ref(),
+                self.info.index_type,
             )
             .with_context(|| {
                 format!("failed to validate the imports of the minimized adapter module `{name}`")
             })?;
+            if info.index_type != self.info.index_type {
+                bail!(
+                    "adapter module `{name}` memory index type ({}) does not match \
+                     main module's memory index type ({})",
+                    info.index_type,
+                    self.info.index_type,
+                );
+            }
+            if let Some(adapter_memory) = info.imports.imported_memory() {
+                let adapter_page_size = adapter_memory.page_size();
+                if main_memory_page_size != adapter_page_size {
+                    bail!(
+                        "adapter module `{name}` memory page size ({adapter_page_size}) \
+                         does not match main module's memory page size ({main_memory_page_size})"
+                    );
+                }
+            }
             self.adapters.insert(
                 name,
                 WorldAdapter {
@@ -267,6 +307,7 @@ impl<'a> ComponentWorld<'a> {
             add_item(
                 &mut self.import_map,
                 resolve,
+                world,
                 name,
                 item,
                 &required,
@@ -278,6 +319,7 @@ impl<'a> ComponentWorld<'a> {
         fn add_item(
             import_map: &mut IndexMap<Option<String>, ImportedInterface>,
             resolve: &Resolve,
+            world: WorldId,
             key: &WorldKey,
             item: &WorldItem,
             required: &Required<'_>,
@@ -293,7 +335,7 @@ impl<'a> ComponentWorld<'a> {
                 WorldItem::Function(_) | WorldItem::Type { .. } => None,
                 WorldItem::Interface { id, .. } => Some(*id),
             };
-            let implements = resolve.implements_value(key, item);
+            let implements = resolve.implements_interface(key, item);
             // Note that `external_id` is only tracked for interface imports
             // here. World-level functions and types all share the `None` entry
             // in `import_map` but each item can have its own `external-id`
@@ -307,7 +349,7 @@ impl<'a> ComponentWorld<'a> {
                 .or_insert_with(|| ImportedInterface {
                     interface: interface_id,
                     lowerings: Default::default(),
-                    implements: implements.clone(),
+                    implements,
                     external_id: external_id.clone(),
                 });
             assert_eq!(interface.interface, interface_id);
@@ -315,7 +357,7 @@ impl<'a> ComponentWorld<'a> {
             assert_eq!(interface.external_id, external_id);
             match item {
                 WorldItem::Function(func) => {
-                    interface.add_func(required, resolve, func, info);
+                    interface.add_func(required, resolve, world, func, info);
                 }
                 WorldItem::Type { id, .. } => {
                     interface.add_type(required, resolve, *id);
@@ -325,7 +367,7 @@ impl<'a> ComponentWorld<'a> {
                         interface.add_type(required, resolve, *ty);
                     }
                     for (_name, func) in resolve.interfaces[*id].functions.iter() {
-                        interface.add_func(required, resolve, func, info);
+                        interface.add_func(required, resolve, world, func, info);
                     }
                 }
             }
@@ -433,6 +475,7 @@ impl<'a> ComponentWorld<'a> {
                 Import::StreamNew(info)
                 | Import::StreamRead { info, async_: _ }
                 | Import::StreamWrite { info, async_: _ }
+                | Import::StreamForward(info)
                 | Import::StreamCancelRead { info, async_: _ }
                 | Import::StreamCancelWrite { info, async_: _ }
                 | Import::StreamDropReadable(info)
@@ -440,6 +483,7 @@ impl<'a> ComponentWorld<'a> {
                 | Import::FutureNew(info)
                 | Import::FutureRead { info, async_: _ }
                 | Import::FutureWrite { info, async_: _ }
+                | Import::FutureForward(info)
                 | Import::FutureCancelRead { info, async_: _ }
                 | Import::FutureCancelWrite { info, async_: _ }
                 | Import::FutureDropReadable(info)
@@ -560,6 +604,7 @@ impl ImportedInterface {
         &mut self,
         required: &Required<'_>,
         resolve: &Resolve,
+        world: WorldId,
         func: &Function,
         info: &ValidatedModule,
     ) {
@@ -574,11 +619,11 @@ impl ImportedInterface {
         }
         for abi in abis {
             log::trace!("add func {} {abi:?}", func.name);
-            let options = RequiredOptions::for_import(resolve, func, abi);
+            let options = RequiredOptions::for_import(resolve, world, func, abi);
             let lowering = if options_are_available_before_instantiation(options, info) {
                 Lowering::Direct { options }
             } else {
-                let sig = resolve.wasm_signature(abi, func);
+                let sig = resolve.wasm_signature(world, abi, func);
                 Lowering::Indirect { sig, options }
             };
 
