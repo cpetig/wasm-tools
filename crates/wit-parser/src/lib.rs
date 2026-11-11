@@ -45,7 +45,7 @@ mod ast;
 pub use ast::error::*;
 pub use ast::lex::Span;
 pub use ast::{ItemName, SourceMap, SpanLocation};
-pub use ast::{ParsedUsePath, parse_use_path};
+pub use ast::{ParsedUsePath, parse_use_path, pretty_print};
 mod sizealign;
 pub use sizealign::*;
 mod resolve;

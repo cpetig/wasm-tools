@@ -56,3 +56,6 @@ wit-parser = { path = '.', features = ['serde', 'wat'] }
 [[test]]
 name = "all"
 harness = false
+
+[[bin]]
+name = "witfmt"

@@ -188,11 +188,20 @@ impl Resolve {
     /// The first entry returned is the list of parameters and the second entry
     /// is the list of results for the wasm function signature.
     pub fn wasm_signature(&self, variant: AbiVariant, func: &Function) -> WasmSignature {
+        self.wasm_signature_symmetric(variant, func, false)
+    }
+
+    pub fn wasm_signature_symmetric(
+        &self,
+        variant: AbiVariant,
+        func: &Function,
+        symmetric: bool,
+    ) -> WasmSignature {
         // Note that one extra parameter is allocated in case a return pointer
         // is needed down below for imports.
         let mut storage = [WasmType::I32; Self::MAX_FLAT_PARAMS + 1];
         let mut params = FlatTypes::new(&mut storage);
-        let ok = self.push_flat_list(func.params.iter().map(|p| &p.ty), &mut params);
+        let ok = self.push_flat_list(func.params.iter().map(|p| &p.ty), &mut params, symmetric);
         assert_eq!(ok, !params.overflow);
 
         let max = match variant {
@@ -200,7 +209,13 @@ impl Resolve {
             | AbiVariant::GuestExport
             | AbiVariant::GuestExportAsync
             | AbiVariant::GuestExportAsyncStackful => Self::MAX_FLAT_PARAMS,
-            AbiVariant::GuestImportAsync => Self::MAX_FLAT_ASYNC_PARAMS,
+            AbiVariant::GuestImportAsync => {
+                if symmetric {
+                    Self::MAX_FLAT_PARAMS
+                } else {
+                    Self::MAX_FLAT_ASYNC_PARAMS
+                }
+            }
         };
 
         let indirect_params = !ok || params.cur > max;
@@ -220,14 +235,16 @@ impl Resolve {
                         | AbiVariant::GuestExportAsyncStackful
                 )
             ) {
-                // Guest exported methods always receive resource rep as first argument
-                //
-                // TODO: Ideally you would distinguish between imported and exported
-                // resource Handles and then use either I32 or Pointer in abi::push_flat().
-                // But this contextual information isn't available, yet.
-                // See https://github.com/bytecodealliance/wasm-tools/pull/1438 for more details.
-                assert!(matches!(params.types[0], WasmType::I32));
-                params.types[0] = WasmType::Pointer;
+                if !matches!(params.types[0], WasmType::Pointer) {
+                    // Guest exported methods always receive resource rep as first argument
+                    //
+                    // TODO: Ideally you would distinguish between imported and exported
+                    // resource Handles and then use either I32 or Pointer in abi::push_flat().
+                    // But this contextual information isn't available, yet.
+                    // See https://github.com/bytecodealliance/wasm-tools/pull/1438 for more details.
+                    assert!(matches!(params.types[0], WasmType::I32));
+                    params.types[0] = WasmType::Pointer;
+                }
             }
         }
 
@@ -237,7 +254,7 @@ impl Resolve {
         match variant {
             AbiVariant::GuestImport | AbiVariant::GuestExport => {
                 if let Some(ty) = &func.result {
-                    self.push_flat(ty, &mut results);
+                    self.push_flat_symmetric(ty, &mut results, symmetric);
                 }
                 retptr = results.overflow;
 
@@ -247,11 +264,11 @@ impl Resolve {
                 // return a pointer they wrote into.
                 if retptr {
                     results.cur = 0;
-                    match variant {
-                        AbiVariant::GuestImport => {
+                    match (variant, symmetric) {
+                        (AbiVariant::GuestImport, _) | (AbiVariant::GuestExport, true) => {
                             assert!(params.push(WasmType::Pointer));
                         }
-                        AbiVariant::GuestExport => {
+                        (AbiVariant::GuestExport, false) => {
                             assert!(results.push(WasmType::Pointer));
                         }
                         _ => unreachable!(),
@@ -267,14 +284,26 @@ impl Resolve {
                 }
 
                 // The result of this function is a status code.
-                assert!(results.push(WasmType::I32));
+                assert!(results.push(if symmetric {
+                    WasmType::Pointer
+                } else {
+                    WasmType::I32
+                }));
             }
             AbiVariant::GuestExportAsync => {
+                if symmetric && func.result.is_some() {
+                    assert!(params.push(WasmType::Pointer));
+                    retptr = true;
+                }
                 // The result of this function is a status code. Note that the
                 // function results are entirely ignored here as they aren't
                 // part of the ABI and are handled in the `task.return`
                 // intrinsic.
-                assert!(results.push(WasmType::I32));
+                assert!(results.push(if symmetric {
+                    WasmType::Pointer
+                } else {
+                    WasmType::I32
+                }));
             }
             AbiVariant::GuestExportAsyncStackful => {
                 // No status code, and like async exports no result handling.
@@ -293,13 +322,22 @@ impl Resolve {
         &self,
         mut list: impl Iterator<Item = &'a Type>,
         result: &mut FlatTypes<'_>,
+        symmetric: bool,
     ) -> bool {
-        list.all(|ty| self.push_flat(ty, result))
+        list.all(|ty| self.push_flat_symmetric(ty, result, symmetric))
     }
 
     /// Appends the flat wasm types representing `ty` onto the `result`
     /// list provided.
     pub fn push_flat(&self, ty: &Type, result: &mut FlatTypes<'_>) -> bool {
+        self.push_flat_symmetric(ty, result, false)
+    }
+    pub fn push_flat_symmetric(
+        &self,
+        ty: &Type,
+        result: &mut FlatTypes<'_>,
+        symmetric: bool,
+    ) -> bool {
         match ty {
             Type::Bool
             | Type::S8
@@ -317,23 +355,29 @@ impl Resolve {
             Type::String => result.push(WasmType::Pointer) && result.push(WasmType::Length),
 
             Type::Id(id) => match &self.types[*id].kind {
-                TypeDefKind::Type(t) => self.push_flat(t, result),
+                TypeDefKind::Type(t) => self.push_flat_symmetric(t, result, symmetric),
 
                 TypeDefKind::Handle(Handle::Own(_) | Handle::Borrow(_)) => {
-                    result.push(WasmType::I32)
+                    result.push(if symmetric {
+                        WasmType::Pointer
+                    } else {
+                        WasmType::I32
+                    })
                 }
 
                 TypeDefKind::Resource => todo!(),
 
                 TypeDefKind::Record(r) => {
-                    self.push_flat_list(r.fields.iter().map(|f| &f.ty), result)
+                    self.push_flat_list(r.fields.iter().map(|f| &f.ty), result, symmetric)
                 }
 
-                TypeDefKind::Tuple(t) => self.push_flat_list(t.types.iter(), result),
+                TypeDefKind::Tuple(t) => self.push_flat_list(t.types.iter(), result, symmetric),
 
-                TypeDefKind::Flags(r) => {
-                    self.push_flat_list((0..r.repr().count()).map(|_| &Type::U32), result)
-                }
+                TypeDefKind::Flags(r) => self.push_flat_list(
+                    (0..r.repr().count()).map(|_| &Type::U32),
+                    result,
+                    symmetric,
+                ),
 
                 TypeDefKind::List(_) => {
                     result.push(WasmType::Pointer) && result.push(WasmType::Length)
@@ -344,27 +388,39 @@ impl Resolve {
                 }
 
                 TypeDefKind::FixedLengthList(ty, size) => {
-                    self.push_flat_list((0..*size).map(|_| ty), result)
+                    self.push_flat_list((0..*size).map(|_| ty), result, symmetric)
                 }
 
                 TypeDefKind::Variant(v) => {
                     result.push(v.tag().into())
-                        && self.push_flat_variants(v.cases.iter().map(|c| c.ty.as_ref()), result)
+                        && self.push_flat_variants(
+                            v.cases.iter().map(|c| c.ty.as_ref()),
+                            result,
+                            symmetric,
+                        )
                 }
 
                 TypeDefKind::Enum(e) => result.push(e.tag().into()),
 
                 TypeDefKind::Option(t) => {
-                    result.push(WasmType::I32) && self.push_flat_variants([None, Some(t)], result)
+                    result.push(WasmType::I32)
+                        && self.push_flat_variants([None, Some(t)], result, symmetric)
                 }
 
                 TypeDefKind::Result(r) => {
                     result.push(WasmType::I32)
-                        && self.push_flat_variants([r.ok.as_ref(), r.err.as_ref()], result)
+                        && self.push_flat_variants(
+                            [r.ok.as_ref(), r.err.as_ref()],
+                            result,
+                            symmetric,
+                        )
                 }
 
-                TypeDefKind::Future(_) => result.push(WasmType::I32),
-                TypeDefKind::Stream(_) => result.push(WasmType::I32),
+                TypeDefKind::Future(_) | TypeDefKind::Stream(_) => result.push(if symmetric {
+                    WasmType::Pointer
+                } else {
+                    WasmType::I32
+                }),
 
                 TypeDefKind::Unknown => unreachable!(),
             },
@@ -375,6 +431,7 @@ impl Resolve {
         &self,
         tys: impl IntoIterator<Item = Option<&'a Type>>,
         result: &mut FlatTypes<'_>,
+        symmetric: bool,
     ) -> bool {
         let mut temp = result.types[result.cur..].to_vec();
         let mut temp = FlatTypes::new(&mut temp);
@@ -388,7 +445,7 @@ impl Resolve {
         // `i32` might be the `f32` bitcasted.
         for ty in tys {
             if let Some(ty) = ty {
-                if !self.push_flat(ty, &mut temp) {
+                if !self.push_flat_symmetric(ty, &mut temp, symmetric) {
                     result.overflow = true;
                     return false;
                 }
